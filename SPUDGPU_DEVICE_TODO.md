@@ -1195,7 +1195,8 @@ this reason: a change of their signatures, not made.
     SPIR-V) comes from the caller with the module, or from the native
     format's own reflection.
   - Every caller changes in the same change, before 1.0. Not started; the
-    source language is card A29.
+    source language is Slang (card A29, decided 2026-10-31; ApricotFields
+    `APREND_TODO.md` item 22).
 - **Specialization constants. Decided 2026-10-28 with the user (card
   A9):** a pipeline desc takes (constant id, value) pairs for its shader
   modules: Vulkan's `VkSpecializationInfo`; Metal's function constants;
@@ -1208,10 +1209,12 @@ this reason: a change of their signatures, not made.
   is handed to keep and gives back; SpudGPU writes no file.
 - **Hardware ray tracing. Decided 2026-10-28 with the user (card S12).**
   Not started.
-  0. **First, a test:** that the shader path carries ray queries - GLSL
-     `GL_EXT_ray_query` to SPIR-V, and SPIRV-Cross to HLSL (`RayQuery`,
-     DXR 1.1) and to Metal (`intersector`), each run. If a target fails, the
-     shader route for these shaders is decided before anything else.
+  0. **First, a test:** that the shader path carries ray queries - Slang
+     (card A29, decided 2026-10-31) `RayQuery` to SPIR-V and to DXIL (DXR
+     1.1), and to Metal by both routes, Slang's own Metal output and Slang
+     to SPIR-V to SPIRV-Cross (`intersection_query`), each run on a
+     device. The route that passes on Metal is the one these shaders take;
+     if neither does, that is settled before anything else.
   1. **`SPUDGPU_EXT_RAY_QUERY`**, paired with a device feature bit (card
      S3's), the narrow island `CLAUDE.md` expects: acceleration structures
      (bottom level per mesh, top level of instances) created, built,
@@ -1220,6 +1223,28 @@ this reason: a change of their signatures, not made.
      and `VK_KHR_ray_query`; D3D12 DXR 1.1; Metal acceleration structures
      and intersectors (hardware from Apple's M3). The caller's fallback on
      a GPU without it (an Iris Xe).
+     **Instances in the device's own layout (card S14, decided 2026-10-31
+     with the user).** Vulkan's and D3D12's instance is the same 64 bytes
+     (row-major 3x4 transform, 24-bit custom index, 8-bit mask, 24-bit
+     table offset, 8 bits of flags, the bottom level's address); Metal's
+     indirect instance descriptor is 72 (column-major packed 4x3
+     transform, 32-bit options, mask, table offset and user ID, the bottom
+     level's `MTLResourceID`). SpudGPU converts nothing:
+     - a query gives the device's instance size, alignment and layout
+       kind;
+     - `spudgpu_write_acceleration_structure_instance()` writes one
+       instance from a portable struct into memory the caller names: a
+       CPU translation, no state;
+     - one call returns a bottom level's reference as a `uint64_t`
+       (Vulkan's device address, D3D12's GPU virtual address, Metal's
+       resource ID), which the portable struct and a GPU writer use;
+     - a GPU writer is the caller's, one per backend (a Slang target
+       switch, card A29);
+     - the header states the narrowest contract: an 8-bit mask, a 24-bit
+       user index and table offset, and only the flags all three share.
+     Not a portable layout the Metal backend converts on the GPU (hidden
+     work and memory, against S2), nor a layout of SpudGPU's converted on
+     the CPU (no GPU-written instances).
   - **Ray tracing pipelines are not part of it** (asked 2026-10-28). Vulkan's
     and D3D12's map nearly one to one (the same stages - ray generation,
     miss, closest-hit, any-hit, intersection, callable - shader tables of
@@ -1235,8 +1260,8 @@ this reason: a change of their signatures, not made.
     straight translation:**
     - `SPUDGPU_EXT_RAY_TRACING_PIPELINE`, Vulkan and D3D12 only, compiled
       out on Metal as `SPUDGPU_EXT_BUNDLES` is on the other side;
-    - an Apple EXT (`SPUDGPU_EXT_METAL_RAY_FUNCTIONS`, name to settle),
-      Metal only, translating Metal's own model: intersection function
+    - `SPUDGPU_EXT_RAY_FUNCTION_TABLES` (named for its capability, card
+      S15, 2026-10-31), Metal only today, translating Metal's own model: intersection function
       tables and Metal 4's intersection function buffers (alpha-tested and
       custom geometry), visible function tables (a material's function by
       index), linked into compute pipelines. Its shaders can't be SPIR-V
@@ -1262,6 +1287,17 @@ this reason: a change of their signatures, not made.
     other two than older Metal, not close enough for one pipeline EXT on
     all three; the two-EXT shape stands, its Apple half built on Metal 4's
     buffers where available.
+- **Tile shading and framebuffer fetch: not now (card S16, decided
+  2026-10-31 with the user).** Metal's tile shaders and imageblocks and its
+  programmable blending (Vulkan has a partial counterpart in
+  `VK_KHR_dynamic_rendering_local_read`; D3D12 none) are not translated
+  yet. Their caller renders forward with no G-buffer, so tile memory's
+  main gain doesn't apply, and what is left is had through the planned
+  `SPUDGPU_IMAGE_USAGE_TRANSIENT_ATTACHMENT` (memoryless on Metal) in the
+  core API. Reopened when a measurement on an iPad (Instruments' GPU
+  counters) shows a caller bound by memory bandwidth; the names are kept
+  for then (card S15): `SPUDGPU_EXT_TILE_SHADING`,
+  `SPUDGPU_EXT_FRAMEBUFFER_FETCH`.
 - **A room check before SpudLib's 1.0** (card A15, in the workspace's
   `DECISIONS.md`): every deferred SpudGPU item with the
   way it would be added after 1.0, and the ones whose shape needs a field

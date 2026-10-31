@@ -202,6 +202,14 @@ GameInput and evdev builds were not run.
     `spudgpu_cmd_*` or another load-bearing chunk of the header, that's a sign the
     backend needs its own `GRAPHICS_BACKEND` entry instead of an `EXT` flag draped
     over nearly everything.
+  - **An `EXT` is named for its capability, never for a platform or an API**
+    (card S15, decided 2026-10-31 with the user): `SPUDGPU_EXT_BUNDLES`, not
+    `D3D12_BUNDLES`, even where one backend is the only one that has it
+    today. Another backend that gains the capability turns the macro to 1,
+    with no rename and no caller change. So S12's Apple ray tracing sibling
+    is `SPUDGPU_EXT_RAY_FUNCTION_TABLES`, and tile shading and framebuffer
+    fetch, if built (card S16), `SPUDGPU_EXT_TILE_SHADING` and
+    `SPUDGPU_EXT_FRAMEBUFFER_FETCH`.
   - `SPUDGPU_EXT_MESH_SHADING` (`SpudGPUMeshShaders` sample) is a second, distinct
     flavor of the same pattern: the macro itself is `1` on **every** backend — mesh
     shading has no structural per-backend gap the way bindless does — so the compile
