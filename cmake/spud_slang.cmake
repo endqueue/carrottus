@@ -11,8 +11,9 @@
 #   card S20, in the Metal backend's binding layout), kept as build outputs
 #   on every platform. Metal 3.1 (Apple7 and later, macOS 14, iOS 17).
 # - <name>.metallib on Apple platforms, from the route the shader names
-#   (tools/spudgpu_msl's by default, card S21). Written 2026-10-31 on
-#   Windows; not yet run.
+#   (tools/spudgpu_msl's by default, card S21), for this build's platform:
+#   macOS, an iOS device or the iOS simulator (from CMAKE_OSX_SYSROOT), and
+#   CMAKE_OSX_DEPLOYMENT_TARGET where it is set. Run on macOS 2026-11-01.
 # - <name>.<format>.inc, each binary as a C array (uint32_t words, zero padded
 #   to a whole word, and <c_name>_<format>_size, the exact byte count), for a
 #   test to include.
@@ -87,12 +88,30 @@ function(spud_add_slang_shader name)
     add_custom_command(
         OUTPUT ${out}.slang.metal ${out}.cross.metal
         COMMAND ${SPUD_SLANGC} ${src} -entry ${entry} -target metal -matrix-layout-column-major -o ${out}.slang.metal
-        COMMAND spudgpu_msl --platform $<IF:$<PLATFORM_ID:iOS>,ios,macos> --msl-version 30100
+        COMMAND ${SPUDGPU_MSL_EXECUTABLE} --platform $<IF:$<PLATFORM_ID:iOS>,ios,macos> --msl-version 30100
                 ${out}.spv ${out}.cross.metal
         DEPENDS ${src} ${out}.spv spudgpu_msl
         COMMENT "Slang: ${ARG_SOURCE} to Metal source, both routes")
     list(APPEND outputs ${out}.slang.metal ${out}.cross.metal)
 
+    # The SDK Apple's Metal compiler builds for, and its deployment target flag,
+    # so a .metallib loads wherever the code beside it does: macOS, an iOS
+    # device or the iOS simulator (from CMAKE_OSX_SYSROOT), at
+    # CMAKE_OSX_DEPLOYMENT_TARGET where it is set.
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS" AND CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
+        set(metal_sdk iphonesimulator)
+        set(metal_min -mios-simulator-version-min=)
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        set(metal_sdk iphoneos)
+        set(metal_min -mios-version-min=)
+    else()
+        set(metal_sdk macosx)
+        set(metal_min -mmacosx-version-min=)
+    endif()
+    set(metal_flags "")
+    if(CMAKE_OSX_DEPLOYMENT_TARGET)
+        set(metal_flags ${metal_min}${CMAKE_OSX_DEPLOYMENT_TARGET})
+    endif()
     if(APPLE)
         set(metal_src ${out}.cross.metal)
         list(GET ARG_METAL_ROUTE 0 route)
@@ -101,8 +120,8 @@ function(spud_add_slang_shader name)
         endif()
         add_custom_command(
             OUTPUT ${out}.metallib ${out}.metallib.inc
-            COMMAND xcrun -sdk macosx metal -std=metal3.1 -Werror -c ${metal_src} -o ${out}.air
-            COMMAND xcrun -sdk macosx metallib ${out}.air -o ${out}.metallib
+            COMMAND xcrun -sdk ${metal_sdk} metal -std=metal3.1 ${metal_flags} -Werror -c ${metal_src} -o ${out}.air
+            COMMAND xcrun -sdk ${metal_sdk} metallib ${out}.air -o ${out}.metallib
             COMMAND ${CMAKE_COMMAND} -DIN=${out}.metallib -DOUT=${out}.metallib.inc -DNAME=${name}_metallib -P ${embed}
             DEPENDS ${metal_src} ${embed}
             COMMENT "Metal: ${name} to a metallib")

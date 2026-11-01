@@ -118,6 +118,11 @@ int main(int argc, char **argv) {
 	spvc_compiler_create_compiler_options(compiler, &options);
 	spvc_compiler_options_set_uint(options, SPVC_COMPILER_OPTION_MSL_VERSION, (unsigned)version);
 	spvc_compiler_options_set_uint(options, SPVC_COMPILER_OPTION_MSL_PLATFORM, msl_platform);
+	// SPIRV-Cross refuses a vertex shader's base vertex or instance on iOS
+	// unless told the GPU has them (A9 and later). Every GPU that runs Metal
+	// 3 is an A13 or later, so from that version it is a fact, not a choice.
+	if (msl_platform == SPVC_MSL_PLATFORM_IOS && version >= 30000)
+		spvc_compiler_options_set_bool(options, SPVC_COMPILER_OPTION_MSL_IOS_SUPPORT_BASE_VERTEX_INSTANCE, SPVC_TRUE);
 	// Every set is an argument buffer (tier 1), each member at its binding's
 	// own [[id]], every resource the shader declares kept in it whether the
 	// entry point reads it or not: the backend encodes a set from its

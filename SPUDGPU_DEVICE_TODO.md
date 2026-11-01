@@ -1336,7 +1336,8 @@ this reason: a change of their signatures, not made.
      the heap class and descriptor type refused with
      `SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED` without the feature (the
      build-input usage kept as a binding fact); `placement_alignment` 256 on
-     Vulkan, 64 KiB on D3D12 and on Metal until the Mac reads it; a SCRATCH
+     Vulkan, 64 KiB on D3D12, and on Metal what Metal gives (1024 on the M5
+     Pro, read 2026-11-01); a SCRATCH
      to SCRATCH barrier orders builds sharing a scratch range; a build,
      copy or size write refused in a list of the wrong queue type or inside
      a rendering pass, each with its own code.
@@ -1364,8 +1365,37 @@ this reason: a change of their signatures, not made.
      and its clone, and the copy-list and inside-a-pass refusals; the Iris
      Xe's refusals (no ray queries on either API), `spud_noalloc_tests`'
      refit-and-trace frame (none of ours), the misuse harness ten times.
-     **For the Mac** (Metal is written to Apple's documentation, not yet
-     compiled): build and run all of the above on the M5 Pro; read
+     **On the Mac, 2026-11-01** (Apple M5 Pro, macOS 27.0.1, Xcode 27.2;
+     `../prompts/ray_tracing_mac.md`): Metal's file compiled at once, with no
+     warning, and `spudgpu_objects_test` passed whole under Metal API and
+     shader validation with warnings fatal (Debug and Release; `-asan` and
+     `-tsan` passing too, without the layer): every build, refit (in place too), clone, compaction (640 to
+     528 bytes), the CPU's and the GPU writer's 72-byte instances (the same
+     144 bytes), cull masks, three builds sharing one scratch range, a placed
+     bottom level, the copy-list refusals, `rq_trace` and `rq_shadow` (S12's
+     step 0, by `spudgpu_msl`'s route: 9 traces of 128 rays and 512 shadow
+     pixels, 0 wrong; Slang's route can't be bound, its source having no
+     argument buffer and two resources at buffer 0). Changed in Metal's
+     file: `placement_alignment` read from
+     `heapAccelerationStructureSizeAndAlignWithSize:` (1024 for every size,
+     1 byte to 100 MB, the size never rounded; S24); the 72-byte layout
+     asserted field by field against
+     `MTLIndirectAccelerationStructureInstanceDescriptor` (transform 0,
+     options 48, mask 52, table offset 56, user id 60, resource id 64,
+     aligned 8); a top level's bottom levels kept as Metal objects and made
+     resident with one `useResources:count:usage:` per encoder (R5); the
+     build's descriptors kept on the command list, so a build makes none.
+     `spud_noalloc_tests`' refit-and-trace frame: none of ours; 41 a frame
+     of Metal's own (17 the driver's in the build, 6 in its size query, 9
+     the encoder's, 9 the command buffer's, submit's and the compute
+     encoder's and set's). Not probed beyond what the tests build: the
+     alignment Metal asks of the vertex, index and box offsets (its
+     documentation gives none; validation is silent over the tests' 4-, 8-
+     and index-sized offsets). Left from the original list, settled by the
+     runs: the `supportsRaytracingFromRender` gate (set on the M5 Pro, and
+     `rq_shadow` traces from a fragment shader), the label made without a
+     pool, and the set's descriptors written element by element. The
+     original list, kept for the record: build and run all of the above on the M5 Pro; read
      `heapAccelerationStructureSizeAndAlignWithSize:` and set Metal's
      `placement_alignment` from it (card S24); confirm the alignment Metal
      asks of `vertexBufferOffset`, `indexBufferOffset` and
@@ -1396,7 +1426,20 @@ this reason: a change of their signatures, not made.
        229 us for 100,000;
      - `rq_trace`, one ray per pixel at 1920 x 1080 over the Dragon:
        824 / 909 us (2,518 / 2,282 Mrays/s).
-     The Mac repeats them on the M5 Pro.
+     **The M5 Pro** (Release, Metal, no validation layer; an empty list
+     16.6 us): a cube's bottom level built 355.5 us, 1,536 bytes, 912
+     compacted (59%), scratch 256; the Dragon's built 3.93 ms (51.4 Mtri/s),
+     19,236,096 bytes, 10,831,312 compacted (56%), scratch 7,504,000, the
+     compacting copy 1.87 ms; a top level of 1 instance built 199.0 us,
+     refitted 155.7 us, 832 bytes; of 1,000 built 391.4 us, refitted 169.0
+     us, 219,968 bytes; of 100,000 built 3.18 ms, refitted 335.5 us,
+     21,943,488 bytes; instances written on the CPU in 2.2 us for 1,000 and
+     238.5 us for 100,000 (2.4 ns each), on the GPU (`rq_instances_col72`)
+     in 110.7 us and 180.2 us; `rq_trace` over the Dragon at 1920 x 1080
+     1,040 us (1,994 Mrays/s). Metal's structures are larger than the other
+     two APIs' (the Dragon's 36% before compaction, 83% after), and its
+     small builds are slow to start (the GPU waking), as its 100,000-instance
+     refit is quick.
   - **Ray tracing pipelines are not part of it** (asked 2026-10-28). Vulkan's
     and D3D12's map nearly one to one (the same stages - ray generation,
     miss, closest-hit, any-hit, intersection, callable - shader tables of

@@ -261,7 +261,7 @@ GameInput and evdev builds were not run.
     while building (cards S23-S26, 2026-10-31): the heap class and the
     descriptor type are refused with the extension's result on a device
     without the feature; `placement_alignment` is 256 on Vulkan and 64 KiB
-    on D3D12 and Metal (Metal's until a Mac reads its real value), and a
+    on D3D12, and on Metal Metal's own (1024 on an Apple M5 Pro), and a
     placed structure the API would make larger than that rounding is
     refused; a SCRATCH to SCRATCH barrier orders two builds sharing a
     scratch range (D3D12 a UAV barrier between any two states that are both
@@ -972,6 +972,39 @@ to no allocation of ours on the A2000 (both backends) and WARP;
 destroyed handle, no failure). Metal's file (`spudgpumetalraytracing.m`)
 and the Metal halves of the context, heap and descriptor changes are
 written, not compiled. Linux not built. ThreadSanitizer has not seen it.
+
+On 2026-11-01 the Mac (Apple M5 Pro, macOS 27.0.1, Xcode 27.2, Slang
+2026.18.3-2) compiled and ran both: the native-format path (a `.metallib`,
+the entry point by name) and `SPUDGPU_EXT_RAY_QUERY` compiled at once, with
+no warning. `macos-metal` Debug and Release under Metal API and shader
+validation with warnings fatal, and `-asan` and `-tsan`: 15 ctests each,
+passing; `spud_misuse_tests` ten times (258 calls with zeroes, 217 with a
+destroyed handle, no failure); `spudgpu_objects_test` whole, ray queries
+included (`SPUDGPU_DEVICE_TODO.md`, "Hardware ray tracing", has what);
+both geometry and tessellation EXTs 0 and no adapter with either bit.
+`iossimulator-metal` built and its tests run in an iPhone 17 Pro simulator
+(iOS 26.5), all passing; SpudGPU's skip there, since the simulator's GPU
+has no Metal 3 family. Changed:
+- Metal's ray tracing file: `placement_alignment` from Metal's answer (1024;
+  S24), the 72-byte instance asserted field by field, residency one
+  `useResources:count:usage:` per encoder from a list of Metal objects kept
+  on the top level, the build descriptors kept on the command list.
+- The render encoder keeps its viewports and scissors and sets them only
+  when they differ (validation refused a second equal one).
+- Push constants go only to the stages whose function reads them, from the
+  pipeline's reflection (validation refused one no argument takes).
+- `tools/spudgpu_msl` builds for the build machine in a cross-compiling
+  build too (ExternalProject, `tools/spudgpu_msl/CMakeLists.txt`), every
+  shader step runs `${SPUDGPU_MSL_EXECUTABLE}` and names the build's own
+  SDK and deployment target, and the tool tells SPIRV-Cross that iOS GPUs
+  have base vertex and instance.
+- SpudRandom on Apple is `SecRandomCopyBytes` (the iOS SDKs declare no
+  `getentropy`); `spud_noalloc_tests` links as C++ for its demangler.
+`spud_noalloc_tests`: none of ours, the refit-and-trace frame included (41
+a frame of Metal's own there). Not changed and recorded as a known gap
+since 2026-10-17, now a card (S27): Slang keeps only the bindings an entry
+point reads, and the argument buffer the backend writes from a set's
+layout doesn't match a module's that leaves bindings out.
 
 - **Vulkan** — reference backend, plain C23, complete. Build against this first;
   D3D12 and Metal follow its shape.

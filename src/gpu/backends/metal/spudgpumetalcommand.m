@@ -253,7 +253,25 @@ SPUDRESULT spudgpu_create_command_list(
 	cmd_list_metal->_parent_allocator = (spudgpu_command_allocator_metal *)allocator;
 
 	cmd_list_metal->_pass_desc_mtl = [[MTLRenderPassDescriptor alloc] init];
-	if (!cmd_list_metal->_pass_desc_mtl) {
+	bool made                      = cmd_list_metal->_pass_desc_mtl != nil;
+	if (made && (cmd_list_metal->_parent_allocator->_parent_device->_features & SPUDGPU_FEATURE_RAY_QUERY)) {
+		cmd_list_metal->_rq_top_desc_mtl    = [[MTLInstanceAccelerationStructureDescriptor alloc] init];
+		cmd_list_metal->_rq_bottom_desc_mtl = [[MTLPrimitiveAccelerationStructureDescriptor alloc] init];
+		cmd_list_metal->_rq_geometries_mtl  = [[NSMutableArray alloc] init];
+		cmd_list_metal->_rq_triangles_mtl   = [[NSMutableArray alloc] init];
+		cmd_list_metal->_rq_boxes_mtl       = [[NSMutableArray alloc] init];
+		made = cmd_list_metal->_rq_top_desc_mtl && cmd_list_metal->_rq_bottom_desc_mtl && cmd_list_metal->_rq_geometries_mtl &&
+		       cmd_list_metal->_rq_triangles_mtl && cmd_list_metal->_rq_boxes_mtl;
+		if (made)
+			cmd_list_metal->_rq_bottom_desc_mtl.geometryDescriptors = cmd_list_metal->_rq_geometries_mtl;
+	}
+	if (!made) {
+		[cmd_list_metal->_pass_desc_mtl release];
+		[cmd_list_metal->_rq_top_desc_mtl release];
+		[cmd_list_metal->_rq_bottom_desc_mtl release];
+		[cmd_list_metal->_rq_geometries_mtl release];
+		[cmd_list_metal->_rq_triangles_mtl release];
+		[cmd_list_metal->_rq_boxes_mtl release];
 		const SPUD_ALLOCATOR list_allocator = cmd_list_metal->head.allocator;
 		SPUD_KILL(cmd_list_metal);
 		SPUD_DELETE(&list_allocator, spudgpu_command_list_metal, cmd_list_metal);
@@ -280,6 +298,11 @@ void spudgpu_destroy_command_list(spudgpu_command_list cmd) {
 			[cmd_list_metal->_command_buffer_mtl release];
 		}
 		[cmd_list_metal->_pass_desc_mtl release];
+		[cmd_list_metal->_rq_top_desc_mtl release];
+		[cmd_list_metal->_rq_bottom_desc_mtl release];
+		[cmd_list_metal->_rq_geometries_mtl release];
+		[cmd_list_metal->_rq_triangles_mtl release];
+		[cmd_list_metal->_rq_boxes_mtl release];
 #if _DEBUG
 		// A list destroyed open is not open any more.
 		if (cmd_list_metal->_parent_allocator->_open_list == cmd)
@@ -450,7 +473,13 @@ void spudgpu_cmd_set_viewports(
 		    .zfar    = v->maxDepth,
 		};
 	}
-	[cmd_list_metal->_active_render_encoder setViewports:mtl_viewports count:cmd_list_metal->_viewport_count];
+	const uint32_t count = cmd_list_metal->_viewport_count;
+	if (count == cmd_list_metal->_encoder_viewport_count &&
+	    memcmp(mtl_viewports, cmd_list_metal->_encoder_viewports, sizeof(MTLViewport) * count) == 0)
+		return;
+	[cmd_list_metal->_active_render_encoder setViewports:mtl_viewports count:count];
+	memcpy(cmd_list_metal->_encoder_viewports, mtl_viewports, sizeof(MTLViewport) * count);
+	cmd_list_metal->_encoder_viewport_count = count;
 }
 
 void spudgpu_cmd_set_scissor_rects(
@@ -489,7 +518,13 @@ void spudgpu_cmd_set_scissor_rects(
 		    .height = (NSUInteger)r->height,
 		};
 	}
-	[cmd_list_metal->_active_render_encoder setScissorRects:mtl_rects count:cmd_list_metal->_scissor_rect_count];
+	const uint32_t count = cmd_list_metal->_scissor_rect_count;
+	if (count == cmd_list_metal->_encoder_scissor_rect_count &&
+	    memcmp(mtl_rects, cmd_list_metal->_encoder_scissor_rects, sizeof(MTLScissorRect) * count) == 0)
+		return;
+	[cmd_list_metal->_active_render_encoder setScissorRects:mtl_rects count:count];
+	memcpy(cmd_list_metal->_encoder_scissor_rects, mtl_rects, sizeof(MTLScissorRect) * count);
+	cmd_list_metal->_encoder_scissor_rect_count = count;
 }
 
 void spudgpu_cmd_set_vertex_buffers(
@@ -590,10 +625,19 @@ static bool spudgpumetal___internal_resolve_index_type(uint32_t stride, MTLIndex
 // block pushed before the encoder opened reaches its first draw, as it
 // would on Vulkan. Called by every draw after its encoder check.
 static void spudgpumetal___internal_send_push_constants(spudgpu_command_list_metal *cmd_list_metal) {
-	const uint32_t stages = cmd_list_metal->_push_constants_pending_stages;
+	uint32_t stages = cmd_list_metal->_push_constants_pending_stages;
 	if (!stages)
 		return;
 	cmd_list_metal->_push_constants_pending_stages = 0;
+	// Only to the stages whose function in the bound pipeline reads them
+	// (its reflection, spudgpu_shader_pipeline_metal::_non_fragment_set_mask).
+	const spudgpu_shader_pipeline_metal *pipeline = (const spudgpu_shader_pipeline_metal *)cmd_list_metal->_bound_pipeline;
+	if (pipeline) {
+		if (!(pipeline->_non_fragment_set_mask & SPUDGPU_METAL_PUSH_CONSTANTS_MASK_BIT))
+			stages &= ~(uint32_t)(SPUDGPU_SHADER_STAGE_VERTEX | SPUDGPU_SHADER_STAGE_MESH);
+		if (!(pipeline->_fragment_set_mask & SPUDGPU_METAL_PUSH_CONSTANTS_MASK_BIT))
+			stages &= ~(uint32_t)SPUDGPU_SHADER_STAGE_FRAGMENT;
+	}
 	if (stages & SPUDGPU_SHADER_STAGE_VERTEX) {
 		[cmd_list_metal->_active_render_encoder setVertexBytes:cmd_list_metal->_push_constants_scratch
 		                                                 length:cmd_list_metal->_push_constants_extent

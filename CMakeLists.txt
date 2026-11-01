@@ -528,9 +528,34 @@ if(NOT TARGET spudlib)
 
     # The Metal fallback route's cross-compiler (card S20): SPIR-V to Metal
     # source in the Metal backend's binding layout, a tool a caller's shader
-    # build runs, never linked into spudlib. Built for the build machine, so
-    # not in a cross-compiling build (an iOS build runs the macOS one).
-    if(NOT CMAKE_CROSSCOMPILING AND NOT TARGET spudgpu_msl)
+    # build runs, never linked into spudlib. It runs on the build machine:
+    # a native build makes it as a target here; a cross-compiling build (an
+    # iOS build) makes it for the build machine through ExternalProject
+    # (tools/spudgpu_msl/CMakeLists.txt), as a target of the same name. Either
+    # way a shader step runs ${SPUDGPU_MSL_EXECUTABLE} and depends on the
+    # spudgpu_msl target.
+    if(CMAKE_CROSSCOMPILING AND CMAKE_HOST_APPLE AND NOT TARGET spudgpu_msl)
+        include(ExternalProject)
+        set(_spud_msl_spirv_cross "")
+        foreach(_cand SPIRV-Cross SPIRV-Cross-src)
+            if(NOT _spud_msl_spirv_cross AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../.deps/${_cand}/CMakeLists.txt")
+                set(_spud_msl_spirv_cross "${CMAKE_CURRENT_SOURCE_DIR}/../.deps/${_cand}")
+            endif()
+        endforeach()
+        set(_spud_msl_dir ${CMAKE_CURRENT_BINARY_DIR}/spudgpu_msl_host)
+        # Nothing of this build's toolchain is passed on: the tool is built
+        # with the build machine's compiler for the build machine.
+        ExternalProject_Add(spudgpu_msl
+            SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/tools/spudgpu_msl
+            BINARY_DIR ${_spud_msl_dir}
+            CMAKE_ARGS -DSPUDGPU_MSL_SPIRV_CROSS_DIR=${_spud_msl_spirv_cross} -DCMAKE_BUILD_TYPE=Release
+            INSTALL_COMMAND ""
+            # Its own build is asked every time, so an edit to the tool is
+            # built; nothing is remade when nothing changed.
+            BUILD_ALWAYS ON
+            BUILD_BYPRODUCTS ${_spud_msl_dir}/bin/spudgpu_msl)
+        set(SPUDGPU_MSL_EXECUTABLE ${_spud_msl_dir}/bin/spudgpu_msl CACHE INTERNAL "spudgpu_msl, built for the build machine")
+    elseif(NOT CMAKE_CROSSCOMPILING AND NOT TARGET spudgpu_msl)
         include(FetchContent)
         set(SPIRV_CROSS_CLI OFF CACHE BOOL "" FORCE)
         set(SPIRV_CROSS_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
@@ -550,6 +575,7 @@ if(NOT TARGET spudlib)
         target_link_libraries(spudgpu_msl PRIVATE spirv-cross-c)
         # SPIRV-Cross is C++: link as C++ for its runtime.
         set_target_properties(spudgpu_msl PROPERTIES LINKER_LANGUAGE CXX)
+        set(SPUDGPU_MSL_EXECUTABLE $<TARGET_FILE:spudgpu_msl> CACHE INTERNAL "spudgpu_msl, built for the build machine")
     endif()
 
     # Hardware tests: each needs a real device (and spudaudio_sine a
@@ -589,6 +615,10 @@ if(NOT TARGET spudlib)
         # a ctest. --adapter N runs SpudGPU's part on another adapter.
         add_executable(spud_noalloc_tests tests/spud_noalloc_tests.c)
         target_link_libraries(spud_noalloc_tests PRIVATE spudlib)
+        # tests/alloctrace.h names a frame with the C++ runtime's demangler
+        # (__cxa_demangle, to pass over operator new and std::); spudlib has
+        # no C++ on Apple, so the test is linked as C++ to bring the runtime in.
+        set_target_properties(spud_noalloc_tests PROPERTIES LINKER_LANGUAGE CXX)
         if(APPLE AND GRAPHICS_BACKEND STREQUAL "Metal")
             target_sources(spud_noalloc_tests PRIVATE tests/spudgpu_test_metal_layer.m)
             target_link_libraries(spud_noalloc_tests PRIVATE "-framework QuartzCore" "-framework Foundation")

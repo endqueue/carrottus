@@ -12,7 +12,7 @@
  * |---|---|
  * | Windows | `BCryptGenRandom` with `BCRYPT_USE_SYSTEM_PREFERRED_RNG` |
  * | Linux | `getrandom(2)`, blocking only until the kernel's pool is first ready |
- * | Apple | `getentropy(2)`, 256 bytes a call |
+ * | Apple (macOS, iOS, iPadOS) | `SecRandomCopyBytes` with `kSecRandomDefault` |
  *
  * @par Threads
  * No call takes an object, so under the library rule (spudcore.h, "Threads")

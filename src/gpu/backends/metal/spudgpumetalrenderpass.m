@@ -452,6 +452,8 @@ void spudgpu_cmd_begin_rendering(
 	cmd_metal->_encoder_rasterizer_set          = false;
 	cmd_metal->_encoder_depth_bounds[0]         = 0.0f;
 	cmd_metal->_encoder_depth_bounds[1]         = 1.0f;
+	cmd_metal->_encoder_viewport_count          = 0;
+	cmd_metal->_encoder_scissor_rect_count      = 0;
 	memset(cmd_metal->_encoder_vertex_buffers, 0, sizeof(cmd_metal->_encoder_vertex_buffers));
 	memset(cmd_metal->_encoder_vertex_sets, 0, sizeof(cmd_metal->_encoder_vertex_sets));
 	memset(cmd_metal->_encoder_mesh_sets, 0, sizeof(cmd_metal->_encoder_mesh_sets));

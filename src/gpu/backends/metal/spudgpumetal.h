@@ -47,6 +47,11 @@
 #define SPUDGPU_METAL_DESCRIPTOR_SET_BUFFER_INDEX_BASE \
 	(SPUDGPU_METAL_PUSH_CONSTANTS_BUFFER_INDEX - SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS)
 
+// The bit of a pipeline's per-stage masks (spudgpu_shader_pipeline_metal::
+// _non_fragment_set_mask, _fragment_set_mask) that says the stage's
+// function reads the push constants, above the sets' bits.
+#define SPUDGPU_METAL_PUSH_CONSTANTS_MASK_BIT (1u << SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS)
+
 // Where the sampler half of a SPUDGPU_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
 // sits in its set's argument buffer: a combined binding B of N elements has
 // its textures at [[id(B)]] to [[id(B + N - 1)]], as every binding has its
@@ -261,6 +266,21 @@ typedef struct spudgpu_command_list_t {
 	// descriptor of its own: every field a pass may set is set or cleared
 	// at each begin, and the textures cleared once the encoder is made.
 	MTLRenderPassDescriptor *_pass_desc_mtl;
+	// The descriptors spudgpu_cmd_build_acceleration_structures fills for
+	// each build's sizes and again for its recording (Metal reads one when
+	// the build is encoded), made with the list on a device with
+	// SPUDGPU_FEATURE_RAY_QUERY and nil otherwise, so a build makes no
+	// descriptor: one for a top level, and one for a bottom level, whose
+	// geometry array (_rq_geometries_mtl, retained by it) is made of the
+	// pools' descriptors in a build's order. A pool of each geometry kind
+	// only grows, when a build has more of that kind than any before; the
+	// checks of a build call grow them for all of its builds, so its
+	// recording makes nothing.
+	MTLInstanceAccelerationStructureDescriptor *_rq_top_desc_mtl;
+	MTLPrimitiveAccelerationStructureDescriptor *_rq_bottom_desc_mtl;
+	NSMutableArray<MTLAccelerationStructureGeometryDescriptor *> *_rq_geometries_mtl;
+	NSMutableArray<MTLAccelerationStructureTriangleGeometryDescriptor *> *_rq_triangles_mtl;
+	NSMutableArray<MTLAccelerationStructureBoundingBoxGeometryDescriptor *> *_rq_boxes_mtl;
 	// What spudgpu_cmd_bind_pipeline last set on _active_render_encoder,
 	// cleared when a render encoder is made. Not retained. Metal's
 	// validation refuses setting a state the encoder already has, and two
@@ -300,6 +320,14 @@ typedef struct spudgpu_command_list_t {
 	uint32_t _viewport_count; // High-water mark of slots ever set, not a "count set this call".
 	SPUDGPU_SCISSOR_RECT _scissor_rects[SPUDGPU_METAL_MAX_VIEWPORTS];
 	uint32_t _scissor_rect_count;
+	// The viewports and scissor rectangles _active_render_encoder has, the
+	// first _encoder_viewport_count / _encoder_scissor_rect_count of each, 0
+	// for none: Metal's validation refuses setting the same ones again, so
+	// they are set only when they differ. Cleared with the encoder.
+	MTLViewport _encoder_viewports[SPUDGPU_METAL_MAX_VIEWPORTS];
+	uint32_t _encoder_viewport_count;
+	MTLScissorRect _encoder_scissor_rects[SPUDGPU_METAL_MAX_VIEWPORTS];
+	uint32_t _encoder_scissor_rect_count;
 
 	// Borrowed (not owned) - the currently bound pipeline/index buffer view,
 	// needed because Metal's draw calls take primitive type and index
@@ -475,7 +503,10 @@ typedef struct spudgpu_shader_pipeline_t {
 	// layout shared by pipelines that read it from different stages), and
 	// Metal's validation fails a binding no argument takes. All bits set
 	// when the reflection is missing, which leaves the layout's stages to
-	// decide alone.
+	// decide alone. SPUDGPU_METAL_PUSH_CONSTANTS_MASK_BIT in each says the
+	// stage's function reads the push constants, which a draw sends only to
+	// the stages that do: Metal's validation fails a buffer no function
+	// argument takes, and a module declares only what it reads.
 	uint32_t _non_fragment_set_mask;
 	uint32_t _fragment_set_mask;
 } spudgpu_shader_pipeline_metal;
@@ -598,6 +629,12 @@ typedef struct spudgpu_acceleration_structure_t {
 	spud_object_head head;
 	spudgpu___acceleration_structure_state _state;
 	id<MTLAccelerationStructure> _structure_mtl;
+	// A top level's bottom levels as Metal objects, beside _state's list and
+	// in its order: _state.max_bottom_levels entries made with the structure,
+	// _state.bottom_level_count of them filled where a build or copy into it
+	// is recorded, so making them resident is one useResources:count: call
+	// on any encoder. NULL for a bottom level or a capacity of 0.
+	id<MTLResource> *_bottom_levels_mtl;
 	// gpuResourceID: what an instance names a bottom level by.
 	uint64_t _resource_id;
 	spudgpu_device_metal *_parent_device;

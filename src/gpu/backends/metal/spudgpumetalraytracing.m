@@ -7,7 +7,9 @@
 // contract as the Vulkan and D3D12 files; not compiled. The Mac's pass
 // compiles it, runs spudgpu_objects_test and spud_noalloc_tests under Metal
 // API and shader validation, and checks the 72-byte instance layout against
-// MTLIndirectAccelerationStructureInstanceDescriptor.
+// MTLIndirectAccelerationStructureInstanceDescriptor. Compiled and run on
+// the Mac on 2026-11-01 (Apple M5 Pro, macOS 27), under Metal API and
+// shader validation with warnings fatal.
 //
 // A structure is an MTLAccelerationStructure from the device
 // (newAccelerationStructureWithSize:) or a heap
@@ -17,9 +19,10 @@
 // MTLAccelerationStructureInstanceDescriptorTypeIndirect, naming bottom
 // levels by gpuResourceID, which tells Metal nothing of residency: the
 // bottom levels a top level's build named (spudgpu___acceleration_structure_state)
-// are made resident with useResource: on the encoder that builds or copies
-// it, and by spudgpu_cmd_bind_descriptor_sets(_compute) on every encoder a
-// set holding it is bound to (spudgpumetal___use_bottom_levels). Barriers
+// are kept as Metal objects on the top level (_bottom_levels_mtl) and made
+// resident with one useResources:count:usage: on the encoder that builds or
+// copies it, and on every encoder a set holding it is bound to by
+// spudgpu_cmd_bind_descriptor_sets(_compute) (spudgpumetal___use_bottom_levels). Barriers
 // record nothing: Metal tracks the hazards of a structure made from the
 // device, and of one in a heap, which this backend makes tracked.
 
@@ -29,22 +32,33 @@
 #include "spudcore.h"
 #include "spudgpumetal.h"
 #include <Metal/Metal.h>
+#include <stddef.h>
+#include <string.h>
 #include "../../../spudstructbase.h"
 
-// The layout spudgpu___internal_instance_layout() states for Metal.
+// The layout spudgpu___internal_instance_layout() states for Metal, and the
+// offsets spudgpu___internal_write_instances() writes each field at.
 _Static_assert(sizeof(MTLIndirectAccelerationStructureInstanceDescriptor) == 72,
                "SPUDGPU_ACCELERATION_STRUCTURE_INSTANCE_LAYOUT_COLUMN_MAJOR_72 is Metal's indirect instance descriptor");
+_Static_assert(_Alignof(MTLIndirectAccelerationStructureInstanceDescriptor) == 8, "the layout's alignment");
+_Static_assert(offsetof(MTLIndirectAccelerationStructureInstanceDescriptor, transformationMatrix) == 0, "four columns of three floats");
+_Static_assert(sizeof(MTLPackedFloat4x3) == 48, "four columns of three floats");
+_Static_assert(offsetof(MTLIndirectAccelerationStructureInstanceDescriptor, options) == 48, "the flags");
+_Static_assert(offsetof(MTLIndirectAccelerationStructureInstanceDescriptor, mask) == 52, "the mask");
+_Static_assert(offsetof(MTLIndirectAccelerationStructureInstanceDescriptor, intersectionFunctionTableOffset) == 56, "the table offset");
+_Static_assert(offsetof(MTLIndirectAccelerationStructureInstanceDescriptor, userID) == 60, "the user index");
+_Static_assert(offsetof(MTLIndirectAccelerationStructureInstanceDescriptor, accelerationStructureID) == 64, "the bottom level's reference");
+_Static_assert(sizeof(MTLResourceID) == 8, "the bottom level's reference");
 
 void spudgpumetal___use_bottom_levels(id<MTLCommandEncoder> encoder, bool render, MTLRenderStages stages,
                                       const struct spudgpu_acceleration_structure_t *top) {
-	const spudgpu___acceleration_structure_state *state = &top->_state;
-	for (uint32_t i = 0; i < state->bottom_level_count; i++) {
-		const spudgpu_acceleration_structure_metal *bottom = state->bottom_levels[i];
-		if (render)
-			[(id<MTLRenderCommandEncoder>)encoder useResource:bottom->_structure_mtl usage:MTLResourceUsageRead stages:stages];
-		else
-			[(id<MTLComputeCommandEncoder>)encoder useResource:bottom->_structure_mtl usage:MTLResourceUsageRead];
-	}
+	const uint32_t count = top->_state.bottom_level_count;
+	if (count == 0)
+		return;
+	if (render)
+		[(id<MTLRenderCommandEncoder>)encoder useResources:top->_bottom_levels_mtl count:count usage:MTLResourceUsageRead stages:stages];
+	else
+		[(id<MTLComputeCommandEncoder>)encoder useResources:top->_bottom_levels_mtl count:count usage:MTLResourceUsageRead];
 }
 
 static MTLAccelerationStructureUsage spudgpumetal___rq_usage(SPUDGPU_ACCELERATION_STRUCTURE_BUILD_FLAGS flags) {
@@ -58,57 +72,127 @@ static MTLAccelerationStructureUsage spudgpumetal___rq_usage(SPUDGPU_ACCELERATIO
 	return usage;
 }
 
-// Metal's descriptor for [inputs], which have passed their checks:
-// autoreleased, so made inside the caller's pool.
-static MTLAccelerationStructureDescriptor *spudgpumetal___rq_descriptor(const spudgpu_acceleration_structure_inputs *inputs) {
+// Fills a geometry descriptor of [source]'s kind (made by the caller) for
+// [source], which has passed its checks. Every property a build sets is set,
+// so a descriptor filled before for another build keeps nothing of it.
+static void spudgpumetal___rq_fill_geometry(MTLAccelerationStructureGeometryDescriptor *descriptor,
+                                            const spudgpu_acceleration_structure_geometry *source) {
+	descriptor.opaque = (source->flags & SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE) != 0;
+	descriptor.allowDuplicateIntersectionFunctionInvocation =
+	    (source->flags & SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_NO_DUPLICATE_CANDIDATES) == 0;
+	if (source->kind == SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES) {
+		MTLAccelerationStructureTriangleGeometryDescriptor *g = (MTLAccelerationStructureTriangleGeometryDescriptor *)descriptor;
+		g.vertexBuffer       = ((spudgpu_buffer_metal *)source->data)->_buffer_mtl;
+		g.vertexBufferOffset = (NSUInteger)source->data_offset;
+		g.vertexStride       = (NSUInteger)source->data_stride;
+		g.vertexFormat       = MTLAttributeFormatFloat3;
+		if (source->index_format != SPUDGPU_FORMAT_UNKNOWN) {
+			g.indexBuffer       = ((spudgpu_buffer_metal *)source->indices)->_buffer_mtl;
+			g.indexBufferOffset = (NSUInteger)source->index_offset;
+			g.indexType         = source->index_format == SPUDGPU_FORMAT_R16_UINT ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32;
+			g.triangleCount     = source->index_count / 3;
+		} else {
+			g.indexBuffer       = nil;
+			g.indexBufferOffset = 0;
+			g.triangleCount     = source->data_count / 3;
+		}
+	} else {
+		MTLAccelerationStructureBoundingBoxGeometryDescriptor *g = (MTLAccelerationStructureBoundingBoxGeometryDescriptor *)descriptor;
+		g.boundingBoxBuffer       = ((spudgpu_buffer_metal *)source->data)->_buffer_mtl;
+		g.boundingBoxBufferOffset = (NSUInteger)source->data_offset;
+		g.boundingBoxStride       = (NSUInteger)source->data_stride;
+		g.boundingBoxCount        = source->data_count;
+	}
+}
+
+static Class spudgpumetal___rq_geometry_class(SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_KIND kind) {
+	return kind == SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES ? [MTLAccelerationStructureTriangleGeometryDescriptor class]
+	                                                                 : [MTLAccelerationStructureBoundingBoxGeometryDescriptor class];
+}
+
+// Fills an instance descriptor for [inputs], a top level that has passed its
+// checks.
+static void spudgpumetal___rq_fill_top(MTLInstanceAccelerationStructureDescriptor *d, const spudgpu_acceleration_structure_inputs *inputs) {
+	d.usage                          = spudgpumetal___rq_usage(inputs->flags);
+	d.instanceDescriptorType         = MTLAccelerationStructureInstanceDescriptorTypeIndirect;
+	d.instanceDescriptorBuffer       = ((spudgpu_buffer_metal *)inputs->instances)->_buffer_mtl;
+	d.instanceDescriptorBufferOffset = (NSUInteger)inputs->instance_offset;
+	d.instanceDescriptorStride       = sizeof(MTLIndirectAccelerationStructureInstanceDescriptor);
+	d.instanceCount                  = inputs->instance_count;
+}
+
+// A new descriptor for [inputs], which have passed their checks:
+// autoreleased, so made inside the caller's pool. Only for
+// spudgpu_get_acceleration_structure_build_sizes(), which has no structure
+// to keep one on.
+static MTLAccelerationStructureDescriptor *spudgpumetal___rq_new_descriptor(const spudgpu_acceleration_structure_inputs *inputs) {
 	if (inputs->level == SPUDGPU_ACCELERATION_STRUCTURE_LEVEL_TOP) {
 		MTLInstanceAccelerationStructureDescriptor *d = [MTLInstanceAccelerationStructureDescriptor descriptor];
-		d.usage                                       = spudgpumetal___rq_usage(inputs->flags);
-		d.instanceDescriptorType                      = MTLAccelerationStructureInstanceDescriptorTypeIndirect;
-		d.instanceDescriptorBuffer                    = ((spudgpu_buffer_metal *)inputs->instances)->_buffer_mtl;
-		d.instanceDescriptorBufferOffset              = (NSUInteger)inputs->instance_offset;
-		d.instanceDescriptorStride                    = sizeof(MTLIndirectAccelerationStructureInstanceDescriptor);
-		d.instanceCount                               = inputs->instance_count;
+		spudgpumetal___rq_fill_top(d, inputs);
 		return d;
 	}
 	NSMutableArray<MTLAccelerationStructureGeometryDescriptor *> *geometries =
 	    [NSMutableArray arrayWithCapacity:inputs->geometry_count];
 	for (uint32_t i = 0; i < inputs->geometry_count; i++) {
-		const spudgpu_acceleration_structure_geometry *source = &inputs->geometries[i];
-		const bool opaque    = (source->flags & SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE) != 0;
-		const bool duplicate = (source->flags & SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_NO_DUPLICATE_CANDIDATES) == 0;
-		if (source->kind == SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES) {
-			MTLAccelerationStructureTriangleGeometryDescriptor *g = [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
-			g.vertexBuffer       = ((spudgpu_buffer_metal *)source->data)->_buffer_mtl;
-			g.vertexBufferOffset = (NSUInteger)source->data_offset;
-			g.vertexStride       = (NSUInteger)source->data_stride;
-			g.vertexFormat       = MTLAttributeFormatFloat3;
-			if (source->index_format != SPUDGPU_FORMAT_UNKNOWN) {
-				g.indexBuffer       = ((spudgpu_buffer_metal *)source->indices)->_buffer_mtl;
-				g.indexBufferOffset = (NSUInteger)source->index_offset;
-				g.indexType         = source->index_format == SPUDGPU_FORMAT_R16_UINT ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32;
-				g.triangleCount     = source->index_count / 3;
-			} else {
-				g.triangleCount = source->data_count / 3;
-			}
-			g.opaque                                      = opaque;
-			g.allowDuplicateIntersectionFunctionInvocation = duplicate;
-			[geometries addObject:g];
-		} else {
-			MTLAccelerationStructureBoundingBoxGeometryDescriptor *g = [MTLAccelerationStructureBoundingBoxGeometryDescriptor descriptor];
-			g.boundingBoxBuffer                          = ((spudgpu_buffer_metal *)source->data)->_buffer_mtl;
-			g.boundingBoxBufferOffset                    = (NSUInteger)source->data_offset;
-			g.boundingBoxStride                          = (NSUInteger)source->data_stride;
-			g.boundingBoxCount                           = source->data_count;
-			g.opaque                                     = opaque;
-			g.allowDuplicateIntersectionFunctionInvocation = duplicate;
-			[geometries addObject:g];
-		}
+		MTLAccelerationStructureGeometryDescriptor *g = [[spudgpumetal___rq_geometry_class(inputs->geometries[i].kind) alloc] init];
+		spudgpumetal___rq_fill_geometry(g, &inputs->geometries[i]);
+		[geometries addObject:g];
+		[g release];
 	}
 	MTLPrimitiveAccelerationStructureDescriptor *d = [MTLPrimitiveAccelerationStructureDescriptor descriptor];
 	d.usage                                        = spudgpumetal___rq_usage(inputs->flags);
 	d.geometryDescriptors                          = geometries;
 	return d;
+}
+
+// Grows [pool] to [count] descriptors of [kind]. False when one couldn't
+// be made.
+static bool spudgpumetal___rq_grow_pool(NSMutableArray *pool, Class kind, uint32_t count) {
+	while (pool.count < count) {
+		MTLAccelerationStructureGeometryDescriptor *g = [[kind alloc] init];
+		if (!g)
+			return false;
+		[pool addObject:g];
+		[g release];
+	}
+	return true;
+}
+
+// [cmd]'s descriptor for [inputs]'s level (a list of a device with
+// SPUDGPU_FEATURE_RAY_QUERY), filled for [inputs], which have passed their
+// head checks. A geometry descriptor is made only when [inputs] have more of
+// its kind than any build [cmd] has filled before. Nil when one couldn't be
+// made; a build checked by it before is filled again with nothing made.
+static MTLAccelerationStructureDescriptor *spudgpumetal___rq_list_descriptor(spudgpu_command_list_metal *cmd,
+                                                                             const spudgpu_acceleration_structure_inputs *inputs) {
+	if (inputs->level == SPUDGPU_ACCELERATION_STRUCTURE_LEVEL_TOP) {
+		spudgpumetal___rq_fill_top(cmd->_rq_top_desc_mtl, inputs);
+		return cmd->_rq_top_desc_mtl;
+	}
+	uint32_t triangle_count = 0;
+	for (uint32_t i = 0; i < inputs->geometry_count; i++)
+		triangle_count += inputs->geometries[i].kind == SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES;
+	if (!spudgpumetal___rq_grow_pool(cmd->_rq_triangles_mtl, [MTLAccelerationStructureTriangleGeometryDescriptor class], triangle_count) ||
+	    !spudgpumetal___rq_grow_pool(cmd->_rq_boxes_mtl, [MTLAccelerationStructureBoundingBoxGeometryDescriptor class],
+	                                 inputs->geometry_count - triangle_count))
+		return nil;
+	NSMutableArray<MTLAccelerationStructureGeometryDescriptor *> *geometries = cmd->_rq_geometries_mtl;
+	while (geometries.count > inputs->geometry_count)
+		[geometries removeLastObject];
+	uint32_t triangle = 0;
+	uint32_t box      = 0;
+	for (uint32_t i = 0; i < inputs->geometry_count; i++) {
+		MTLAccelerationStructureGeometryDescriptor *g = inputs->geometries[i].kind == SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES
+		                                                    ? cmd->_rq_triangles_mtl[triangle++]
+		                                                    : cmd->_rq_boxes_mtl[box++];
+		spudgpumetal___rq_fill_geometry(g, &inputs->geometries[i]);
+		if (i == geometries.count)
+			[geometries addObject:g];
+		else if (geometries[i] != g)
+			[geometries replaceObjectAtIndex:i withObject:g];
+	}
+	cmd->_rq_bottom_desc_mtl.usage = spudgpumetal___rq_usage(inputs->flags);
+	return cmd->_rq_bottom_desc_mtl;
 }
 
 static void spudgpumetal___rq_sizes(
@@ -135,6 +219,8 @@ static id<MTLAccelerationStructureCommandEncoder> spudgpumetal___rq_encoder(spud
 static void spudgpumetal___rq_release(spudgpu_acceleration_structure_metal *structure) {
 	[structure->_structure_mtl release];
 	const SPUD_ALLOCATOR allocator = structure->head.allocator;
+	if (structure->_bottom_levels_mtl)
+		SPUD_DELETE_ARRAY(&allocator, id<MTLResource>, structure->_bottom_levels_mtl, structure->_state.max_bottom_levels);
 	spudgpu___internal_acceleration_structure_state_free(&structure->_state, &allocator);
 	spud_string_free(&allocator, structure->head.debug_name);
 	SPUD_DELETE(&allocator, spudgpu_acceleration_structure_metal, structure);
@@ -160,6 +246,13 @@ static SPUDRESULT spudgpumetal___rq_create(
 	if (!spudgpu___internal_acceleration_structure_state_init(&structure->_state, &structure->head.allocator, desc)) {
 		spudgpumetal___rq_release(structure);
 		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+	if (desc->max_bottom_levels > 0) {
+		structure->_bottom_levels_mtl = SPUD_NEW_ARRAY(&structure->head.allocator, id<MTLResource>, desc->max_bottom_levels);
+		if (!structure->_bottom_levels_mtl) {
+			spudgpumetal___rq_release(structure);
+			return SPUDRESULT_OUT_OF_MEMORY;
+		}
 	}
 	if (heap) {
 		// Metal's own alignment and size for one of this size, where it
@@ -232,7 +325,7 @@ SPUDRESULT spudgpu_get_acceleration_structure_build_sizes(
 		return inputs_sr;
 	@autoreleasepool {
 		spudgpu_acceleration_structure_sizes sizes = *out_sizes;
-		spudgpumetal___rq_sizes(device_metal, inputs, spudgpumetal___rq_descriptor(inputs), &sizes);
+		spudgpumetal___rq_sizes(device_metal, inputs, spudgpumetal___rq_new_descriptor(inputs), &sizes);
 		*out_sizes = sizes;
 	}
 	return SPUD_SUCCESS;
@@ -391,9 +484,12 @@ SPUDRESULT spudgpu_cmd_build_acceleration_structures(
 			const SPUDRESULT head_sr                         = spudgpu___internal_check_build_head(facts, build);
 			if (head_sr != SPUD_SUCCESS)
 				return head_sr;
+			MTLAccelerationStructureDescriptor *descriptor = spudgpumetal___rq_list_descriptor(cmd_metal, build->inputs);
+			if (!descriptor)
+				return SPUDRESULT_OUT_OF_MEMORY;
 			spudgpu_acceleration_structure_sizes sizes;
 			memset(&sizes, 0, sizeof(sizes));
-			spudgpumetal___rq_sizes(device, build->inputs, spudgpumetal___rq_descriptor(build->inputs), &sizes);
+			spudgpumetal___rq_sizes(device, build->inputs, descriptor, &sizes);
 			const SPUDRESULT tail_sr = spudgpu___internal_check_build_tail(facts, build, &sizes);
 			if (tail_sr != SPUD_SUCCESS)
 				return tail_sr;
@@ -406,13 +502,19 @@ SPUDRESULT spudgpu_cmd_build_acceleration_structures(
 		for (uint32_t b = 0; b < count; b++) {
 			const spudgpu_acceleration_structure_build *build = &builds[b];
 			const spudgpu_acceleration_structure_inputs *inputs = build->inputs;
-			// A top level's bottom levels, resident while it is built.
-			if (inputs->level == SPUDGPU_ACCELERATION_STRUCTURE_LEVEL_TOP)
+			spudgpu_acceleration_structure_metal *destination_metal = (spudgpu_acceleration_structure_metal *)build->destination;
+			// A top level's bottom levels, kept as the build records them
+			// (checked against max_bottom_levels above) and resident while it
+			// is built.
+			if (inputs->level == SPUDGPU_ACCELERATION_STRUCTURE_LEVEL_TOP && inputs->bottom_level_count > 0) {
 				for (uint32_t i = 0; i < inputs->bottom_level_count; i++)
-					[encoder useResource:((spudgpu_acceleration_structure_metal *)inputs->bottom_levels[i])->_structure_mtl
-					               usage:MTLResourceUsageRead];
-			MTLAccelerationStructureDescriptor *descriptor        = spudgpumetal___rq_descriptor(inputs);
-			id<MTLAccelerationStructure> destination              = ((spudgpu_acceleration_structure_metal *)build->destination)->_structure_mtl;
+					destination_metal->_bottom_levels_mtl[i] = ((spudgpu_acceleration_structure_metal *)inputs->bottom_levels[i])->_structure_mtl;
+				[encoder useResources:destination_metal->_bottom_levels_mtl count:inputs->bottom_level_count usage:MTLResourceUsageRead];
+			}
+			// Filled again, since a build checked after this one filled it
+			// last: the checks made every descriptor it takes.
+			MTLAccelerationStructureDescriptor *descriptor        = spudgpumetal___rq_list_descriptor(cmd_metal, inputs);
+			id<MTLAccelerationStructure> destination              = destination_metal->_structure_mtl;
 			id<MTLBuffer> scratch                                 = ((spudgpu_buffer_metal *)build->scratch)->_buffer_mtl;
 			if (build->mode == SPUDGPU_ACCELERATION_STRUCTURE_BUILD_MODE_UPDATE) {
 				// In place when the source is the destination: Metal takes nil
@@ -457,11 +559,15 @@ SPUDRESULT spudgpu_cmd_copy_acceleration_structure(
 		return sr;
 	@autoreleasepool {
 		const spudgpu_acceleration_structure_metal *from = (const spudgpu_acceleration_structure_metal *)source;
-		const spudgpu_acceleration_structure_metal *to   = (const spudgpu_acceleration_structure_metal *)destination;
+		spudgpu_acceleration_structure_metal *to         = (spudgpu_acceleration_structure_metal *)destination;
 		id<MTLAccelerationStructureCommandEncoder> encoder = spudgpumetal___rq_encoder(cmd_metal);
-		for (uint32_t i = 0; i < from->_state.bottom_level_count; i++)
-			[encoder useResource:((spudgpu_acceleration_structure_metal *)from->_state.bottom_levels[i])->_structure_mtl
-			               usage:MTLResourceUsageRead];
+		// The copy names what its source's last build named (checked against
+		// the destination's max_bottom_levels above), resident while copied.
+		const uint32_t bottom_level_count = from->_state.bottom_level_count;
+		if (bottom_level_count > 0) {
+			memcpy(to->_bottom_levels_mtl, from->_bottom_levels_mtl, sizeof(id<MTLResource>) * bottom_level_count);
+			[encoder useResources:from->_bottom_levels_mtl count:bottom_level_count usage:MTLResourceUsageRead];
+		}
 		if (mode == SPUDGPU_ACCELERATION_STRUCTURE_COPY_MODE_COMPACT)
 			[encoder copyAndCompactAccelerationStructure:from->_structure_mtl toAccelerationStructure:to->_structure_mtl];
 		else

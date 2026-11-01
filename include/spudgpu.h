@@ -802,9 +802,8 @@ typedef struct SPUDGPU_RAY_QUERY_LIMITS {
 	 * (spudgpu_create_placed_acceleration_structure()), and what its size is
 	 * rounded up to for the range it covers there. Vulkan 256; D3D12 65536
 	 * (`D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT`: a placed buffer's); Metal
-	 * 65536, until a Mac reads the alignment
-	 * `heapAccelerationStructureSizeAndAlignWithSize:` gives and the value is
-	 * set from it (card S24). Where a graphics API asks more of one structure
+	 * the alignment `heapAccelerationStructureSizeAndAlignWithSize:` gives
+	 * the smallest structure (1024 on an Apple M5 Pro). Where a graphics API asks more of one structure
 	 * than this rule, the create refuses it rather than cover more than the
 	 * rounded range (spudgpu_create_placed_acceleration_structure()). */
 	uint32_t placement_alignment;
@@ -4806,11 +4805,11 @@ typedef struct spudgpu_blend_attachment_desc {
  * - **Vulkan (SPIR-V):** DescriptorSet @c s, Binding @c b. The push
  *   constants are the module's push constant block.
  * - **D3D12 (DXIL):** register @c b of space @c s, of the class its
- *   descriptor type takes: a uniform buffer @c b<b>; a sampled image @c t<b>;
- *   a storage buffer or storage image @c u<b> (never an SRV, even read
- *   only); a sampler @c s<b>; a combined image sampler both @c t<b> and
- *   @c s<b> (and, with SPUDGPU_EXT_RAY_QUERY, an acceleration structure
- *   @c t<b>). The push constants are a
+ *   descriptor type takes: a uniform buffer `b<b>`; a sampled image `t<b>`;
+ *   a storage buffer or storage image `u<b>` (never an SRV, even read
+ *   only); a sampler `s<b>`; a combined image sampler both `t<b>` and
+ *   `s<b>` (and, with SPUDGPU_EXT_RAY_QUERY, an acceleration structure
+ *   `t<b>`). The push constants are a
  *   constant buffer at @c b0 of space SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS
  *   (4). A vertex input at location @c n has the semantic @c TEXCOORD<n>.
  * - **Metal (.metallib):** set @c s is an argument buffer (tier 1, members
@@ -5585,6 +5584,29 @@ void spudgpu_cmd_draw_indexed_indirect(
 // ============================================================================
 
 /**
+ * @brief Geometry shaders and tessellation (control and evaluation
+ * shaders, patches): 1 where the backend in this build implements them,
+ * Vulkan and D3D12. 0 on Metal, which has no geometry stage and whose
+ * tessellation is a compute kernel and a post-tessellation vertex function,
+ * not these stages. Says nothing about a GPU: each pairs with its feature
+ * bit (SPUDGPU_FEATURE_GEOMETRY_SHADER, SPUDGPU_FEATURE_TESSELLATION), which
+ * a GPU of a backend where the macro is 0 never has. The desc fields
+ * (spudgpu_shader_pipeline_desc::geometry_module, ::tess_control_module,
+ * ::tess_eval_module, ::patch_control_points) are declared on every
+ * backend; naming one without the device's bit is refused.
+ */
+#if SPUDGPU_COMPILE_VULKAN_API || SPUDGPU_COMPILE_D3D12_API
+#define SPUDGPU_EXT_GEOMETRY_SHADER 1
+/** @brief Tessellation (control and evaluation shaders, patches): 1 where
+ * the backend in this build implements it, as SPUDGPU_EXT_GEOMETRY_SHADER
+ * says. */
+#define SPUDGPU_EXT_TESSELLATION 1
+#else
+#define SPUDGPU_EXT_GEOMETRY_SHADER 0
+#define SPUDGPU_EXT_TESSELLATION 0
+#endif
+
+/**
  * @brief 1 when the compiled-in backend implements mesh shading and this
  * section is declared, 0 when it is compiled out.
  *
@@ -5605,26 +5627,6 @@ void spudgpu_cmd_draw_indexed_indirect(
  * in the device's features. A mesh-shader pipeline on a device created
  * without it is refused with SPUDRESULT_GPU_EXT_MESH_SHADING_NOT_SUPPORTED.
  */
-/**
- * @brief Geometry shaders and tessellation (control and evaluation
- * shaders, patches): 1 where the backend in this build implements them,
- * Vulkan and D3D12. 0 on Metal, which has no geometry stage and whose
- * tessellation is a compute kernel and a post-tessellation vertex function,
- * not these stages. Says nothing about a GPU: each pairs with its feature
- * bit (SPUDGPU_FEATURE_GEOMETRY_SHADER, SPUDGPU_FEATURE_TESSELLATION), which
- * a GPU of a backend where the macro is 0 never has. The desc fields
- * (spudgpu_shader_pipeline_desc::geometry_module, ::tess_control_module,
- * ::tess_eval_module, ::patch_control_points) are declared on every
- * backend; naming one without the device's bit is refused.
- */
-#if SPUDGPU_COMPILE_VULKAN_API || SPUDGPU_COMPILE_D3D12_API
-#define SPUDGPU_EXT_GEOMETRY_SHADER 1
-#define SPUDGPU_EXT_TESSELLATION 1
-#else
-#define SPUDGPU_EXT_GEOMETRY_SHADER 0
-#define SPUDGPU_EXT_TESSELLATION 0
-#endif
-
 #if SPUDGPU_COMPILE_VULKAN_API || SPUDGPU_COMPILE_D3D12_API || SPUDGPU_COMPILE_METAL_API
 #define SPUDGPU_EXT_MESH_SHADING 1
 #else
@@ -6025,72 +6027,72 @@ typedef struct spudgpu_acceleration_structure_sizes {
  * @param[in]  inputs    What the build would read.
  * @param[out] out_sizes Receives the sizes; untouched on failure.
  *
- * Checked in this order, on every backend:
- * @retval SPUD_SUCCESS `out_sizes` was filled in.
- * @retval SPUDRESULT_GPU_INVALID_DEVICE `device` is NULL (or, in Debug,
+ * @return One of these, checked in this order on every backend:
+ * - SPUD_SUCCESS `out_sizes` was filled in.
+ * - SPUDRESULT_GPU_INVALID_DEVICE `device` is NULL (or, in Debug,
  *         destroyed).
- * @retval SPUDRESULT_NULL_DESC `inputs` is NULL.
- * @retval SPUDRESULT_STRUCT_WRONG_TYPE / SPUDRESULT_STRUCT_UNKNOWN_IN_CHAIN
+ * - SPUDRESULT_NULL_DESC `inputs` is NULL.
+ * - SPUDRESULT_STRUCT_WRONG_TYPE / SPUDRESULT_STRUCT_UNKNOWN_IN_CHAIN
  *         `inputs->base` is wrong.
- * @retval SPUDRESULT_NULL_OUTPUT_PARAMETER `out_sizes` is NULL.
- * @retval SPUDRESULT_STRUCT_WRONG_TYPE / SPUDRESULT_STRUCT_UNKNOWN_IN_CHAIN
+ * - SPUDRESULT_NULL_OUTPUT_PARAMETER `out_sizes` is NULL.
+ * - SPUDRESULT_STRUCT_WRONG_TYPE / SPUDRESULT_STRUCT_UNKNOWN_IN_CHAIN
  *         `out_sizes->base` is wrong.
- * @retval SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED The device wasn't
+ * - SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED The device wasn't
  *         created with SPUDGPU_FEATURE_RAY_QUERY.
- * @retval (the inputs' checks, in field order:)
- * @retval SPUDRESULT_DESC_INVALID_PARAMETERS `inputs->level` is not a
+ * - (the inputs' checks, in field order:)
+ * - SPUDRESULT_DESC_INVALID_PARAMETERS `inputs->level` is not a
  *         level; `inputs->flags` has an unknown bit or both PREFER flags.
- * @retval (a bottom level, then each geometry in order:)
- * @retval SPUDRESULT_DESC_INVALID_PARAMETERS The top level's fields are not
+ * - (a bottom level, then each geometry in order:)
+ * - SPUDRESULT_DESC_INVALID_PARAMETERS The top level's fields are not
  *         0 and NULL.
- * @retval SPUDRESULT_NULL_DESC `geometries` is NULL.
- * @retval SPUDRESULT_ZERO_SIZE `geometry_count` is 0.
- * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_LIMIT `geometry_count` is
+ * - SPUDRESULT_NULL_DESC `geometries` is NULL.
+ * - SPUDRESULT_ZERO_SIZE `geometry_count` is 0.
+ * - SPUDRESULT_GPU_ACCELERATION_STRUCTURE_LIMIT `geometry_count` is
  *         past max_geometries.
- * @retval SPUDRESULT_DESC_INVALID_PARAMETERS A geometry's kind is not a
+ * - SPUDRESULT_DESC_INVALID_PARAMETERS A geometry's kind is not a
  *         kind, or not the first geometry's; its flags have an unknown bit.
- * @retval SPUDRESULT_GPU_INVALID_BUFFER `data` is NULL (or destroyed).
- * @retval SPUDRESULT_GPU_INVALID_BUFFER_USAGE `data` lacks
+ * - SPUDRESULT_GPU_INVALID_BUFFER `data` is NULL (or destroyed).
+ * - SPUDRESULT_GPU_INVALID_BUFFER_USAGE `data` lacks
  *         SPUDGPU_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT.
- * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_ALIGNMENT `data_offset` or
+ * - SPUDRESULT_GPU_ACCELERATION_STRUCTURE_ALIGNMENT `data_offset` or
  *         `data_stride` breaks the rule above.
- * @retval SPUDRESULT_ZERO_SIZE `data_count` is 0.
- * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_RANGE The data runs past
+ * - SPUDRESULT_ZERO_SIZE `data_count` is 0.
+ * - SPUDRESULT_GPU_ACCELERATION_STRUCTURE_RANGE The data runs past
  *         the end of its buffer.
- * @retval SPUDRESULT_DESC_INVALID_PARAMETERS `index_format` is not one the
+ * - SPUDRESULT_DESC_INVALID_PARAMETERS `index_format` is not one the
  *         kind takes; `indices` is not NULL without an index format.
- * @retval SPUDRESULT_GPU_INVALID_BUFFER `indices` is NULL (or destroyed)
+ * - SPUDRESULT_GPU_INVALID_BUFFER `indices` is NULL (or destroyed)
  *         with an index format.
- * @retval SPUDRESULT_GPU_INVALID_BUFFER_USAGE `indices` lacks
+ * - SPUDRESULT_GPU_INVALID_BUFFER_USAGE `indices` lacks
  *         SPUDGPU_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT.
- * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_ALIGNMENT `index_offset` is
+ * - SPUDRESULT_GPU_ACCELERATION_STRUCTURE_ALIGNMENT `index_offset` is
  *         not a multiple of the index size.
- * @retval SPUDRESULT_ZERO_SIZE `index_count` is 0 with indices.
- * @retval SPUDRESULT_DESC_INVALID_PARAMETERS `index_count` (with indices)
+ * - SPUDRESULT_ZERO_SIZE `index_count` is 0 with indices.
+ * - SPUDRESULT_DESC_INVALID_PARAMETERS `index_count` (with indices)
  *         or `data_count` (triangles without) is not a multiple of 3, or
  *         `index_offset` or `index_count` is not 0 without indices.
- * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_RANGE The indices run past
+ * - SPUDRESULT_GPU_ACCELERATION_STRUCTURE_RANGE The indices run past
  *         the end of their buffer.
- * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_LIMIT The primitives so far
+ * - SPUDRESULT_GPU_ACCELERATION_STRUCTURE_LIMIT The primitives so far
  *         are past max_primitives.
- * @retval (a top level:)
- * @retval SPUDRESULT_DESC_INVALID_PARAMETERS The bottom level's fields are
+ * - (a top level:)
+ * - SPUDRESULT_DESC_INVALID_PARAMETERS The bottom level's fields are
  *         not 0 and NULL.
- * @retval SPUDRESULT_GPU_INVALID_BUFFER `instances` is NULL (or destroyed).
- * @retval SPUDRESULT_GPU_INVALID_BUFFER_USAGE `instances` lacks
+ * - SPUDRESULT_GPU_INVALID_BUFFER `instances` is NULL (or destroyed).
+ * - SPUDRESULT_GPU_INVALID_BUFFER_USAGE `instances` lacks
  *         SPUDGPU_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT.
- * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_ALIGNMENT `instance_offset`
+ * - SPUDRESULT_GPU_ACCELERATION_STRUCTURE_ALIGNMENT `instance_offset`
  *         is not a multiple of the instance layout's alignment.
- * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_LIMIT `instance_count` is
+ * - SPUDRESULT_GPU_ACCELERATION_STRUCTURE_LIMIT `instance_count` is
  *         past max_instances.
- * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_RANGE The instances run
+ * - SPUDRESULT_GPU_ACCELERATION_STRUCTURE_RANGE The instances run
  *         past the end of their buffer.
- * @retval SPUDRESULT_NULL_DESC `bottom_levels` is NULL with a count.
- * @retval SPUDRESULT_GPU_INVALID_ACCELERATION_STRUCTURE An entry of
+ * - SPUDRESULT_NULL_DESC `bottom_levels` is NULL with a count.
+ * - SPUDRESULT_GPU_INVALID_ACCELERATION_STRUCTURE An entry of
  *         `bottom_levels` is NULL (or destroyed) or not a bottom level.
- * @retval SPUDRESULT_OUT_OF_MEMORY The temporary memory couldn't be
+ * - SPUDRESULT_OUT_OF_MEMORY The temporary memory couldn't be
  *         allocated.
- * @return SPUDRESULT_API_SPECIFIC_FAILURE if the graphics API fails.
+ * - SPUDRESULT_API_SPECIFIC_FAILURE if the graphics API fails.
  */
 SPUDRESULT spudgpu_get_acceleration_structure_build_sizes(
     spudgpu_device device,
@@ -6134,24 +6136,24 @@ typedef struct spudgpu_acceleration_structure_desc {
  * @param[in]  desc          Its level, size, limit and name.
  * @param[out] out_structure Receives the structure; untouched on failure.
  *
- * Checked in this order, on every backend:
- * @retval SPUD_SUCCESS The structure was created.
- * @retval SPUDRESULT_GPU_INVALID_DEVICE `device` is NULL (or, in Debug,
+ * @return One of these, checked in this order on every backend:
+ * - SPUD_SUCCESS The structure was created.
+ * - SPUDRESULT_GPU_INVALID_DEVICE `device` is NULL (or, in Debug,
  *         destroyed).
- * @retval SPUDRESULT_NULL_DESC `desc` is NULL.
- * @retval SPUDRESULT_STRUCT_WRONG_TYPE / SPUDRESULT_STRUCT_UNKNOWN_IN_CHAIN
+ * - SPUDRESULT_NULL_DESC `desc` is NULL.
+ * - SPUDRESULT_STRUCT_WRONG_TYPE / SPUDRESULT_STRUCT_UNKNOWN_IN_CHAIN
  *         `desc->base` is wrong.
- * @retval SPUDRESULT_NULL_OUTPUT_PARAMETER `out_structure` is NULL.
- * @retval SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED The device wasn't
+ * - SPUDRESULT_NULL_OUTPUT_PARAMETER `out_structure` is NULL.
+ * - SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED The device wasn't
  *         created with SPUDGPU_FEATURE_RAY_QUERY.
- * @retval SPUDRESULT_DESC_INVALID_PARAMETERS `desc->level` is not a level,
+ * - SPUDRESULT_DESC_INVALID_PARAMETERS `desc->level` is not a level,
  *         or a bottom level has a max_bottom_levels.
- * @retval SPUDRESULT_ZERO_SIZE `desc->size` is 0.
- * @retval SPUDRESULT_OUT_OF_MEMORY The handle or list couldn't be
+ * - SPUDRESULT_ZERO_SIZE `desc->size` is 0.
+ * - SPUDRESULT_OUT_OF_MEMORY The handle or list couldn't be
  *         allocated.
- * @retval SPUDRESULT_API_SPECIFIC_FAILURE The graphics API fails (the
+ * - SPUDRESULT_API_SPECIFIC_FAILURE The graphics API fails (the
  *         device having no room for it is the usual one).
- * @retval SPUDRESULT_OUT_OF_MEMORY The name couldn't be copied.
+ * - SPUDRESULT_OUT_OF_MEMORY The name couldn't be copied.
  *
  * @see spudgpu_destroy_acceleration_structure()
  */
@@ -6178,30 +6180,30 @@ SPUDRESULT spudgpu_create_acceleration_structure(
  * @param[in]  desc          As for spudgpu_create_acceleration_structure().
  * @param[out] out_structure Receives the structure; untouched on failure.
  *
- * Checked in this order, on every backend:
- * @retval SPUD_SUCCESS The structure was created.
- * @retval SPUDRESULT_GPU_INVALID_HEAP `heap` is NULL (or, in Debug,
+ * @return One of these, checked in this order on every backend:
+ * - SPUD_SUCCESS The structure was created.
+ * - SPUDRESULT_GPU_INVALID_HEAP `heap` is NULL (or, in Debug,
  *         destroyed).
- * @retval (each result of spudgpu_create_acceleration_structure() from
+ * - (each result of spudgpu_create_acceleration_structure() from
  *         SPUDRESULT_NULL_DESC on, in its order, for the heap's device.)
- * @retval SPUDRESULT_GPU_HEAP_MISMATCH The heap is not of
+ * - SPUDRESULT_GPU_HEAP_MISMATCH The heap is not of
  *         SPUDGPU_HEAP_RESOURCE_CLASS_ACCELERATION_STRUCTURES.
- * @retval SPUDRESULT_GPU_PLACEMENT_MISALIGNED `offset` is not a multiple of
+ * - SPUDRESULT_GPU_PLACEMENT_MISALIGNED `offset` is not a multiple of
  *         placement_alignment.
- * @retval SPUDRESULT_GPU_PLACEMENT_OUT_OF_RANGE The range it covers runs
+ * - SPUDRESULT_GPU_PLACEMENT_OUT_OF_RANGE The range it covers runs
  *         past the end of the heap.
- * @retval SPUDRESULT_OUT_OF_MEMORY The handle or its list couldn't be
+ * - SPUDRESULT_OUT_OF_MEMORY The handle or its list couldn't be
  *         allocated.
- * @retval SPUDRESULT_GPU_PLACEMENT_MISALIGNED The graphics API asks a larger
+ * - SPUDRESULT_GPU_PLACEMENT_MISALIGNED The graphics API asks a larger
  *         alignment of this structure than placement_alignment, and `offset`
  *         is not a multiple of it (none has, on the GPUs tested).
- * @retval SPUDRESULT_GPU_PLACEMENT_OUT_OF_RANGE The graphics API's own size
+ * - SPUDRESULT_GPU_PLACEMENT_OUT_OF_RANGE The graphics API's own size
  *         for this structure is larger than `desc->size` rounded up to
  *         placement_alignment, the range the caller placed it over (none
  *         has, on the GPUs tested): it is refused rather than cover bytes
  *         past that range.
- * @retval SPUDRESULT_API_SPECIFIC_FAILURE The graphics API fails.
- * @retval SPUDRESULT_OUT_OF_MEMORY The name couldn't be copied.
+ * - SPUDRESULT_API_SPECIFIC_FAILURE The graphics API fails.
+ * - SPUDRESULT_OUT_OF_MEMORY The name couldn't be copied.
  */
 SPUDRESULT spudgpu_create_placed_acceleration_structure(
     spudgpu_heap heap,
@@ -6420,51 +6422,51 @@ typedef struct spudgpu_acceleration_structure_build {
  * @param[in] builds `count` builds. Borrowed for the call.
  * @param[in] count  1 or more.
  *
- * Checked in this order, on every backend:
- * @retval SPUD_SUCCESS Every build was recorded.
- * @retval SPUDRESULT_GPU_INVALID_COMMAND_LIST `cmd` is NULL (or, in Debug,
+ * @return One of these, checked in this order on every backend:
+ * - SPUD_SUCCESS Every build was recorded.
+ * - SPUDRESULT_GPU_INVALID_COMMAND_LIST `cmd` is NULL (or, in Debug,
  *         destroyed).
- * @retval SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED The device wasn't
+ * - SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED The device wasn't
  *         created with SPUDGPU_FEATURE_RAY_QUERY.
- * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_COMMAND_LIST_TYPE `cmd` is
+ * - SPUDRESULT_GPU_ACCELERATION_STRUCTURE_COMMAND_LIST_TYPE `cmd` is
  *         of a copy queue or a bundle (card S26).
- * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_INSIDE_RENDERING `cmd` is
+ * - SPUDRESULT_GPU_ACCELERATION_STRUCTURE_INSIDE_RENDERING `cmd` is
  *         between spudgpu_cmd_begin_rendering() and
  *         spudgpu_cmd_end_rendering() (card S26).
- * @retval SPUDRESULT_NULL_DESC `builds` is NULL.
- * @retval SPUDRESULT_ZERO_SIZE `count` is 0.
- * @retval (then each build in order, its fields in order:)
- * @retval SPUDRESULT_STRUCT_WRONG_TYPE / SPUDRESULT_STRUCT_UNKNOWN_IN_CHAIN
+ * - SPUDRESULT_NULL_DESC `builds` is NULL.
+ * - SPUDRESULT_ZERO_SIZE `count` is 0.
+ * - (then each build in order, its fields in order:)
+ * - SPUDRESULT_STRUCT_WRONG_TYPE / SPUDRESULT_STRUCT_UNKNOWN_IN_CHAIN
  *         its `base` is wrong.
- * @retval SPUDRESULT_DESC_INVALID_PARAMETERS `mode` is not a mode.
- * @retval SPUDRESULT_NULL_DESC `inputs` is NULL.
- * @retval (the base and every check of
+ * - SPUDRESULT_DESC_INVALID_PARAMETERS `mode` is not a mode.
+ * - SPUDRESULT_NULL_DESC `inputs` is NULL.
+ * - (the base and every check of
  *         spudgpu_get_acceleration_structure_build_sizes() on `inputs`, in
  *         its order.)
- * @retval SPUDRESULT_OUT_OF_MEMORY The command list's arrays couldn't grow
+ * - SPUDRESULT_OUT_OF_MEMORY The command list's arrays couldn't grow
  *         to ask this build's sizes and record the builds so far (Vulkan
  *         and D3D12; Metal keeps none).
- * @retval SPUDRESULT_DESC_INVALID_PARAMETERS `source` is not NULL for a
+ * - SPUDRESULT_DESC_INVALID_PARAMETERS `source` is not NULL for a
  *         BUILD.
- * @retval SPUDRESULT_GPU_INVALID_ACCELERATION_STRUCTURE `source` is NULL
+ * - SPUDRESULT_GPU_INVALID_ACCELERATION_STRUCTURE `source` is NULL
  *         (or destroyed) or not of the inputs' level for an UPDATE.
- * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_UPDATE_REFUSED An UPDATE's
+ * - SPUDRESULT_GPU_ACCELERATION_STRUCTURE_UPDATE_REFUSED An UPDATE's
  *         source was never built, was last built without ALLOW_UPDATE, or
  *         with other flags or another layout of inputs.
- * @retval SPUDRESULT_GPU_INVALID_ACCELERATION_STRUCTURE `destination` is
+ * - SPUDRESULT_GPU_INVALID_ACCELERATION_STRUCTURE `destination` is
  *         NULL (or destroyed) or not of the inputs' level.
- * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_TOO_SMALL `destination` is
+ * - SPUDRESULT_GPU_ACCELERATION_STRUCTURE_TOO_SMALL `destination` is
  *         smaller than storage_size.
- * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_LIMIT A top level names
+ * - SPUDRESULT_GPU_ACCELERATION_STRUCTURE_LIMIT A top level names
  *         more bottom levels than the destination's max_bottom_levels.
- * @retval SPUDRESULT_GPU_INVALID_BUFFER `scratch` is NULL (or destroyed).
- * @retval SPUDRESULT_GPU_INVALID_BUFFER_USAGE `scratch` lacks
+ * - SPUDRESULT_GPU_INVALID_BUFFER `scratch` is NULL (or destroyed).
+ * - SPUDRESULT_GPU_INVALID_BUFFER_USAGE `scratch` lacks
  *         SPUDGPU_BUFFER_USAGE_STORAGE.
- * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_ALIGNMENT The scratch
+ * - SPUDRESULT_GPU_ACCELERATION_STRUCTURE_ALIGNMENT The scratch
  *         address is not a multiple of scratch_offset_alignment.
- * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_SCRATCH_TOO_SMALL The
+ * - SPUDRESULT_GPU_ACCELERATION_STRUCTURE_SCRATCH_TOO_SMALL The
  *         scratch range is smaller than the mode's scratch size.
- * @retval SPUDRESULT_OUT_OF_MEMORY A bottom level built with ALLOW_UPDATE:
+ * - SPUDRESULT_OUT_OF_MEMORY A bottom level built with ALLOW_UPDATE:
  *         the destination's kept layout couldn't grow to its geometries.
  *
  * Once every build has passed, the call records them and can't fail.

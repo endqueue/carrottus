@@ -131,10 +131,11 @@ static void spudgpumetal___internal_read_adapter_facts(spudgpu_adapter_metal *ad
 		facts->ray_query_max_instances            = (1u << 24) - 1u;
 		facts->ray_query_max_primitives           = (1u << 28) - 1u;
 		facts->ray_query_scratch_offset_alignment = 256;
-		// At least the alignment heapAccelerationStructureSizeAndAlignWithSize:
-		// gives (a power of two below it on the GPUs Apple documents);
-		// checked again against the real one when a structure is placed.
-		facts->ray_query_placement_alignment = 65536;
+		// The alignment Metal gives a structure in a heap, asked for the
+		// smallest one (1,024 bytes for every size on an Apple M5 Pro, macOS
+		// 27, 2026-11-01). Checked again against the real one for its size
+		// when a structure is placed.
+		facts->ray_query_placement_alignment = (uint64_t)[mtl heapAccelerationStructureSizeAndAlignWithSize:1].align;
 	}
 	// No SPUDGPU_FEATURE_BINDLESS: SPUDGPU_EXT_BINDLESS is 0 on Metal.
 	properties->supported_features = features;

@@ -38,7 +38,8 @@ static bool spudgpumetal___internal_function_is_stage(id<MTLFunction> function, 
 
 // The descriptor sets [bindings] - a function's bindings in a pipeline's
 // reflection - read: bit n for each buffer argument it uses at set n's
-// argument buffer index. All bits when [bindings] is nil.
+// argument buffer index, and SPUDGPU_METAL_PUSH_CONSTANTS_MASK_BIT when it
+// uses the push constants'. All bits when [bindings] is nil.
 static uint32_t spudgpumetal___internal_set_mask(NSArray<id<MTLBinding>> *bindings) {
 	if (!bindings)
 		return 0xffffffffu;
@@ -50,6 +51,8 @@ static uint32_t spudgpumetal___internal_set_mask(NSArray<id<MTLBinding>> *bindin
 		if (index >= SPUDGPU_METAL_DESCRIPTOR_SET_BUFFER_INDEX_BASE &&
 		    index < SPUDGPU_METAL_DESCRIPTOR_SET_BUFFER_INDEX_BASE + SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS)
 			mask |= 1u << (uint32_t)(index - SPUDGPU_METAL_DESCRIPTOR_SET_BUFFER_INDEX_BASE);
+		else if (index == SPUDGPU_METAL_PUSH_CONSTANTS_BUFFER_INDEX)
+			mask |= SPUDGPU_METAL_PUSH_CONSTANTS_MASK_BIT;
 	}
 	return mask;
 }

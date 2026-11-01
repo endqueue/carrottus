@@ -12,8 +12,10 @@
 #include <errno.h>
 #include <sys/random.h>
 #elif SPUDLIB_PLATFORM_APPLE
-#include <sys/random.h>
-#include <unistd.h>
+/* SecRandomCopyBytes, not getentropy: getentropy has no public declaration
+ * in the iOS SDKs, and this is the one call Apple documents on all of its
+ * platforms. */
+#include <Security/SecRandom.h>
 #endif
 
 #if __cplusplus
@@ -55,14 +57,8 @@ SPUDRESULT spudrandom_fill(
 	}
 	return SPUD_SUCCESS;
 #elif SPUDLIB_PLATFORM_APPLE
-	/* getentropy gives at most 256 bytes a call. */
-	while (size > 0) {
-		const size_t piece = size > 256 ? 256 : size;
-		if (getentropy(at, piece) != 0)
-			return SPUDRESULT_API_SPECIFIC_FAILURE;
-		at += piece;
-		size -= piece;
-	}
+	if (SecRandomCopyBytes(kSecRandomDefault, size, at) != errSecSuccess)
+		return SPUDRESULT_API_SPECIFIC_FAILURE;
 	return SPUD_SUCCESS;
 #else
 	(void)at;
