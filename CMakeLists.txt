@@ -240,6 +240,7 @@ if(NOT TARGET spudlib)
                 src/gpu/backends/vulkan/spudgpuvulkannative.c
                 src/gpu/backends/vulkan/spudgpuvulkansync.c
                 src/gpu/backends/vulkan/spudgpuvulkanquery.c
+                src/gpu/backends/vulkan/spudgpuvulkanraytracing.c
                 include/spudgpu_vulkan_natives.h
             )
 
@@ -259,6 +260,7 @@ if(NOT TARGET spudlib)
                 src/gpu/backends/d3d12/spudgpud3d12native.cpp
                 src/gpu/backends/d3d12/spudgpud3d12sync.cpp
                 src/gpu/backends/d3d12/spudgpud3d12query.cpp
+                src/gpu/backends/d3d12/spudgpud3d12raytracing.cpp
                 include/spudgpu_d3d12_natives.h
             )
         endif()
@@ -291,6 +293,7 @@ if(NOT TARGET spudlib)
                 src/gpu/backends/metal/spudgpumetalnative.m
                 src/gpu/backends/metal/spudgpumetalsync.m
                 src/gpu/backends/metal/spudgpumetalquery.m
+                src/gpu/backends/metal/spudgpumetalraytracing.m
             )
         endif()
     endif()
@@ -462,41 +465,13 @@ if(NOT TARGET spudlib)
             set_property(TARGET spudlib PROPERTY CXX_SCAN_FOR_MODULES OFF)
             target_compile_definitions(spudlib PUBLIC SPUDGPU_COMPILE_D3D12_API=1)
 
-            # SPIRV-Cross (for SPIR-V → HLSL cross-compilation)
+            # SpudGPU takes DXIL and compiles nothing (card A9, revised): no
+            # SPIRV-Cross and no DXC here since 2026-10-31.
             if(WIN32)
-                # Use ENV hint so any installed Vulkan SDK version works.
-                set(Vulkan_INCLUDE_DIR "$ENV{VULKAN_SDK}/Include")
-
-                find_package(Vulkan REQUIRED)
-                target_include_directories(spudlib PRIVATE ${Vulkan_INCLUDE_DIRS})
-
-                # Built from source (not the Vulkan SDK's prebuilt .lib files) so it
-                # picks up CMAKE_MSVC_RUNTIME_LIBRARY and matches our CRT per-config
-                # (the SDK's libs are release-only /MD and mismatch /MDd debug builds).
-                # Prefer eqdev/.deps/SPIRV-Cross if vendored (shared with the Metal
-                # path and any caller that builds it too, no duplicate checkout); else
-                # fetch.
-                include(FetchContent)
-                set(SPIRV_CROSS_CLI OFF CACHE BOOL "" FORCE)
-                set(SPIRV_CROSS_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
-                set(SPIRV_CROSS_ENABLE_CPP OFF CACHE BOOL "" FORCE)
-                set(SPIRV_CROSS_ENABLE_MSL OFF CACHE BOOL "" FORCE)
-                set(SPIRV_CROSS_ENABLE_REFLECT OFF CACHE BOOL "" FORCE)
-                set(SPIRV_CROSS_ENABLE_C_API OFF CACHE BOOL "" FORCE)
-                set(SPIRV_CROSS_ENABLE_UTIL OFF CACHE BOOL "" FORCE)
-                spud_declare_vendored_or_fetch(spirv_cross SPIRV-Cross
-                    https://github.com/KhronosGroup/SPIRV-Cross.git vulkan-sdk-1.4.363.0)
-                set(CMAKE_POLICY_VERSION_MINIMUM 3.10)
-                FetchContent_MakeAvailable(spirv_cross)
-
                 target_link_libraries(spudlib PRIVATE
                     d3d12
                     dxgi
                     dxguid
-                    "$ENV{VULKAN_SDK}/Lib/dxcompiler.lib"
-                    spirv-cross-hlsl
-                    spirv-cross-glsl
-                    spirv-cross-core
                 )
             else()
                 return()
@@ -535,50 +510,47 @@ if(NOT TARGET spudlib)
                 "-framework Foundation"
             )
 
-            # SPIRV-Cross (for SPIR-V -> MSL cross-compilation) - same
-            # dependency the D3D12 backend vendors for its own SPIR-V -> HLSL
-            # step, just built with the MSL backend instead of the HLSL one.
-            # The C API is required, not the C++ one: spudgpumetalshader.m is
-            # plain Objective-C (see the OBJC note above), which can't link
-            # against SPIRV-Cross's C++ template-heavy interface directly.
-            #
-            # Vendored under eqdev/.deps/SPIRV-Cross (the same eqdev/.deps/
-            # convention already used for SDL3/glm/imgui-docking/etc.); if that
-            # checkout isn't present (e.g. a standalone clone of this repo),
-            # fetch the pinned tag instead.
-            include(FetchContent)
-            set(SPIRV_CROSS_CLI OFF CACHE BOOL "" FORCE)
-            set(SPIRV_CROSS_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
-            set(SPIRV_CROSS_ENABLE_CPP OFF CACHE BOOL "" FORCE)
-            set(SPIRV_CROSS_ENABLE_HLSL OFF CACHE BOOL "" FORCE)
-            set(SPIRV_CROSS_ENABLE_MSL ON CACHE BOOL "" FORCE)
-            set(SPIRV_CROSS_ENABLE_REFLECT OFF CACHE BOOL "" FORCE)
-            set(SPIRV_CROSS_ENABLE_C_API ON CACHE BOOL "" FORCE)
-            set(SPIRV_CROSS_ENABLE_UTIL OFF CACHE BOOL "" FORCE)
-            spud_declare_vendored_or_fetch(spirv_cross SPIRV-Cross
-                https://github.com/KhronosGroup/SPIRV-Cross.git vulkan-sdk-1.4.363.0)
-            set(CMAKE_POLICY_VERSION_MINIMUM 3.10)
-            FetchContent_MakeAvailable(spirv_cross)
-
-            target_link_libraries(spudlib PRIVATE
-                spirv-cross-c
-                spirv-cross-msl
-                spirv-cross-glsl
-                spirv-cross-core
-            )
+            # SpudGPU takes a .metallib and compiles nothing (card A9,
+            # revised): no SPIRV-Cross here since 2026-10-31; the caller's
+            # build makes Metal source (tools/spudgpu_msl for SPIR-V, card
+            # S20) and Apple's compiler the library.
 
             # Command-list encoding, image/buffer resources, and the swap
             # chain are implemented and verified against real Apple hardware
             # - see src/gpu/backends/metal/*.m. include/spudgpu_metal_natives.h
-            # is drafted and mostly implemented alongside them. Shader/
-            # pipeline creation (this block's reason for existing) and
-            # descriptor set binding remain the newest pieces.
+            # is drafted and mostly implemented alongside them.
         endif()
     endif()
 
     target_precompile_headers(spudlib PRIVATE include/spudgpu.h)
 
     target_include_directories(spudlib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+    # The Metal fallback route's cross-compiler (card S20): SPIR-V to Metal
+    # source in the Metal backend's binding layout, a tool a caller's shader
+    # build runs, never linked into spudlib. Built for the build machine, so
+    # not in a cross-compiling build (an iOS build runs the macOS one).
+    if(NOT CMAKE_CROSSCOMPILING AND NOT TARGET spudgpu_msl)
+        include(FetchContent)
+        set(SPIRV_CROSS_CLI OFF CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_GLSL ON CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_MSL ON CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_HLSL OFF CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_CPP OFF CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_REFLECT OFF CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_C_API ON CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_UTIL OFF CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_SKIP_INSTALL ON CACHE BOOL "" FORCE)
+        spud_declare_vendored_or_fetch(spirv_cross SPIRV-Cross
+            https://github.com/KhronosGroup/SPIRV-Cross.git vulkan-sdk-1.4.363.0)
+        set(CMAKE_POLICY_VERSION_MINIMUM 3.10)
+        FetchContent_MakeAvailable(spirv_cross)
+        add_executable(spudgpu_msl tools/spudgpu_msl/spudgpu_msl.c)
+        target_link_libraries(spudgpu_msl PRIVATE spirv-cross-c)
+        # SPIRV-Cross is C++: link as C++ for its runtime.
+        set_target_properties(spudgpu_msl PROPERTIES LINKER_LANGUAGE CXX)
+    endif()
 
     # Hardware tests: each needs a real device (and spudaudio_sine a
     # listener), so they're built but not registered with ctest.
@@ -641,6 +613,50 @@ if(NOT TARGET spudlib)
         # eqstd for src/spudallocator.h, whose spud_object_head the test
         # makes a surface of for the checks before a surface is read.
         target_link_libraries(spudgpu_objects_test PRIVATE spudlib eqstd)
+
+        # The tests' shaders, Slang compiled to each API's own format at
+        # build time (cmake/spud_slang.cmake), for spudgpu_objects_test,
+        # spud_noalloc_tests and spud_misuse_tests. The ray query pair is
+        # card S12's step 0: compiled and validated on every build, run on a
+        # device by spudgpu_objects_test once SPUDGPU_EXT_RAY_QUERY exists.
+        include(cmake/spud_slang.cmake)
+        spud_add_slang_shader(spudgpu_test_rq_trace SOURCE tests/shaders/rq_trace.slang
+            DXIL_PROFILE cs_6_5 SPIRV_CAPABILITIES spvRayQueryKHR)
+        spud_add_slang_shader(spudgpu_test_rq_shadow SOURCE tests/shaders/rq_shadow.slang
+            DXIL_PROFILE ps_6_5 SPIRV_CAPABILITIES spvRayQueryKHR)
+        # The vertex shader under rq_shadow, and the caller's GPU writers of
+        # instances, one per layout kind (card S14).
+        spud_add_slang_shader(spudgpu_test_rq_shadow_vert SOURCE tests/shaders/rq_shadow_vert.slang
+            DXIL_PROFILE vs_6_0)
+        spud_add_slang_shader(spudgpu_test_rq_instances_row64 SOURCE tests/shaders/rq_instances_row64.slang
+            DXIL_PROFILE cs_6_0)
+        spud_add_slang_shader(spudgpu_test_rq_instances_col72 SOURCE tests/shaders/rq_instances_col72.slang
+            DXIL_PROFILE cs_6_0)
+        spud_add_slang_shader(spudgpu_test_objects_draw_vert SOURCE tests/shaders/objects_draw_vert.slang
+            DXIL_PROFILE vs_6_0)
+        spud_add_slang_shader(spudgpu_test_objects_draw_frag SOURCE tests/shaders/objects_draw_frag.slang
+            DXIL_PROFILE ps_6_0)
+        spud_add_slang_shader(spudgpu_test_objects_draw_mesh SOURCE tests/shaders/objects_draw_mesh.slang
+            DXIL_PROFILE ms_6_5 SPIRV_CAPABILITIES spvMeshShadingEXT)
+        spud_add_slang_shader(spudgpu_test_objects_double_comp SOURCE tests/shaders/objects_double_comp.slang
+            DXIL_PROFILE cs_6_0)
+        add_custom_target(spudlib_test_shaders DEPENDS ${SPUD_SLANG_OUTPUTS})
+        # What SPUDGPU_EXT_RAY_QUERY costs on one adapter (tests/spudgpu_rq_measure.c):
+        # a bottom level's build and compaction, top levels of 1 to 100,000
+        # instances, a ray per pixel at 1920 x 1080. It measures and checks
+        # nothing else, and needs a GPU with ray queries: not a ctest.
+        add_executable(spudgpu_rq_measure tests/spudgpu_rq_measure.c)
+        target_link_libraries(spudgpu_rq_measure PRIVATE spudlib)
+        foreach(_shader_test spudgpu_objects_test spud_noalloc_tests spud_misuse_tests spudgpu_rq_measure)
+            add_dependencies(${_shader_test} spudlib_test_shaders)
+            target_include_directories(${_shader_test} PRIVATE ${SPUD_SLANG_OUT_DIR})
+            if(WIN32)
+                target_compile_definitions(${_shader_test} PRIVATE SPUDLIB_TEST_SHADERS_DXIL=1)
+            endif()
+            if(APPLE)
+                target_compile_definitions(${_shader_test} PRIVATE SPUDLIB_TEST_SHADERS_METALLIB=1)
+            endif()
+        endforeach()
         # On Metal a surface is a CAMetalLayer, which needs no window, so the
         # test makes swap chains on one.
         if(APPLE AND GRAPHICS_BACKEND STREQUAL "Metal")

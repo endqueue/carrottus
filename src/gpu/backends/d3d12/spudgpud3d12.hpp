@@ -44,10 +44,11 @@ inline D3D12_HEAP_FLAGS spudgpu_d3d12_get_heap_flags() {
 inline D3D12_RESOURCE_FLAGS spudgpu_d3d12_get_buffer_resource_flags(
     SPUDGPU_BUFFER_USAGE usage) {
 	D3D12_RESOURCE_FLAGS result = D3D12_RESOURCE_FLAG_NONE;
+	// SPUDGPU_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT needs nothing:
+	// a build reads its inputs in NON_PIXEL_SHADER_RESOURCE, or an upload
+	// heap's GENERIC_READ.
 	if (usage & SPUDGPU_BUFFER_USAGE_STORAGE)
 		result |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-	if (usage & SPUDGPU_BUFFER_USAGE_RAYTRACING_ACCELERATION_STRUCTURE)
-		result |= D3D12_RESOURCE_FLAG_RAYTRACING_ACCELERATION_STRUCTURE;
 	return result;
 }
 inline D3D12_RESOURCE_FLAGS spudgpu_d3d12_get_image_resource_flags(
@@ -332,6 +333,8 @@ typedef struct spudgpu_command_allocator_t {
 	spudgpu_device_d3d12 *_device;
 	Microsoft::WRL::ComPtr<ID3D12CommandAllocator> _d3d_cmd_allocator;
 	D3D12_COMMAND_LIST_TYPE _d3d_cmd_list_type;
+	// The type it was made with, which the checks read.
+	SPUDGPU_COMMAND_LIST_TYPE _type;
 #if _DEBUG
 	// The list of this allocator that is open for recording, or null. One
 	// at a time (spudgpu_begin_command_list); a debug build asserts it
@@ -361,6 +364,10 @@ typedef struct spudgpu_command_list_t {
 	// spudgpu_cmd_begin_rendering's will_execute_bundles handling) -- the two
 	// don't mix, so end_rendering must match whichever begin_rendering chose.
 	bool _using_render_pass;
+	// Whether a rendering pass is open: set by spudgpu_cmd_begin_rendering,
+	// cleared by spudgpu_cmd_end_rendering. Read by the calls a pass can't
+	// hold (an acceleration structure build, copy or size write).
+	bool _rendering_active;
 	// The timestamp the open pass writes at spudgpu_cmd_end_rendering
 	// (spudgpu_rendering_begin_desc::timestamp_set); nullptr for none.
 	ID3D12QueryHeap *_end_timestamp_heap;
@@ -374,6 +381,10 @@ typedef struct spudgpu_command_list_t {
 	eq::array<D3D12_RESOURCE_BARRIER> _scratch_barriers;
 	eq::array<D3D12_RECT> _scratch_rects;
 	eq::array<D3D12_VERTEX_BUFFER_VIEW> _scratch_vb_views;
+	// An acceleration structure build's geometries and a size write's
+	// addresses (spudgpud3d12raytracing.cpp), the same way.
+	eq::array<D3D12_RAYTRACING_GEOMETRY_DESC> _scratch_geometries;
+	eq::array<D3D12_GPU_VIRTUAL_ADDRESS> _scratch_addresses;
 } spudgpu_command_list_d3d12;
 
 typedef struct spudgpu_timestamp_set_t {
@@ -445,6 +456,23 @@ typedef struct spudgpu_image_t {
 	// (spudgpu_create_placed_image).
 	spudgpu_heap _heap;
 } spudgpu_image_d3d12;
+
+// An acceleration structure (spudgpud3d12raytracing.cpp): a buffer in
+// RAYTRACING_ACCELERATION_STRUCTURE state for its whole life, committed or
+// placed. Its first two members are spudgpu___acceleration_structure_common's
+// (spudgpushared.h), which the shared checks read. Plain: no constructor
+// beyond the ComPtr's, which is made in place.
+typedef struct spudgpu_acceleration_structure_t {
+	spud_object_head head;
+	spudgpu___acceleration_structure_state _state;
+	// GetGPUVirtualAddress: what a build, a copy, a descriptor and an
+	// instance name it by.
+	D3D12_GPU_VIRTUAL_ADDRESS _d3d_gpu_address;
+	Microsoft::WRL::ComPtr<ID3D12Resource> _d3d_resource;
+	spudgpu_device_d3d12 *_device;
+	// nullptr for a committed structure; its heap otherwise.
+	spudgpu_heap _heap;
+} spudgpu_acceleration_structure_d3d12;
 
 typedef struct spudgpu_heap_t {
 	spud_object_head head;
@@ -521,8 +549,10 @@ typedef struct spudgpu_d3d12_root_layout {
 typedef struct spudgpu_shader_module_t {
 	spud_object_head head;
 	spudgpu_device_d3d12 *_device;
+	// The desc, its code and entry point pointing at the module's own
+	// copies (allocated through head.allocator; the code at 4-byte
+	// alignment), which pipelines take as their bytecode.
 	spudgpu_shader_module_desc _desc;
-	Microsoft::WRL::ComPtr<ID3DBlob> _d3d_blob;
 } spudgpu_shader_module_d3d12;
 
 typedef struct spudgpu_shader_pipeline_t {

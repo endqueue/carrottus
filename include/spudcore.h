@@ -142,7 +142,7 @@ uint32_t spud_get_version(void);
  * one specific failure. Test a result with SPUDFAIL() and print it with
  * spudresult_str().
  *
- * The values are grouped by module: 1-16 are general, 199-354 are SpudGPU
+ * The values are grouped by module: 1-16 are general, 199-369 are SpudGPU
  * (`SPUDRESULT_GPU_*`), 1001-1013 SpudFiles (`SPUDRESULT_SPUDFILE_*`), 2027-2028
  * SpudMemory (`SPUDRESULT_SPUDMEM_*`), 3001-3033 SpudNet (`SPUDRESULT_SPUDNET_*`),
  * 4001-4012 SpudAudio (`SPUDRESULT_SAUD_*`) and 5001-5005 SpudInput
@@ -325,6 +325,11 @@ typedef enum SPUDRESULT {
 	SPUDRESULT_GPU_INVALID_CULL_MODE                           = 282,
 	/** Reserved: no call returns it. */
 	SPUDRESULT_GPU_INVALID_COMPARE_OP                          = 283,
+	/** A shader module desc's entry point is NULL or empty. */
+	SPUDRESULT_GPU_NULL_ENTRY_POINT                            = 284,
+	/** A shader module desc's workgroup size has a 0 for a compute, mesh or
+	 * task stage, or anything but 0 for another stage. */
+	SPUDRESULT_GPU_INVALID_WORKGROUP_SIZE                      = 285,
 	/** Reserved: no call returns it. */
 	SPUDRESULT_GPU_INVALID_BLEND_FACTOR                        = 290,
 	/** Reserved: no call returns it. */
@@ -337,15 +342,22 @@ typedef enum SPUDRESULT {
 	SPUDRESULT_GPU_INVALID_COMPUTE_MODULE                      = 302,
 	/** A compute pipeline argument is NULL. */
 	SPUDRESULT_GPU_INVALID_COMPUTE_PIPELINE                    = 303,
-	/** A shader module desc's SPIR-V is NULL or 0 bytes long. */
-	SPUDRESULT_GPU_NULL_SPIRV                                  = 304,
-	/** A shader module desc's SPIR-V size is not a multiple of 4 bytes. */
-	SPUDRESULT_GPU_INVALID_SPIRV_ALIGNMENT                     = 305,
+	/** A shader module desc's code is NULL or 0 bytes long. */
+	SPUDRESULT_GPU_NULL_SHADER_CODE                            = 304,
+	/** A shader module desc's code is not 4-byte aligned, or a SPIR-V or
+	 * DXIL size is not a multiple of 4. */
+	SPUDRESULT_GPU_INVALID_SHADER_CODE_ALIGNMENT               = 305,
 	/** A pipeline desc has no fragment module, or neither a vertex nor a
 	 * mesh module. */
 	SPUDRESULT_GPU_VERTEX_AND_FRAGMENT_SHADER_REQUIRED         = 306,
-	/** The backend could not translate or compile a shader. */
-	SPUDRESULT_GPU_SHADER_COMPILATION_FAILED                   = 307,
+	/** A shader module's code isn't the format its desc names, or the
+	 * graphics API refused it or a pipeline made from it. */
+	SPUDRESULT_GPU_INVALID_SHADER_CODE                         = 307,
+	/** A shader module desc's format is not one the device takes. */
+	SPUDRESULT_GPU_SHADER_FORMAT_NOT_SUPPORTED                 = 308,
+	/** A shader module has no entry point of the desc's name for its
+	 * stage. */
+	SPUDRESULT_GPU_SHADER_ENTRY_POINT_NOT_FOUND                = 309,
 	/** Reserved: no call returns it. */
 	SPUDRESULT_GPU_INVALID_DESCRIPTOR_TYPE                     = 310,
 	/** Reserved: no call returns it. */
@@ -398,6 +410,9 @@ typedef enum SPUDRESULT {
 	SPUDRESULT_GPU_EXT_BINDLESS_NOT_SUPPORTED          = 325, /**< SPUDGPU_EXT_BINDLESS: the device has no SPUDGPU_FEATURE_BINDLESS. */
 	SPUDRESULT_GPU_EXT_MESH_SHADING_NOT_SUPPORTED      = 326, /**< SPUDGPU_EXT_MESH_SHADING: the device has no SPUDGPU_FEATURE_MESH_SHADING. */
 	SPUDRESULT_GPU_EXT_DEPTH_BOUNDS_TEST_NOT_SUPPORTED = 327, /**< SPUDGPU_EXT_DEPTH_BOUNDS_TEST. Reserved: no call returns it; the depth bounds test does nothing on a device without the feature. */
+	SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED         = 328, /**< SPUDGPU_EXT_RAY_QUERY: the device has no SPUDGPU_FEATURE_RAY_QUERY. */
+	SPUDRESULT_GPU_EXT_GEOMETRY_SHADER_NOT_SUPPORTED   = 329, /**< SPUDGPU_EXT_GEOMETRY_SHADER: the device has no SPUDGPU_FEATURE_GEOMETRY_SHADER. */
+	SPUDRESULT_GPU_EXT_TESSELLATION_NOT_SUPPORTED      = 330, /**< SPUDGPU_EXT_TESSELLATION: the device has no SPUDGPU_FEATURE_TESSELLATION. */
 	/** @} */
 
 	/** Reserved: no call returns it. */
@@ -410,6 +425,43 @@ typedef enum SPUDRESULT {
 	SPUDRESULT_GPU_INVALID_BUFFER_BARRIER                      = 353,
 	/** Reserved: no call returns it. */
 	SPUDRESULT_GPU_INVALID_IMAGE_BARRIER                       = 354,
+
+	/**
+	 * @name Acceleration structures (SPUDGPU_EXT_RAY_QUERY)
+	 * @{
+	 */
+	/** An acceleration structure is NULL (or, in a Debug build, destroyed),
+	 * or not of the level the call takes there. */
+	SPUDRESULT_GPU_INVALID_ACCELERATION_STRUCTURE              = 360,
+	/** An acceleration structure is smaller than the build or copy writing
+	 * it needs. */
+	SPUDRESULT_GPU_ACCELERATION_STRUCTURE_TOO_SMALL            = 361,
+	/** A build's scratch range is smaller than the build or update needs. */
+	SPUDRESULT_GPU_ACCELERATION_STRUCTURE_SCRATCH_TOO_SMALL    = 362,
+	/** A range a build or a size write reads or writes runs past the end of
+	 * its buffer. */
+	SPUDRESULT_GPU_ACCELERATION_STRUCTURE_RANGE                = 363,
+	/** An offset, address or stride is not a multiple of what the call
+	 * requires of it, or a stride is below its element's size. */
+	SPUDRESULT_GPU_ACCELERATION_STRUCTURE_ALIGNMENT            = 364,
+	/** A count is past the device's limit (SPUDGPU_RAY_QUERY_LIMITS) or the
+	 * structure's own (spudgpu_acceleration_structure_desc::max_bottom_levels). */
+	SPUDRESULT_GPU_ACCELERATION_STRUCTURE_LIMIT                = 365,
+	/** An update its source can't take: the source was never built, was
+	 * built without SPUDGPU_ACCELERATION_STRUCTURE_BUILD_ALLOW_UPDATE, or with
+	 * other flags, geometry kinds, counts or index layout than the update's. */
+	SPUDRESULT_GPU_ACCELERATION_STRUCTURE_UPDATE_REFUSED       = 366,
+	/** A compaction, or a compacted size, its structure wasn't made for: not
+	 * created with allow_compaction, or not last built with
+	 * SPUDGPU_ACCELERATION_STRUCTURE_BUILD_ALLOW_COMPACTION. */
+	SPUDRESULT_GPU_ACCELERATION_STRUCTURE_COMPACTION_REFUSED   = 367,
+	/** A build, copy or compacted-size write on a command list of a queue
+	 * type that can't record one: a copy list or a bundle. */
+	SPUDRESULT_GPU_ACCELERATION_STRUCTURE_COMMAND_LIST_TYPE    = 368,
+	/** A build, copy or compacted-size write between
+	 * spudgpu_cmd_begin_rendering() and spudgpu_cmd_end_rendering(). */
+	SPUDRESULT_GPU_ACCELERATION_STRUCTURE_INSIDE_RENDERING     = 369,
+	/** @} */
 
 	SPUDRESULT_SPUDFILE_NULL_PATH = 1001, /**< A path is NULL or empty. */
 	SPUDRESULT_SPUDFILE_INVALID_FILE = 1002, /**< A file argument is NULL. */
@@ -600,6 +652,19 @@ typedef enum SPUD_STRUCT_TYPE {
 	/** SPUDGPU_BINDLESS_LIMITS (SPUD_STRUCT_BASE_OUT), chained onto
 	 * SPUDGPU_ADAPTER_PROPERTIES. */
 	SPUD_STRUCT_TYPE_GPU_BINDLESS_LIMITS            = 1029,
+	/** SPUDGPU_RAY_QUERY_LIMITS (SPUD_STRUCT_BASE_OUT), chained onto
+	 * SPUDGPU_ADAPTER_PROPERTIES. */
+	SPUD_STRUCT_TYPE_GPU_RAY_QUERY_LIMITS           = 1030,
+	/** spudgpu_acceleration_structure_inputs (SPUD_STRUCT_BASE). */
+	SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_INPUTS  = 1031,
+	/** spudgpu_acceleration_structure_sizes (SPUD_STRUCT_BASE_OUT). */
+	SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_SIZES   = 1032,
+	/** spudgpu_acceleration_structure_desc (SPUD_STRUCT_BASE). */
+	SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_DESC    = 1033,
+	/** spudgpu_acceleration_structure_build (SPUD_STRUCT_BASE). */
+	SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_BUILD   = 1034,
+	/** spudgpu_acceleration_structure_barrier (SPUD_STRUCT_BASE). */
+	SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_BARRIER = 1035,
 
 	/* SpudAudio */
 	/** SPUDAUDIO_DEVICE_PROPERTIES (SPUD_STRUCT_BASE_OUT). */

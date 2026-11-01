@@ -714,6 +714,7 @@ void spudgpu_cmd_begin_rendering(
 			}
 		}
 		cmd->_using_render_pass = false;
+		cmd->_rendering_active  = true;
 		return;
 	}
 
@@ -722,6 +723,7 @@ void spudgpu_cmd_begin_rendering(
 	    hasDepth ? &dsDesc : nullptr,
 	    D3D12_RENDER_PASS_FLAG_NONE);
 	cmd->_using_render_pass = true;
+	cmd->_rendering_active  = true;
 }
 
 void spudgpu_cmd_end_rendering(spudgpu_command_list cmd) {
@@ -731,6 +733,7 @@ void spudgpu_cmd_end_rendering(spudgpu_command_list cmd) {
 		return;
 	if (cmd->_using_render_pass)
 		cmd->_d3d_cmd_list->EndRenderPass();
+	cmd->_rendering_active = false;
 	if (cmd->_end_timestamp_heap) {
 		cmd->_d3d_cmd_list->EndQuery(cmd->_end_timestamp_heap, D3D12_QUERY_TYPE_TIMESTAMP, cmd->_end_timestamp_index);
 		cmd->_end_timestamp_heap = nullptr;

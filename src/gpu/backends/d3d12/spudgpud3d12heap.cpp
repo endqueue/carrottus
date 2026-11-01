@@ -28,7 +28,9 @@
 
 static D3D12_HEAP_FLAGS spudgpu_d3d12_heap_class_flags(SPUDGPU_HEAP_RESOURCE_CLASS resource_class) {
 	switch (resource_class) {
+	// An acceleration structure is a buffer (spudgpud3d12raytracing.cpp).
 	case SPUDGPU_HEAP_RESOURCE_CLASS_BUFFERS:
+	case SPUDGPU_HEAP_RESOURCE_CLASS_ACCELERATION_STRUCTURES:
 		return D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS;
 	case SPUDGPU_HEAP_RESOURCE_CLASS_IMAGES:
 		return D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES;
@@ -119,7 +121,7 @@ SPUDRESULT spudgpu_create_heap(
 	if (desc->size % SPUDGPU_HEAP_SIZE_GRANULARITY)
 		return SPUDRESULT_GPU_INVALID_HEAP_SIZE;
 	if (desc->resource_class < SPUDGPU_HEAP_RESOURCE_CLASS_BUFFERS ||
-	    desc->resource_class > SPUDGPU_HEAP_RESOURCE_CLASS_ATTACHMENT_IMAGES)
+	    desc->resource_class > SPUDGPU_HEAP_RESOURCE_CLASS_ACCELERATION_STRUCTURES)
 		return SPUDRESULT_GPU_INVALID_HEAP_RESOURCE_CLASS;
 	if (desc->memory_kind < SPUDGPU_MEMORY_KIND_DEVICE || desc->memory_kind > SPUDGPU_MEMORY_KIND_DEVICE_MAPPABLE)
 		return SPUDRESULT_GPU_INVALID_MEMORY_KIND;
@@ -129,6 +131,8 @@ SPUDRESULT spudgpu_create_heap(
 		return SPUDRESULT_GPU_MEMORY_KIND_NOT_SUPPORTED;
 	if (desc->memory_kind == SPUDGPU_MEMORY_KIND_DEVICE_MAPPABLE && !(device->_features & SPUDGPU_FEATURE_DEVICE_MAPPABLE_MEMORY))
 		return SPUDRESULT_GPU_MEMORY_KIND_NOT_SUPPORTED;
+	if (desc->resource_class == SPUDGPU_HEAP_RESOURCE_CLASS_ACCELERATION_STRUCTURES && !(device->_features & SPUDGPU_FEATURE_RAY_QUERY))
+		return SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED;
 
 	spudgpu_heap_d3d12 *heap = SPUD_NEW(&device->head.allocator, spudgpu_heap_d3d12);
 	if (!heap)

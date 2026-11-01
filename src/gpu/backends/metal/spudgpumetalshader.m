@@ -1,10 +1,7 @@
 //
-// SpudGPU Metal backend - shader modules and pipeline state.
-// SPIR-V is cross-compiled to MSL via SPIRV-Cross's C API (the same
-// dependency the D3D12 backend already vendors for its own SPIR-V -> HLSL
-// step, built here with the MSL backend instead - see CMakeLists.txt). The
-// C API, not the C++ one, since this file is plain Objective-C and can't
-// link against SPIRV-Cross's C++ template-heavy interface directly.
+// SpudGPU Metal backend - shader modules and pipeline state. A module is a
+// .metallib the caller built (spudgpu.h, spudgpu_shader_module_desc):
+// nothing is compiled here.
 //
 
 #if SPUDGPU_COMPILE_METAL_API
@@ -14,197 +11,29 @@
 #include "spudgpumetal.h"
 #include "../../spudgpushared.h"
 #include <Metal/Metal.h>
-#include <spirv_cross_c.h>
 #include "../../../spudstructbase.h"
 
-// -----------------------------------------------------------------------
-// SPIR-V -> MSL cross-compilation
-// -----------------------------------------------------------------------
-
-static SpvExecutionModel spudgpumetal___internal_spirv_execution_model(SPUDGPU_SHADER_STAGE stage) {
+// Whether [function]'s type is [stage]'s: Metal's vertex, fragment, kernel,
+// mesh and object functions. A tessellation control stage is a kernel on
+// Metal and an evaluation stage a post-tessellation vertex function; Metal
+// has no geometry stage, so no function is one.
+static bool spudgpumetal___internal_function_is_stage(id<MTLFunction> function, SPUDGPU_SHADER_STAGE stage) {
 	switch (stage) {
-	case SPUDGPU_SHADER_STAGE_VERTEX:   return SpvExecutionModelVertex;
-	case SPUDGPU_SHADER_STAGE_FRAGMENT: return SpvExecutionModelFragment;
-	case SPUDGPU_SHADER_STAGE_COMPUTE:  return SpvExecutionModelGLCompute;
-	case SPUDGPU_SHADER_STAGE_MESH:     return SpvExecutionModelMeshEXT;
-	case SPUDGPU_SHADER_STAGE_TASK:     return SpvExecutionModelTaskEXT;
-	default:                            return SpvExecutionModelVertex;
+	case SPUDGPU_SHADER_STAGE_VERTEX:
+	case SPUDGPU_SHADER_STAGE_TESSELLATION_EVALUATION:
+		return function.functionType == MTLFunctionTypeVertex;
+	case SPUDGPU_SHADER_STAGE_FRAGMENT:
+		return function.functionType == MTLFunctionTypeFragment;
+	case SPUDGPU_SHADER_STAGE_COMPUTE:
+	case SPUDGPU_SHADER_STAGE_TESSELLATION_CONTROL:
+		return function.functionType == MTLFunctionTypeKernel;
+	case SPUDGPU_SHADER_STAGE_MESH:
+		return function.functionType == MTLFunctionTypeMesh;
+	case SPUDGPU_SHADER_STAGE_TASK:
+		return function.functionType == MTLFunctionTypeObject;
+	default:
+		return false;
 	}
-}
-
-static SPUDRESULT spudgpumetal___internal_cross_compile_spirv_to_msl(
-    const void *spirv_code,
-    size_t spirv_size,
-    SPUDGPU_SHADER_STAGE stage,
-    NSString **out_msl_source,
-    uint32_t *out_local_size_x,
-    uint32_t *out_local_size_y,
-    uint32_t *out_local_size_z) {
-	spvc_context context = NULL;
-	if (spvc_context_create(&context) != SPVC_SUCCESS)
-		return SPUDRESULT_GPU_SHADER_COMPILATION_FAILED;
-
-	spvc_parsed_ir parsed_ir = NULL;
-	spvc_result result = spvc_context_parse_spirv(
-	    context, (const SpvId *)spirv_code, spirv_size / sizeof(SpvId), &parsed_ir);
-	if (result != SPVC_SUCCESS) {
-		printf("spudgpu: SPIR-V parse failed: %s\n", spvc_context_get_last_error_string(context));
-		spvc_context_destroy(context);
-		return SPUDRESULT_GPU_SHADER_COMPILATION_FAILED;
-	}
-
-	spvc_compiler compiler = NULL;
-	result = spvc_context_create_compiler(
-	    context, SPVC_BACKEND_MSL, parsed_ir, SPVC_CAPTURE_MODE_TAKE_OWNERSHIP, &compiler);
-	if (result != SPVC_SUCCESS) {
-		spvc_context_destroy(context);
-		return SPUDRESULT_GPU_SHADER_COMPILATION_FAILED;
-	}
-
-	spvc_compiler_options options = NULL;
-	spvc_compiler_create_compiler_options(compiler, &options);
-	// 2.4.0 encoded as (major * 10000 + minor * 100 + patch), matching
-	// CompilerMSL::Options::make_msl_version - a recent-enough MSL version
-	// for everything this backend's command-encoding side already uses
-	// (base vertex/instance draws, argument buffers) without depending on
-	// spvc_msl_make_version() being available in every SPIRV-Cross revision.
-	spvc_compiler_options_set_uint(options, SPVC_COMPILER_OPTION_MSL_VERSION, 20400u);
-	spvc_compiler_options_set_uint(options, SPVC_COMPILER_OPTION_MSL_PLATFORM, SPVC_MSL_PLATFORM_MACOS);
-	// Every SPUDGPU_DESCRIPTOR_TYPE_* descriptor set becomes a real Metal 2
-	// argument buffer (see spudgpu.h's descriptor set layout docs: "On Metal
-	// it creates an MTLArgumentEncoder schema") rather than discrete
-	// per-resource bindings - Tier2 (1) is required for the writable
-	// resources SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER/STORAGE_IMAGE need and
-	// is supported on every Apple Silicon GPU this backend targets.
-	spvc_compiler_options_set_bool(options, SPVC_COMPILER_OPTION_MSL_ARGUMENT_BUFFERS, SPVC_TRUE);
-	spvc_compiler_options_set_uint(options, SPVC_COMPILER_OPTION_MSL_ARGUMENT_BUFFERS_TIER, 1u);
-	// Without this, SPIRV-Cross assigns each argument-buffer member's [[id(N)]]
-	// sequentially in its own internal resource order (empirically: order of
-	// first use in the shader body, via glslang's lazy SPIR-V ID allocation) -
-	// completely decoupled from the resource's actual GLSL `binding=`/SPIR-V
-	// Binding decoration. That default silently matched every binding=0-only
-	// set this backend had exercised so far, but breaks the moment a set has
-	// more than one binding (see spudgpumetaldescriptors.m, which assumes
-	// [[id(binding)]] == binding). This option forces [[id(N)]] to be the
-	// resource's real Binding decoration, matching Vulkan/D3D12 semantics and
-	// the write-by-binding-index assumption every *_bind_descriptor_sets*
-	// function makes.
-	spvc_compiler_options_set_bool(options, SPVC_COMPILER_OPTION_MSL_ENABLE_DECORATION_BINDING, SPVC_TRUE);
-	// A set's argument buffer is encoded once, from its layout's every
-	// binding (spudgpumetaldescriptors.m), and its members sit where the
-	// layout's order puts them. SPIRV-Cross by default leaves out of a
-	// shader's argument buffer struct each resource the entry point doesn't
-	// use, which moves every member after it: a shader that read binding 5
-	// of a set it used nothing else of below 5 but 0 read the wrong argument
-	// (a caller's test, 2026-10-17). With this every resource the
-	// shader declares is in its struct, used or not. A shader that doesn't
-	// even declare a binding of the layout below one it reads is still out
-	// of step: CLAUDE.md's known gaps say so.
-	spvc_compiler_options_set_bool(options, SPVC_COMPILER_OPTION_MSL_FORCE_ACTIVE_ARGUMENT_BUFFER_RESOURCES, SPVC_TRUE);
-	// SpudGPU's clip space is Vulkan's: +Y points down the screen. Metal's
-	// points up (like D3D12's), so flip gl_Position.y to render the same image
-	// - and front-face winding - as Vulkan. Same fix as the D3D12 backend.
-	spvc_compiler_options_set_bool(options, SPVC_COMPILER_OPTION_FLIP_VERTEX_Y, SPVC_TRUE);
-	spvc_compiler_install_compiler_options(compiler, options);
-
-	// Pin every possible descriptor set's whole argument buffer to a fixed,
-	// collision-free MSL buffer index up front (SPVC_MSL_ARGUMENT_BUFFER_BINDING
-	// is the sentinel `binding` value meaning "the argument buffer for this
-	// desc_set as a whole", not an individual member within it - members keep
-	// SPIRV-Cross's default [[id(binding)]] assignment, which
-	// spudgpumetaldescriptors.m relies on matching the API's own binding
-	// numbers). Registering all SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS slots
-	// unconditionally is harmless - SPIRV-Cross ignores bindings for sets a
-	// given shader stage doesn't actually declare.
-	SpvExecutionModel execution_model = spudgpumetal___internal_spirv_execution_model(stage);
-	for (uint32_t set = 0; set < SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS; set++) {
-		spvc_msl_resource_binding_2 binding;
-		spvc_msl_resource_binding_init_2(&binding);
-		binding.stage      = execution_model;
-		binding.desc_set   = set;
-		binding.binding    = SPVC_MSL_ARGUMENT_BUFFER_BINDING;
-		binding.msl_buffer = SPUDGPU_METAL_DESCRIPTOR_SET_BUFFER_INDEX_BASE + set;
-		spvc_compiler_msl_add_resource_binding_2(compiler, &binding);
-	}
-
-	// A combined image sampler is two members of its set's argument buffer,
-	// which can't share the binding's id: its texture keeps the binding's
-	// number, as every resource does here, and its sampler goes to
-	// SPUDGPU_METAL_COMBINED_SAMPLER_INDEX_BASE past it, where the layout's
-	// encoder puts it (spudgpumetaldescriptors.m).
-	{
-		spvc_resources resources = NULL;
-		const spvc_reflected_resource *sampled_images = NULL;
-		size_t sampled_image_count = 0;
-		if (spvc_compiler_create_shader_resources(compiler, &resources) == SPVC_SUCCESS &&
-		    spvc_resources_get_resource_list_for_type(resources, SPVC_RESOURCE_TYPE_SAMPLED_IMAGE, &sampled_images, &sampled_image_count) ==
-		        SPVC_SUCCESS) {
-			for (size_t i = 0; i < sampled_image_count; i++) {
-				const unsigned set     = spvc_compiler_get_decoration(compiler, sampled_images[i].id, SpvDecorationDescriptorSet);
-				const unsigned binding = spvc_compiler_get_decoration(compiler, sampled_images[i].id, SpvDecorationBinding);
-				spvc_msl_resource_binding_2 combined;
-				spvc_msl_resource_binding_init_2(&combined);
-				combined.stage       = execution_model;
-				combined.desc_set    = set;
-				combined.binding     = binding;
-				combined.msl_texture = binding;
-				combined.msl_sampler = SPUDGPU_METAL_COMBINED_SAMPLER_INDEX_BASE + binding;
-				spvc_compiler_msl_add_resource_binding_2(compiler, &combined);
-			}
-		}
-	}
-
-	// Without this, SPIRV-Cross auto-assigns the push-constant block's own
-	// buffer index from its normal free-slot pool, which only happens to
-	// avoid colliding with the pins above when every one of
-	// SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS sets is actually declared by the
-	// shader (an unused set's pin above is a no-op, per SPIRV-Cross's own
-	// docs, so that slot silently re-enters the free pool). No sample
-	// exercised push constants + Metal cross-compilation with fewer than 4
-	// sets declared until this one, where auto-assignment landed on buffer
-	// 28 - colliding with descriptor set 2's reserved slot and leaving
-	// spudgpu_cmd_push_constants' hardcoded SPUDGPU_METAL_PUSH_CONSTANTS_BUFFER_INDEX
-	// (30) writing to a buffer index the shader never actually bound.
-	// Pinning it explicitly here makes it collision-proof regardless of how
-	// many sets a given shader declares.
-	{
-		spvc_msl_resource_binding_2 push_constant_binding;
-		spvc_msl_resource_binding_init_2(&push_constant_binding);
-		push_constant_binding.stage      = execution_model;
-		push_constant_binding.desc_set   = SPVC_MSL_PUSH_CONSTANT_DESC_SET;
-		push_constant_binding.binding    = SPVC_MSL_PUSH_CONSTANT_BINDING;
-		push_constant_binding.msl_buffer = SPUDGPU_METAL_PUSH_CONSTANTS_BUFFER_INDEX;
-		spvc_compiler_msl_add_resource_binding_2(compiler, &push_constant_binding);
-	}
-
-	// GLSL's layout(local_size_x/y/z) becomes SPIR-V's LocalSize execution
-	// mode - meaningful for compute and mesh modules alike, and only after
-	// spvc_context_create_compiler above has parsed it out of the module's
-	// declared execution modes. Metal has no equivalent of Vulkan/D3D12
-	// reading this straight out of the bound pipeline at dispatch time
-	// (see spudgpu_shader_module_metal::_local_size_x/y/z in spudgpumetal.h),
-	// so it's reflected here and threaded through to spudgpu_cmd_dispatch/
-	// spudgpu_cmd_dispatch_mesh.
-	if (stage == SPUDGPU_SHADER_STAGE_COMPUTE || stage == SPUDGPU_SHADER_STAGE_MESH) {
-		if (out_local_size_x) *out_local_size_x = spvc_compiler_get_execution_mode_argument_by_index(compiler, SpvExecutionModeLocalSize, 0);
-		if (out_local_size_y) *out_local_size_y = spvc_compiler_get_execution_mode_argument_by_index(compiler, SpvExecutionModeLocalSize, 1);
-		if (out_local_size_z) *out_local_size_z = spvc_compiler_get_execution_mode_argument_by_index(compiler, SpvExecutionModeLocalSize, 2);
-	}
-
-	const char *msl_source = NULL;
-	result = spvc_compiler_compile(compiler, &msl_source);
-	if (result != SPVC_SUCCESS || !msl_source) {
-		printf("spudgpu: SPIR-V -> MSL cross-compile failed: %s\n", spvc_context_get_last_error_string(context));
-		spvc_context_destroy(context);
-		return SPUDRESULT_GPU_SHADER_COMPILATION_FAILED;
-	}
-
-	// -stringWithUTF8String: copies the bytes into a new NSString, so the
-	// context (which owns msl_source's storage) can be torn down right
-	// after this - nothing above needs to outlive this function.
-	*out_msl_source = [NSString stringWithUTF8String:msl_source];
-	spvc_context_destroy(context);
-	return SPUD_SUCCESS;
 }
 
 // The descriptor sets [bindings] - a function's bindings in a pipeline's
@@ -244,63 +73,55 @@ SPUDRESULT spudgpu_create_shader_module(
 		return base_sr;
 	if (!out_module)
 		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
-	if (!desc->spirv_code || desc->spirv_size == 0)
-		return SPUDRESULT_GPU_NULL_SPIRV;
-	if (desc->spirv_size % 4 != 0)
-		return SPUDRESULT_GPU_INVALID_SPIRV_ALIGNMENT;
-	// Vulkan's rule (a mesh module is outside it there without the feature),
-	// held here too.
-	if ((desc->stage == SPUDGPU_SHADER_STAGE_MESH || desc->stage == SPUDGPU_SHADER_STAGE_TASK) &&
-	    !(device->_features & SPUDGPU_FEATURE_MESH_SHADING))
-		return SPUDRESULT_GPU_EXT_MESH_SHADING_NOT_SUPPORTED;
+	const SPUDRESULT desc_sr = spudgpu___internal_check_shader_module_desc(desc, device->_features);
+	if (desc_sr != SPUD_SUCCESS)
+		return desc_sr;
+	if (desc->code_size > SIZE_MAX)
+		return SPUDRESULT_OUT_OF_MEMORY;
 
 	spudgpu_device_metal *device_metal = (spudgpu_device_metal *)device;
 	SPUDRESULT sr                      = SPUD_SUCCESS;
 
 	spudgpu_shader_module_metal *module_metal = SPUD_NEW_ZEROED(&device_metal->head.allocator, spudgpu_shader_module_metal);
-	if (!module_metal) {
-		sr = SPUDRESULT_GENERAL_FAILURE;
-		goto failedattempt;
-	}
+	if (!module_metal)
+		return SPUDRESULT_OUT_OF_MEMORY;
 	module_metal->head.allocator = device_metal->head.allocator;
 	SPUD_BIRTH(module_metal);
 	module_metal->_parent_device = device_metal;
 	module_metal->_desc          = *desc;
+	// The caller's pointers are borrowed for the call: neither is kept.
+	module_metal->_desc.code        = NULL;
+	module_metal->_desc.entry_point = NULL;
+	module_metal->_workgroup_size_x = desc->workgroup_size[0];
+	module_metal->_workgroup_size_y = desc->workgroup_size[1];
+	module_metal->_workgroup_size_z = desc->workgroup_size[2];
 
-	{
-		NSString *msl_source = nil;
-		sr = spudgpumetal___internal_cross_compile_spirv_to_msl(
-		    desc->spirv_code, desc->spirv_size, desc->stage, &msl_source,
-		    &module_metal->_local_size_x, &module_metal->_local_size_y, &module_metal->_local_size_z);
-		if (sr != SPUD_SUCCESS)
-			goto failedattempt;
-
-		NSError *compile_error             = nil;
-		MTLCompileOptions *compile_options = [[MTLCompileOptions alloc] init];
-		module_metal->_library_mtl         = [device_metal->_device_mtl newLibraryWithSource:msl_source
-		                                                                             options:compile_options
-		                                                                               error:&compile_error];
-		[compile_options release];
-		if (!module_metal->_library_mtl) {
-			printf(
-			    "spudgpu: MSL compile failed: %s\n",
-			    compile_error ? compile_error.localizedDescription.UTF8String : "(unknown)");
-			sr = SPUDRESULT_GPU_SHADER_COMPILATION_FAILED;
-			goto failedattempt;
+	// The pool's block ends before any jump to the cleanup: leaving it by a
+	// goto would leave the pool unbalanced.
+	@autoreleasepool {
+		// The default destructor makes dispatch_data copy the bytes, so the
+		// library never reads the caller's memory after this call.
+		dispatch_data_t data = dispatch_data_create(desc->code, (size_t)desc->code_size, NULL, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+		if (!data) {
+			sr = SPUDRESULT_OUT_OF_MEMORY;
+		} else {
+			NSError *error             = nil;
+			module_metal->_library_mtl = [device_metal->_device_mtl newLibraryWithData:data error:&error];
+			dispatch_release(data);
+			if (!module_metal->_library_mtl)
+				sr = SPUDRESULT_GPU_INVALID_SHADER_CODE;
 		}
-
-		// SPIRV-Cross's MSL backend always renames a SPIR-V module's entry
-		// point to "main0" when the module has exactly one - the expected
-		// shape for this project's per-stage-compiled shaders - since MSL
-		// reserves the literal name "main". spudgpu_shader_pipeline_desc's/
-		// spudgpu_compute_pipeline_desc's *_entry_point strings are accepted
-		// for cross-backend API symmetry but not consulted on this backend.
-		module_metal->_function_mtl = [module_metal->_library_mtl newFunctionWithName:@"main0"];
-		if (!module_metal->_function_mtl) {
-			sr = SPUDRESULT_GPU_SHADER_COMPILATION_FAILED;
-			goto failedattempt;
+		if (sr == SPUD_SUCCESS) {
+			NSString *name = [NSString stringWithUTF8String:desc->entry_point];
+			if (name)
+				module_metal->_function_mtl = [module_metal->_library_mtl newFunctionWithName:name];
+			if (!module_metal->_function_mtl ||
+			    !spudgpumetal___internal_function_is_stage(module_metal->_function_mtl, desc->stage))
+				sr = SPUDRESULT_GPU_SHADER_ENTRY_POINT_NOT_FOUND;
 		}
 	}
+	if (sr != SPUD_SUCCESS)
+		goto failedattempt;
 
 	// From here spudgpu_destroy_shader_module frees it, and takes the count
 	// back.
@@ -316,7 +137,7 @@ SPUDRESULT spudgpu_create_shader_module(
 	return sr;
 
 failedattempt:
-	if (module_metal) {
+	{
 		if (module_metal->_function_mtl) {
 			[module_metal->_function_mtl release];
 		}
@@ -449,13 +270,11 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 	SPUDRESULT outputs = spudgpu___internal_check_pipeline_outputs(desc, device->_features);
 	if (outputs != SPUD_SUCCESS)
 		return outputs;
-	// Metal has no geometry-shader stage at all, and tessellation goes
-	// through a completely different pipeline shape (post-tessellation
-	// vertex functions + -drawPatches:/-drawIndexedPatches:, not a
-	// tess-control/tess-eval stage pair) that this backend doesn't
-	// implement - reject rather than silently dropping these stages.
-	if (desc->geometry_module || desc->tess_control_module || desc->tess_eval_module)
-		return SPUDRESULT_GPU_INVALID_SHADER_STAGE;
+	// Geometry and tessellation stages were refused just above
+	// (SPUDGPU_EXT_GEOMETRY_SHADER and SPUDGPU_EXT_TESSELLATION are 0 here,
+	// so no Metal device has their bits): Metal has no geometry stage, and
+	// its tessellation is post-tessellation vertex functions and
+	// -drawPatches:, not a control and evaluation stage pair.
 
 	spudgpu_shader_module_metal *vertex_module_metal   = (spudgpu_shader_module_metal *)desc->vertex_module;
 	spudgpu_shader_module_metal *mesh_module_metal      = (spudgpu_shader_module_metal *)desc->mesh_module;
@@ -529,14 +348,14 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 			printf(
 			    "spudgpu: MTLRenderPipelineState (mesh) creation failed: %s\n",
 			    pipeline_error ? pipeline_error.localizedDescription.UTF8String : "(unknown)");
-			sr = SPUDRESULT_GPU_SHADER_COMPILATION_FAILED;
+			sr = SPUDRESULT_GPU_INVALID_SHADER_CODE;
 			goto failedattempt;
 		}
 
 		pipeline_metal->_is_mesh_pipeline    = true;
-		pipeline_metal->_mesh_local_size_x   = mesh_module_metal->_local_size_x;
-		pipeline_metal->_mesh_local_size_y   = mesh_module_metal->_local_size_y;
-		pipeline_metal->_mesh_local_size_z   = mesh_module_metal->_local_size_z;
+		pipeline_metal->_mesh_local_size_x   = mesh_module_metal->_workgroup_size_x;
+		pipeline_metal->_mesh_local_size_y   = mesh_module_metal->_workgroup_size_y;
+		pipeline_metal->_mesh_local_size_z   = mesh_module_metal->_workgroup_size_z;
 	} else {
 		// descriptor_set_layouts is intentionally unconsumed here: unlike
 		// Vulkan's VkPipelineLayout or D3D12's ID3D12RootSignature, building
@@ -594,7 +413,7 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 			printf(
 			    "spudgpu: MTLRenderPipelineState creation failed: %s\n",
 			    pipeline_error ? pipeline_error.localizedDescription.UTF8String : "(unknown)");
-			sr = SPUDRESULT_GPU_SHADER_COMPILATION_FAILED;
+			sr = SPUDRESULT_GPU_INVALID_SHADER_CODE;
 			goto failedattempt;
 		}
 	}
@@ -612,7 +431,7 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 		    [device_metal->_device_mtl newDepthStencilStateWithDescriptor:depth_stencil_desc];
 		[depth_stencil_desc release];
 		if (!pipeline_metal->_depth_stencil_state_mtl) {
-			sr = SPUDRESULT_GPU_SHADER_COMPILATION_FAILED;
+			sr = SPUDRESULT_GPU_INVALID_SHADER_CODE;
 			goto failedattempt;
 		}
 	}
@@ -698,9 +517,9 @@ SPUDRESULT spudgpu_create_compute_pipeline(
 	SPUD_BIRTH(pipeline_metal);
 	pipeline_metal->_parent_device = device_metal;
 	pipeline_metal->_desc          = *desc;
-	pipeline_metal->_local_size_x  = compute_module_metal->_local_size_x;
-	pipeline_metal->_local_size_y  = compute_module_metal->_local_size_y;
-	pipeline_metal->_local_size_z  = compute_module_metal->_local_size_z;
+	pipeline_metal->_local_size_x  = compute_module_metal->_workgroup_size_x;
+	pipeline_metal->_local_size_y  = compute_module_metal->_workgroup_size_y;
+	pipeline_metal->_local_size_z  = compute_module_metal->_workgroup_size_z;
 
 	{
 		// Same reasoning as spudgpu_create_shader_pipeline above -
@@ -714,7 +533,7 @@ SPUDRESULT spudgpu_create_compute_pipeline(
 			printf(
 			    "spudgpu: MTLComputePipelineState creation failed: %s\n",
 			    pipeline_error ? pipeline_error.localizedDescription.UTF8String : "(unknown)");
-			sr = SPUDRESULT_GPU_SHADER_COMPILATION_FAILED;
+			sr = SPUDRESULT_GPU_INVALID_SHADER_CODE;
 			goto failedattempt;
 		}
 	}

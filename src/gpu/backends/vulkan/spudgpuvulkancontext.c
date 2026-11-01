@@ -333,8 +333,8 @@ static bool spudgpuvulkan___read_queue_families(const SPUD_ALLOCATOR *allocator,
 }
 
 // Fills in what [adapter] is and can do. False when the GPU can't have a
-// device of this backend (below Vulkan 1.3, or no graphics family), which
-// is then not listed. Creates nothing.
+// device of this backend (below Vulkan 1.3, no shaderDrawParameters, or no
+// graphics family), which is then not listed. Creates nothing.
 static bool spudgpuvulkan___read_adapter_facts(
     const SPUD_ALLOCATOR *allocator,
     const spudgpu_instance_vulkan *instance,
@@ -347,8 +347,21 @@ static bool spudgpuvulkan___read_adapter_facts(
     vkGetPhysicalDeviceProperties(physicalDevice, &adapter->_properties_vk);
     const VkPhysicalDeviceProperties *props = &adapter->_properties_vk;
     // What SpudGPU itself relies on (dynamicRendering, synchronization2,
-    // timelineSemaphore, bufferDeviceAddress) is required by Vulkan 1.3.
+    // timelineSemaphore, bufferDeviceAddress) is required by Vulkan 1.3;
+    // shaderDrawParameters, below, by SpudGPU.
     if (props->apiVersion < VK_API_VERSION_1_3)
+        return false;
+    // A shader's vertex and instance index (HLSL's SV_VertexID and
+    // SV_InstanceID, as a compiler writes them into SPIR-V) declares
+    // DrawParameters, which needs shaderDrawParameters: part of the base set
+    // (card S22), so a GPU without it is not listed.
+    VkPhysicalDeviceVulkan11Features vk11Available = {0};
+    vk11Available.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+    VkPhysicalDeviceFeatures2 baseFeatures2 = {0};
+    baseFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    baseFeatures2.pNext = &vk11Available;
+    vkGetPhysicalDeviceFeatures2(physicalDevice, &baseFeatures2);
+    if (!vk11Available.shaderDrawParameters)
         return false;
 
     SPUDGPU_FEATURES features = 0;
@@ -423,6 +436,8 @@ static bool spudgpuvulkan___read_adapter_facts(
     if (available.drawIndirectFirstInstance) features |= SPUDGPU_FEATURE_DRAW_INDIRECT_FIRST_INSTANCE;
     if (available.imageCubeArray) features |= SPUDGPU_FEATURE_CUBE_ARRAY_VIEWS;
     if (available.depthBounds) features |= SPUDGPU_FEATURE_DEPTH_BOUNDS_TEST;
+    if (available.geometryShader) features |= SPUDGPU_FEATURE_GEOMETRY_SHADER;
+    if (available.tessellationShader) features |= SPUDGPU_FEATURE_TESSELLATION;
 
     VkPhysicalDeviceVulkan12Features vk12 = {0};
     vk12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
@@ -521,6 +536,43 @@ static bool spudgpuvulkan___read_adapter_facts(
             facts->mesh_max_output_vertices       = meshProperties.maxMeshOutputVertices;
             facts->mesh_max_output_primitives     = meshProperties.maxMeshOutputPrimitives;
             facts->mesh_max_workgroup_invocations = meshProperties.maxMeshWorkGroupInvocations;
+        }
+    }
+
+    // Ray queries: both extensions and the one the first requires, each
+    // listed, and both features on (a listed extension doesn't say the
+    // driver has the feature). Deferred host operations are enabled with
+    // them because VK_KHR_acceleration_structure requires it, and never
+    // used: every build is recorded on the device.
+    if (spudgpuvulkan___device_extension_available(allocator, physicalDevice, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) &&
+        spudgpuvulkan___device_extension_available(allocator, physicalDevice, VK_KHR_RAY_QUERY_EXTENSION_NAME) &&
+        spudgpuvulkan___device_extension_available(allocator, physicalDevice, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME)) {
+        VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures = {0};
+        rayQueryFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+        VkPhysicalDeviceAccelerationStructureFeaturesKHR structureFeatures = {0};
+        structureFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+        structureFeatures.pNext = &rayQueryFeatures;
+        VkPhysicalDeviceFeatures2 rayFeatures2 = {0};
+        rayFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        rayFeatures2.pNext = &structureFeatures;
+        vkGetPhysicalDeviceFeatures2(physicalDevice, &rayFeatures2);
+        if (structureFeatures.accelerationStructure && rayQueryFeatures.rayQuery) {
+            VkPhysicalDeviceAccelerationStructurePropertiesKHR structureProperties = {0};
+            structureProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR;
+            VkPhysicalDeviceProperties2 rayProperties2 = {0};
+            rayProperties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+            rayProperties2.pNext = &structureProperties;
+            vkGetPhysicalDeviceProperties2(physicalDevice, &rayProperties2);
+            features |= SPUDGPU_FEATURE_RAY_QUERY;
+            facts->ray_query_max_geometries           = structureProperties.maxGeometryCount;
+            facts->ray_query_max_instances            = structureProperties.maxInstanceCount;
+            facts->ray_query_max_primitives           = structureProperties.maxPrimitiveCount;
+            facts->ray_query_scratch_offset_alignment = structureProperties.minAccelerationStructureScratchOffsetAlignment;
+            // A structure's offset in its buffer is a multiple of 256
+            // (VkAccelerationStructureCreateInfoKHR::offset). A placed one
+            // is a buffer of its own at the heap's offset, which must also
+            // meet the buffer's memory alignment, checked when it is placed.
+            facts->ray_query_placement_alignment = 256;
         }
     }
 
@@ -852,6 +904,8 @@ static VkResult spudgpuvulkan___create_logical_device(
     deviceFeatures.drawIndirectFirstInstance = (features & SPUDGPU_FEATURE_DRAW_INDIRECT_FIRST_INSTANCE) ? VK_TRUE : VK_FALSE;
     deviceFeatures.imageCubeArray    = (features & SPUDGPU_FEATURE_CUBE_ARRAY_VIEWS) ? VK_TRUE : VK_FALSE;
     deviceFeatures.depthBounds       = (features & SPUDGPU_FEATURE_DEPTH_BOUNDS_TEST) ? VK_TRUE : VK_FALSE;
+    deviceFeatures.geometryShader    = (features & SPUDGPU_FEATURE_GEOMETRY_SHADER) ? VK_TRUE : VK_FALSE;
+    deviceFeatures.tessellationShader = (features & SPUDGPU_FEATURE_TESSELLATION) ? VK_TRUE : VK_FALSE;
 
     // The base set: every buffer has an address (spudgpu_get_buffer_gpu_address),
     // spudgpu_fence is a timeline semaphore (spudgpuvulkansync.c).
@@ -875,13 +929,19 @@ static VkResult spudgpuvulkan___create_logical_device(
         vk12Features.runtimeDescriptorArray                        = VK_TRUE;
     }
 
+    // The base set too: a shader's vertex and instance index (card S22).
+    VkPhysicalDeviceVulkan11Features vk11Features = {0};
+    vk11Features.sType                = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+    vk11Features.shaderDrawParameters = VK_TRUE;
+    vk12Features.pNext                = &vk11Features;
+
     VkPhysicalDeviceVulkan13Features vk13Features = {0};
     vk13Features.sType            = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
     vk13Features.pNext            = &vk12Features;
     vk13Features.dynamicRendering = VK_TRUE;
     vk13Features.synchronization2 = VK_TRUE;
 
-    const char *deviceExtensions[4];
+    const char *deviceExtensions[7];
     uint32_t deviceExtensionCount = 0;
     if (features & SPUDGPU_FEATURE_PRESENT)
         deviceExtensions[deviceExtensionCount++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
@@ -908,6 +968,22 @@ static VkResult spudgpuvulkan___create_logical_device(
         meshShaderFeatures.meshShader = VK_TRUE;
         meshShaderFeatures.pNext      = vk13Features.pNext;
         vk13Features.pNext            = &meshShaderFeatures;
+    }
+    // Ray queries: the two extensions and the one the first requires, and
+    // the two features, only for a device created with the feature.
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR structureFeatures = {0};
+    VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures = {0};
+    if (features & SPUDGPU_FEATURE_RAY_QUERY) {
+        deviceExtensions[deviceExtensionCount++] = VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME;
+        deviceExtensions[deviceExtensionCount++] = VK_KHR_RAY_QUERY_EXTENSION_NAME;
+        deviceExtensions[deviceExtensionCount++] = VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME;
+        structureFeatures.sType                 = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+        structureFeatures.accelerationStructure = VK_TRUE;
+        rayQueryFeatures.sType                  = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+        rayQueryFeatures.rayQuery               = VK_TRUE;
+        structureFeatures.pNext                 = &rayQueryFeatures;
+        rayQueryFeatures.pNext                  = vk13Features.pNext;
+        vk13Features.pNext                      = &structureFeatures;
     }
 
     VkDeviceCreateInfo createInfo = {0};
@@ -1006,6 +1082,30 @@ SPUDRESULT spudgpu_create_device(
         if (desc->required_features & SPUDGPU_FEATURE_MESH_SHADING)
             device->_vkCmdDrawMeshTasksEXT = (PFN_vkCmdDrawMeshTasksEXT)
                 vkGetDeviceProcAddr(device->_logical_device_vk, "vkCmdDrawMeshTasksEXT");
+        if (desc->required_features & SPUDGPU_FEATURE_RAY_QUERY) {
+            VkDevice vk = device->_logical_device_vk;
+            device->_vkCreateAccelerationStructureKHR =
+                (PFN_vkCreateAccelerationStructureKHR) vkGetDeviceProcAddr(vk, "vkCreateAccelerationStructureKHR");
+            device->_vkDestroyAccelerationStructureKHR =
+                (PFN_vkDestroyAccelerationStructureKHR) vkGetDeviceProcAddr(vk, "vkDestroyAccelerationStructureKHR");
+            device->_vkGetAccelerationStructureBuildSizesKHR =
+                (PFN_vkGetAccelerationStructureBuildSizesKHR) vkGetDeviceProcAddr(vk, "vkGetAccelerationStructureBuildSizesKHR");
+            device->_vkGetAccelerationStructureDeviceAddressKHR =
+                (PFN_vkGetAccelerationStructureDeviceAddressKHR) vkGetDeviceProcAddr(vk, "vkGetAccelerationStructureDeviceAddressKHR");
+            device->_vkCmdBuildAccelerationStructuresKHR =
+                (PFN_vkCmdBuildAccelerationStructuresKHR) vkGetDeviceProcAddr(vk, "vkCmdBuildAccelerationStructuresKHR");
+            device->_vkCmdCopyAccelerationStructureKHR =
+                (PFN_vkCmdCopyAccelerationStructureKHR) vkGetDeviceProcAddr(vk, "vkCmdCopyAccelerationStructureKHR");
+            device->_vkCmdWriteAccelerationStructuresPropertiesKHR =
+                (PFN_vkCmdWriteAccelerationStructuresPropertiesKHR) vkGetDeviceProcAddr(vk, "vkCmdWriteAccelerationStructuresPropertiesKHR");
+            // A device made with the extension has every one of them; a
+            // driver that broke that fails the device here, never a call.
+            if (!device->_vkCreateAccelerationStructureKHR || !device->_vkDestroyAccelerationStructureKHR ||
+                !device->_vkGetAccelerationStructureBuildSizesKHR || !device->_vkGetAccelerationStructureDeviceAddressKHR ||
+                !device->_vkCmdBuildAccelerationStructuresKHR || !device->_vkCmdCopyAccelerationStructureKHR ||
+                !device->_vkCmdWriteAccelerationStructuresPropertiesKHR)
+                sr = SPUDRESULT_API_SPECIFIC_FAILURE;
+        }
 
         // Kinds made from one family take consecutive queues of it, in the
         // order direct, compute, copy.
@@ -1017,7 +1117,8 @@ SPUDRESULT spudgpu_create_device(
             for (uint32_t j = 0; j < k; j++)
                 if (families[j] == families[k]) first[k] += counts[j];
         }
-        sr = spudgpuvulkan___take_queues(device, families[0], first[0], counts[0], &device->_cmd_queues_direct);
+        if (sr == SPUD_SUCCESS)
+            sr = spudgpuvulkan___take_queues(device, families[0], first[0], counts[0], &device->_cmd_queues_direct);
         if (sr == SPUD_SUCCESS) {
             device->_cmd_queue_count_direct = counts[0];
             sr = spudgpuvulkan___take_queues(device, families[1], first[1], counts[1], &device->_cmd_queues_compute);

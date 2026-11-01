@@ -119,7 +119,7 @@ SPUDRESULT spudgpu_create_heap(
 	if (desc->size % SPUDGPU_HEAP_SIZE_GRANULARITY)
 		return SPUDRESULT_GPU_INVALID_HEAP_SIZE;
 	if (desc->resource_class < SPUDGPU_HEAP_RESOURCE_CLASS_BUFFERS ||
-	    desc->resource_class > SPUDGPU_HEAP_RESOURCE_CLASS_ATTACHMENT_IMAGES)
+	    desc->resource_class > SPUDGPU_HEAP_RESOURCE_CLASS_ACCELERATION_STRUCTURES)
 		return SPUDRESULT_GPU_INVALID_HEAP_RESOURCE_CLASS;
 	if (desc->memory_kind < SPUDGPU_MEMORY_KIND_DEVICE || desc->memory_kind > SPUDGPU_MEMORY_KIND_DEVICE_MAPPABLE)
 		return SPUDRESULT_GPU_INVALID_MEMORY_KIND;
@@ -131,6 +131,8 @@ SPUDRESULT spudgpu_create_heap(
 		return SPUDRESULT_GPU_MEMORY_KIND_NOT_SUPPORTED;
 	if (desc->memory_kind == SPUDGPU_MEMORY_KIND_DEVICE_MAPPABLE && !(device_metal->_features & SPUDGPU_FEATURE_DEVICE_MAPPABLE_MEMORY))
 		return SPUDRESULT_GPU_MEMORY_KIND_NOT_SUPPORTED;
+	if (desc->resource_class == SPUDGPU_HEAP_RESOURCE_CLASS_ACCELERATION_STRUCTURES && !(device_metal->_features & SPUDGPU_FEATURE_RAY_QUERY))
+		return SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED;
 
 	spudgpu_heap_metal *heap = SPUD_NEW_ZEROED(&device_metal->head.allocator, spudgpu_heap_metal);
 	if (!heap)

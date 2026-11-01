@@ -5,32 +5,7 @@
 #include "spudgpud3d12.hpp"
 #include "../../spudgpushared.h"
 
-#include <dxcapi.h>
-#include <spirv_hlsl.hpp>
 #include "../../../spudstructbase.h"
-
-static const wchar_t *stage_to_dxc_profile(SPUDGPU_SHADER_STAGE stage) {
-	switch (stage) {
-	case SPUDGPU_SHADER_STAGE_VERTEX:
-		return L"vs_6_0";
-	case SPUDGPU_SHADER_STAGE_FRAGMENT:
-		return L"ps_6_0";
-	case SPUDGPU_SHADER_STAGE_COMPUTE:
-		return L"cs_6_0";
-	case SPUDGPU_SHADER_STAGE_GEOMETRY:
-		return L"gs_6_0";
-	case SPUDGPU_SHADER_STAGE_TESSELLATION_CONTROL:
-		return L"hs_6_0";
-	case SPUDGPU_SHADER_STAGE_TESSELLATION_EVALUATION:
-		return L"ds_6_0";
-	case SPUDGPU_SHADER_STAGE_MESH:
-		return L"ms_6_5";
-	case SPUDGPU_SHADER_STAGE_TASK:
-		return L"as_6_5";
-	default:
-		return nullptr;
-	}
-}
 
 static D3D12_BLEND spudgpu_d3d12_blend_factor(SPUDGPU_BLEND_FACTOR f) {
 	switch (f) {
@@ -176,6 +151,7 @@ static HRESULT spudgpu_d3d12_build_root_signature(
 				rt = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
 				break;
 			case SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+			case SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE:
 				rt = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
 				break;
 			case SPUDGPU_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
@@ -396,16 +372,16 @@ static SPUDRESULT spudgpu_d3d12___create_mesh_shader_pipeline(
 	stream.pRootSignature = pResult->_d3d_root_signature.Get();
 	if (desc->task_module) {
 		stream.AS = D3D12_SHADER_BYTECODE{
-		    desc->task_module->_d3d_blob->GetBufferPointer(),
-		    desc->task_module->_d3d_blob->GetBufferSize()};
+		    desc->task_module->_desc.code,
+		    (SIZE_T)desc->task_module->_desc.code_size};
 	}
 	stream.MS = D3D12_SHADER_BYTECODE{
-	    desc->mesh_module->_d3d_blob->GetBufferPointer(),
-	    desc->mesh_module->_d3d_blob->GetBufferSize()};
+	    desc->mesh_module->_desc.code,
+	    (SIZE_T)desc->mesh_module->_desc.code_size};
 	if (desc->fragment_module) {
 		stream.PS = D3D12_SHADER_BYTECODE{
-		    desc->fragment_module->_d3d_blob->GetBufferPointer(),
-		    desc->fragment_module->_d3d_blob->GetBufferSize()};
+		    desc->fragment_module->_desc.code,
+		    (SIZE_T)desc->fragment_module->_desc.code_size};
 	}
 	stream.BlendState        = CD3DX12_BLEND_DESC(blendDesc);
 	stream.SampleMask        = UINT_MAX;
@@ -455,50 +431,126 @@ static SPUDRESULT spudgpu_d3d12___create_mesh_shader_pipeline(
 	return SPUD_SUCCESS;
 }
 
-// HLSL has no RWTextureCube: a storage image of a cube, or of a cube array, is
-// an RWTexture2DArray there, with the face (or cube * 6 + face) as its array
-// index, which is the third coordinate a SPIR-V store to a cube image already
-// takes. The storage view it is bound to is a 2D array of the same layers
-// (spudgpud3d12image.cpp). Returns a copy of [words] made through
-// [allocator], [word_count] uint32_t's to free with it, with every storage
-// cube image type made a 2D array image type, NULL with [out_needed] false
-// if there is none, or NULL with [out_needed] true when the copy can't be
-// allocated. An imageSize() of a cube, a 2-component result, takes the
-// width and height of the array's three.
-static uint32_t *spudgpu_d3d12_storage_cubes_as_arrays(
-    const SPUD_ALLOCATOR *allocator,
-    const uint32_t *words,
-    size_t word_count,
-    bool *out_needed) {
-	// The header, then instructions: word 0 is the word count << 16 | opcode.
-	// OpTypeImage (25) is: result, sampled type, Dim, Depth, Arrayed, MS,
-	// Sampled, Format.
-	const uint32_t op_type_image = 25;
-	const uint32_t dim_2d        = 1;
-	const uint32_t dim_cube      = 3;
-	const uint32_t sampled_storage = 2;
-	*out_needed = false;
-	uint32_t *copy = nullptr;
-	size_t i       = 5;
-	while (i < word_count) {
-		const uint32_t count  = words[i] >> 16;
-		const uint32_t opcode = words[i] & 0xFFFFu;
-		if (count == 0 || count > word_count - i)
-			break; // Malformed: left to SPIRV-Cross to report.
-		if (opcode == op_type_image && count >= 9 && words[i + 3] == dim_cube && words[i + 7] == sampled_storage) {
-			if (!copy) {
-				*out_needed = true;
-				copy        = SPUD_NEW_ARRAY(allocator, uint32_t, word_count);
-				if (!copy)
-					return nullptr;
-				memcpy(copy, words, word_count * sizeof(uint32_t));
-			}
-			copy[i + 3] = dim_2d;
-			copy[i + 5] = 1;
+// The DXIL container's own record of its entry point: whether [code]
+// ([size] bytes) is a DXIL container ('DXBC', its parts inside it) whose PSV0
+// part (pipeline state validation, version 3: written by DXC since 1.8)
+// names [name] as its entry function, for a shader of [stage]'s kind.
+// SPUDRESULT_GPU_INVALID_SHADER_CODE for anything else in the container's
+// shape, or a PSV0 too old to name its entry point;
+// SPUDRESULT_GPU_SHADER_ENTRY_POINT_NOT_FOUND for another name or kind.
+static bool spudgpu_d3d12___read32(const uint8_t *code, size_t end, size_t at, uint32_t *out) {
+	if (at > end || end - at < 4)
+		return false;
+	memcpy(out, code + at, 4);
+	return true;
+}
+
+static SPUDRESULT spudgpu_d3d12___find_entry_point(
+    const uint8_t *code,
+    size_t size,
+    SPUDGPU_SHADER_STAGE stage,
+    const char *name) {
+	// The container: 'DXBC', a 16-byte digest, a version, its size, its part
+	// count, then each part's offset; a part is its fourcc, its size, data.
+	uint32_t fourcc     = 0;
+	uint32_t part_count = 0;
+	if (!spudgpu_d3d12___read32(code, size, 0, &fourcc) || fourcc != 0x43425844u) // 'DXBC'
+		return SPUDRESULT_GPU_INVALID_SHADER_CODE;
+	if (!spudgpu_d3d12___read32(code, size, 28, &part_count))
+		return SPUDRESULT_GPU_INVALID_SHADER_CODE;
+	size_t psv      = 0;
+	size_t psv_size = 0;
+	for (uint32_t i = 0; i < part_count; ++i) {
+		uint32_t offset      = 0;
+		uint32_t part_fourcc = 0;
+		uint32_t part_size   = 0;
+		if (!spudgpu_d3d12___read32(code, size, 32 + 4 * (size_t)i, &offset))
+			return SPUDRESULT_GPU_INVALID_SHADER_CODE;
+		if (!spudgpu_d3d12___read32(code, size, offset, &part_fourcc))
+			return SPUDRESULT_GPU_INVALID_SHADER_CODE;
+		if (!spudgpu_d3d12___read32(code, size, (size_t)offset + 4, &part_size))
+			return SPUDRESULT_GPU_INVALID_SHADER_CODE;
+		if (size - ((size_t)offset + 8) < part_size)
+			return SPUDRESULT_GPU_INVALID_SHADER_CODE;
+		if (part_fourcc == 0x30565350u) { // 'PSV0'
+			psv      = (size_t)offset + 8;
+			psv_size = part_size;
 		}
-		i += count;
 	}
-	return copy;
+	if (!psv)
+		return SPUDRESULT_GPU_INVALID_SHADER_CODE;
+
+	// PSV0: the runtime info's size and the info; the resources' count and,
+	// with any, their record size and records; then the string table, its
+	// size and its bytes. The info's byte 24 is the shader kind, and at 48
+	// (version 3, 52 bytes) the entry function's offset in the string table.
+	const size_t end    = psv + psv_size;
+	uint32_t info_size  = 0;
+	uint32_t name_offset = 0;
+	uint32_t resources  = 0;
+	uint32_t resource_size = 0;
+	uint32_t strings_size  = 0;
+	if (!spudgpu_d3d12___read32(code, end, psv, &info_size) || info_size < 52 || info_size > psv_size - 4)
+		return SPUDRESULT_GPU_INVALID_SHADER_CODE;
+	const size_t info = psv + 4;
+	const uint8_t kind = code[info + 24];
+	if (!spudgpu_d3d12___read32(code, end, info + 48, &name_offset))
+		return SPUDRESULT_GPU_INVALID_SHADER_CODE;
+	size_t at = info + info_size;
+	if (!spudgpu_d3d12___read32(code, end, at, &resources))
+		return SPUDRESULT_GPU_INVALID_SHADER_CODE;
+	at += 4;
+	if (resources) {
+		if (!spudgpu_d3d12___read32(code, end, at, &resource_size))
+			return SPUDRESULT_GPU_INVALID_SHADER_CODE;
+		at += 4;
+		if ((uint64_t)resources * resource_size > end - at)
+			return SPUDRESULT_GPU_INVALID_SHADER_CODE;
+		at += (size_t)resources * resource_size;
+	}
+	if (!spudgpu_d3d12___read32(code, end, at, &strings_size))
+		return SPUDRESULT_GPU_INVALID_SHADER_CODE;
+	at += 4;
+	if (strings_size > end - at || name_offset >= strings_size)
+		return SPUDRESULT_GPU_INVALID_SHADER_CODE;
+
+	// PSV's shader kinds (DXIL's): pixel 0, vertex 1, geometry 2, hull 3,
+	// domain 4, compute 5, mesh 13, amplification 14.
+	uint8_t want;
+	switch (stage) {
+	case SPUDGPU_SHADER_STAGE_FRAGMENT:
+		want = 0;
+		break;
+	case SPUDGPU_SHADER_STAGE_VERTEX:
+		want = 1;
+		break;
+	case SPUDGPU_SHADER_STAGE_GEOMETRY:
+		want = 2;
+		break;
+	case SPUDGPU_SHADER_STAGE_TESSELLATION_CONTROL:
+		want = 3;
+		break;
+	case SPUDGPU_SHADER_STAGE_TESSELLATION_EVALUATION:
+		want = 4;
+		break;
+	case SPUDGPU_SHADER_STAGE_COMPUTE:
+		want = 5;
+		break;
+	case SPUDGPU_SHADER_STAGE_MESH:
+		want = 13;
+		break;
+	default:
+		want = 14;
+		break;
+	}
+	const char *entry        = (const char *)code + at + name_offset;
+	const size_t entry_room  = strings_size - name_offset;
+	const size_t name_length = strlen(name);
+	if (kind != want)
+		return SPUDRESULT_GPU_SHADER_ENTRY_POINT_NOT_FOUND;
+	if (name_length >= entry_room || memcmp(entry, name, name_length + 1) != 0)
+		return SPUDRESULT_GPU_SHADER_ENTRY_POINT_NOT_FOUND;
+	return SPUD_SUCCESS;
 }
 
 extern "C" {
@@ -518,132 +570,44 @@ SPUDRESULT spudgpu_create_shader_module(
 		return base_sr;
 	if (!out_module)
 		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
-	if (!desc->spirv_code || desc->spirv_size == 0)
-		return SPUDRESULT_GPU_NULL_SPIRV;
-	if (desc->spirv_size % 4 != 0)
-		return SPUDRESULT_GPU_INVALID_SPIRV_ALIGNMENT;
-	// Vulkan's rule (a mesh module is outside it there without the feature),
-	// held here too.
-	if ((desc->stage == SPUDGPU_SHADER_STAGE_MESH || desc->stage == SPUDGPU_SHADER_STAGE_TASK) &&
-	    !(device->_features & SPUDGPU_FEATURE_MESH_SHADING))
-		return SPUDRESULT_GPU_EXT_MESH_SHADING_NOT_SUPPORTED;
+	const SPUDRESULT desc_sr = spudgpu___internal_check_shader_module_desc(desc, device->_features);
+	if (desc_sr != SPUD_SUCCESS)
+		return desc_sr;
+	if (desc->code_size > SIZE_MAX)
+		return SPUDRESULT_OUT_OF_MEMORY;
+	const size_t code_size = (size_t)desc->code_size;
+	const SPUDRESULT entry_sr =
+	    spudgpu_d3d12___find_entry_point((const uint8_t *)desc->code, code_size, desc->stage, desc->entry_point);
+	if (entry_sr != SPUD_SUCCESS)
+		return entry_sr;
 
 	auto *pDev = (spudgpu_device_d3d12 *)device;
-
-	const uint32_t *spirv_words = (const uint32_t *)desc->spirv_code;
-	size_t word_count           = desc->spirv_size / sizeof(uint32_t);
-
-	bool cubes_needed           = false;
-	uint32_t *cubes_as_arrays   = spudgpu_d3d12_storage_cubes_as_arrays(&pDev->head.allocator, spirv_words, word_count, &cubes_needed);
-	if (cubes_needed && !cubes_as_arrays)
+	// A pipeline takes the bytecode when it is created, after this call has
+	// returned the caller's bytes: the module keeps its own copy.
+	void *code = spud_allocate(&pDev->head.allocator, code_size, 4);
+	if (!code)
 		return SPUDRESULT_OUT_OF_MEMORY;
-	// The compiler parses the words when it is made and keeps none of them.
-	spirv_cross::CompilerHLSL hlsl_compiler(cubes_as_arrays ? cubes_as_arrays : spirv_words, word_count);
-	SPUD_DELETE_ARRAY(&pDev->head.allocator, uint32_t, cubes_as_arrays, word_count);
-
-	spirv_cross::CompilerHLSL::Options opts;
-	// Mesh/task shaders need SM 6.5+ (DXC's ms_6_5/as_6_5 profiles below
-	// reject anything lower) - every other stage keeps the project's usual
-	// 6.0 baseline.
-	opts.shader_model =
-	    (desc->stage == SPUDGPU_SHADER_STAGE_MESH || desc->stage == SPUDGPU_SHADER_STAGE_TASK) ? 65 : 60;
-	// A SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER is a UAV in this backend: its
-	// root signature range (spudgpu_d3d12_build_root_signature) and the
-	// descriptor written for it are both UAVs. SPIRV-Cross would otherwise
-	// declare a GLSL readonly buffer as an SRV (t<n>), which no root
-	// signature range covers, and pipeline creation fails.
-	opts.force_storage_buffer_as_uav = true;
-	hlsl_compiler.set_hlsl_options(opts);
-
-	// SpudGPU's clip space is Vulkan's (the reference backend, and SPIR-V's
-	// native convention): +Y points down the screen. D3D12's points up, so
-	// without this the same shader renders vertically mirrored here. Flipping
-	// gl_Position.y makes the final image - and so front-face winding -
-	// identical to Vulkan's.
-	spirv_cross::CompilerGLSL::Options common_opts = hlsl_compiler.get_common_options();
-	common_opts.vertex.flip_vert_y                  = true;
-	hlsl_compiler.set_common_options(common_opts);
-
-	// Pin push constants to b0, space SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS so
-	// they can't collide with descriptor set bindings (which occupy
-	// space0..space(set_count-1), and set_count can be as high as
-	// SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS itself) -- must match
-	// spudgpu_d3d12_build_root_signature's own RegisterSpace exactly, see its
-	// comment for why a plain space1 isn't safe.
-	auto rcVec = std::vector<spirv_cross::RootConstants>();
-	spirv_cross::RootConstants rc;
-	rc.start   = 0;
-	rc.end     = 0xFFFFFFFFu;
-	rc.binding = 0;
-	rc.space   = SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS;
-	rcVec.push_back(rc);
-	hlsl_compiler.set_root_constant_layouts(rcVec);
-
-	std::string hlsl_src = hlsl_compiler.compile();
-
-	const wchar_t *profile = stage_to_dxc_profile(desc->stage);
-	if (!profile)
-		return SPUDRESULT_GPU_INVALID_SHADER_STAGE;
-
-	Microsoft::WRL::ComPtr<IDxcLibrary> dxc_lib;
-	if (FAILED(DxcCreateInstance(CLSID_DxcLibrary, IID_PPV_ARGS(&dxc_lib))))
-		return SPUDRESULT_API_SPECIFIC_FAILURE;
-
-	Microsoft::WRL::ComPtr<IDxcCompiler> dxc_compiler;
-	if (FAILED(DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(&dxc_compiler))))
-		return SPUDRESULT_API_SPECIFIC_FAILURE;
-
-	Microsoft::WRL::ComPtr<IDxcBlobEncoding> src_blob;
-	if (FAILED(dxc_lib->CreateBlobWithEncodingFromPinned(
-	        hlsl_src.c_str(), (UINT32)hlsl_src.size(), CP_UTF8, &src_blob)))
-		return SPUDRESULT_API_SPECIFIC_FAILURE;
-
-	LPCWSTR args[] = {L"-Zpr"};
-
-	Microsoft::WRL::ComPtr<IDxcOperationResult> result;
-	HRESULT hr = dxc_compiler->Compile(
-	    src_blob.Get(), L"shader", L"main", profile, args, ARRAYSIZE(args),
-	    nullptr, 0, nullptr, &result);
-
-	if (SUCCEEDED(hr))
-		result->GetStatus(&hr);
-	if (FAILED(hr)) {
-		// Same issue as D3D12SerializeRootSignature above: DXC reports the
-		// actual reason through GetErrorBuffer, not the D3D12 debug layer,
-		// so without printing it a compile failure here is silent.
-		Microsoft::WRL::ComPtr<IDxcBlobEncoding> errors;
-		// result is null when Compile itself failed, as opposed to the
-		// compile it ran reporting errors.
-		if (result && SUCCEEDED(result->GetErrorBuffer(&errors)) && errors && errors->GetBufferSize())
-			printf("spudgpu: DXC compile failed (%ls): %s\n", profile,
-			    (const char *)errors->GetBufferPointer());
-		else
-			printf("spudgpu: DXC compile failed (%ls): hr=0x%08lx\n", profile, (unsigned long)hr);
-		return SPUDRESULT_GPU_SHADER_COMPILATION_FAILED;
+	memcpy(code, desc->code, code_size);
+	char *entry_point = spud_string_copy(&pDev->head.allocator, desc->entry_point);
+	if (!entry_point) {
+		spud_free(&pDev->head.allocator, code, code_size, 4);
+		return SPUDRESULT_OUT_OF_MEMORY;
 	}
 
-	// The blob is fetched and converted before the module is allocated, so
-	// a module that exists always has a _d3d_blob.
-	Microsoft::WRL::ComPtr<IDxcBlob> dxil_blob;
-	if (FAILED(result->GetResult(&dxil_blob)))
-		return SPUDRESULT_GPU_SHADER_COMPILATION_FAILED;
-	if (!dxil_blob)
-		return SPUDRESULT_GPU_SHADER_COMPILATION_FAILED;
-	Microsoft::WRL::ComPtr<ID3DBlob> d3d_blob;
-	if (FAILED(dxil_blob.As(&d3d_blob)))
-		return SPUDRESULT_API_SPECIFIC_FAILURE;
-
-	spudgpu_shader_module_d3d12 *pResult =
-	    SPUD_NEW(&pDev->head.allocator, spudgpu_shader_module_d3d12);
-	if (!pResult)
+	spudgpu_shader_module_d3d12 *pResult = SPUD_NEW(&pDev->head.allocator, spudgpu_shader_module_d3d12);
+	if (!pResult) {
+		spud_string_free(&pDev->head.allocator, entry_point);
+		spud_free(&pDev->head.allocator, code, code_size, 4);
 		return SPUDRESULT_OUT_OF_MEMORY;
+	}
 	pResult                 = new (pResult) spudgpu_shader_module_d3d12();
 	pResult->head.allocator = pDev->head.allocator;
 	SPUD_BIRTH(pResult);
 
-	pResult->_desc   = *desc;
-	pResult->_device = pDev;
-	pResult->_d3d_blob = d3d_blob;
+	pResult->_desc             = *desc;
+	pResult->_desc.code        = code;
+	pResult->_desc.entry_point = entry_point;
+	pResult->_device           = pDev;
 
 	SPUDGPU___LIVE_ADD(&pDev->_live, SPUDGPU___OBJECT_SHADER_MODULE);
 	if (spud_debug_name_set(pResult, desc->debug_name) != SPUD_SUCCESS) {
@@ -665,6 +629,8 @@ void spudgpu_destroy_shader_module(spudgpu_shader_module shader_module) {
 	SPUD_KILL(shader_module);
 	const SPUD_ALLOCATOR allocator = shader_module->head.allocator;
 	spud_string_free(&allocator, shader_module->head.debug_name);
+	spud_string_free(&allocator, shader_module->_desc.entry_point);
+	spud_free(&allocator, shader_module->_desc.code, (size_t)shader_module->_desc.code_size, 4);
 	shader_module->~spudgpu_shader_module_d3d12();
 	SPUD_DELETE(&allocator, spudgpu_shader_module_d3d12, shader_module);
 }
@@ -795,28 +761,28 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 	psoDesc.pRootSignature = pResult->_d3d_root_signature.Get();
 	if (desc->vertex_module) {
 		psoDesc.VS = {
-		    desc->vertex_module->_d3d_blob->GetBufferPointer(),
-		    desc->vertex_module->_d3d_blob->GetBufferSize()};
+		    desc->vertex_module->_desc.code,
+		    (SIZE_T)desc->vertex_module->_desc.code_size};
 	}
 	if (desc->fragment_module) {
 		psoDesc.PS = {
-		    desc->fragment_module->_d3d_blob->GetBufferPointer(),
-		    desc->fragment_module->_d3d_blob->GetBufferSize()};
+		    desc->fragment_module->_desc.code,
+		    (SIZE_T)desc->fragment_module->_desc.code_size};
 	}
 	if (desc->geometry_module) {
 		psoDesc.GS = {
-		    desc->geometry_module->_d3d_blob->GetBufferPointer(),
-		    desc->geometry_module->_d3d_blob->GetBufferSize()};
+		    desc->geometry_module->_desc.code,
+		    (SIZE_T)desc->geometry_module->_desc.code_size};
 	}
 	if (desc->tess_control_module) {
 		psoDesc.HS = {
-		    desc->tess_control_module->_d3d_blob->GetBufferPointer(),
-		    desc->tess_control_module->_d3d_blob->GetBufferSize()};
+		    desc->tess_control_module->_desc.code,
+		    (SIZE_T)desc->tess_control_module->_desc.code_size};
 	}
 	if (desc->tess_eval_module) {
 		psoDesc.DS = {
-		    desc->tess_eval_module->_d3d_blob->GetBufferPointer(),
-		    desc->tess_eval_module->_d3d_blob->GetBufferSize()};
+		    desc->tess_eval_module->_desc.code,
+		    (SIZE_T)desc->tess_eval_module->_desc.code_size};
 	}
 	psoDesc.StreamOutput      = {};
 	psoDesc.BlendState        = blendDesc;
@@ -1023,8 +989,8 @@ SPUDRESULT spudgpu_create_compute_pipeline(
 	psoDesc.pRootSignature = pResult->_d3d_root_signature.Get();
 	if (desc->compute_module) {
 		psoDesc.CS = {
-		    desc->compute_module->_d3d_blob->GetBufferPointer(),
-		    desc->compute_module->_d3d_blob->GetBufferSize()};
+		    desc->compute_module->_desc.code,
+		    (SIZE_T)desc->compute_module->_desc.code_size};
 	}
 	psoDesc.NodeMask = 0;
 	psoDesc.Flags    = D3D12_PIPELINE_STATE_FLAG_NONE;

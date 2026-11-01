@@ -114,6 +114,28 @@ static void spudgpumetal___internal_read_adapter_facts(spudgpu_adapter_metal *ad
 		features |= SPUDGPU_FEATURE_DEPTH_BOUNDS_TEST;
 	// Every GPU presents to a CAMetalLayer.
 	features |= SPUDGPU_FEATURE_PRESENT;
+	// Acceleration structures and intersection queries with indirect
+	// instances, in compute (supportsRaytracing) and fragment
+	// (supportsRaytracingFromRender) functions, on an Apple7 or later GPU.
+	// Indirect instance descriptors (MTLIndirectAccelerationStructureInstanceDescriptor)
+	// need macOS 14 / iOS 17: on an older OS the bit is never set, whatever
+	// the build's deployment target, and no ray query call is reached.
+	// Metal has no query for the limits: the narrower of Apple's documented
+	// ones.
+	bool ray_query = false;
+	if (@available(macOS 14.0, iOS 17.0, *))
+		ray_query = mtl.supportsRaytracing && mtl.supportsRaytracingFromRender && [mtl supportsFamily:MTLGPUFamilyApple7];
+	if (ray_query) {
+		features |= SPUDGPU_FEATURE_RAY_QUERY;
+		facts->ray_query_max_geometries           = (1u << 24) - 1u;
+		facts->ray_query_max_instances            = (1u << 24) - 1u;
+		facts->ray_query_max_primitives           = (1u << 28) - 1u;
+		facts->ray_query_scratch_offset_alignment = 256;
+		// At least the alignment heapAccelerationStructureSizeAndAlignWithSize:
+		// gives (a power of two below it on the GPUs Apple documents);
+		// checked again against the real one when a structure is placed.
+		facts->ray_query_placement_alignment = 65536;
+	}
 	// No SPUDGPU_FEATURE_BINDLESS: SPUDGPU_EXT_BINDLESS is 0 on Metal.
 	properties->supported_features = features;
 

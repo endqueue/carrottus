@@ -140,8 +140,7 @@ SPUDRESULT spudgpuvulkan___check_buffer_desc(
     if (desc->memory_kind < SPUDGPU_MEMORY_KIND_DEVICE || desc->memory_kind > SPUDGPU_MEMORY_KIND_DEVICE_MAPPABLE)
         return SPUDRESULT_GPU_INVALID_MEMORY_KIND;
     if (desc->memory_kind == SPUDGPU_MEMORY_KIND_UPLOAD &&
-        (desc->usage & (SPUDGPU_BUFFER_USAGE_STORAGE | SPUDGPU_BUFFER_USAGE_TRANSFER_DST |
-                        SPUDGPU_BUFFER_USAGE_RAYTRACING_ACCELERATION_STRUCTURE)))
+        (desc->usage & (SPUDGPU_BUFFER_USAGE_STORAGE | SPUDGPU_BUFFER_USAGE_TRANSFER_DST)))
         return SPUDRESULT_GPU_INVALID_BUFFER_USAGE;
     if (desc->memory_kind == SPUDGPU_MEMORY_KIND_READBACK && desc->usage != SPUDGPU_BUFFER_USAGE_TRANSFER_DST)
         return SPUDRESULT_GPU_INVALID_BUFFER_USAGE;
@@ -151,6 +150,7 @@ SPUDRESULT spudgpuvulkan___check_buffer_desc(
 }
 
 void spudgpuvulkan___buffer_create_info(
+    SPUDGPU_FEATURES features,
     const spudgpu_buffer_desc *desc,
     VkBufferCreateInfo *out_info) {
     memset(out_info, 0, sizeof(*out_info));
@@ -161,6 +161,11 @@ void spudgpuvulkan___buffer_create_info(
 
     // Covert SPUDGPU_BUFFER_USAGE to native Vulkan usage
     spudgpuvulkan___buffer_usage_flags_internal(desc->usage, &out_info->usage);
+    // A build's inputs: the bit exists only with the extension, which a
+    // device has only with the feature (spudgpu.h); without it no build can
+    // read the buffer, and the bit is kept in the desc alone.
+    if ((desc->usage & SPUDGPU_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT) && (features & SPUDGPU_FEATURE_RAY_QUERY))
+        out_info->usage |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
 
     // Every spudgpu_buffer has a GPU address after creation
     // (spudgpu_get_buffer_gpu_address), mirroring D3D12's always-available
@@ -198,7 +203,7 @@ SPUDRESULT spudgpu_create_buffer(
     VkPhysicalDevice vk_physical_device = result._device._physical_device_vk;
 
     VkBufferCreateInfo bufferInfo;
-    spudgpuvulkan___buffer_create_info(desc, &bufferInfo);
+    spudgpuvulkan___buffer_create_info(device->_features, desc, &bufferInfo);
 
     // Create buffer
     if (vkCreateBuffer(vk_device, &bufferInfo, NULL, &result._buffer_vk) != VK_SUCCESS) {

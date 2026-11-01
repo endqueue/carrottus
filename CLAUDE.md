@@ -194,7 +194,7 @@ GameInput and evdev builds were not run.
     nowhere, since a pipeline's `depth_bounds_test_enable` is masked on a device
     without the feature (the pipeline behaves as if it is false, as `spudgpu.h`
     states); and `SPUDGPU_EXT_BUNDLES` has no paired result, since every GPU of
-    a backend that implements bundles records them. Ray tracing and
+    a backend that implements bundles records them.
     `SPUDGPU_EXT_DESCRIPTOR_SETS`/`SPUDGPU_EXT_SUBPASS_MERGING` (see the OpenGL note
     below) are the next likely candidates whenever their real API surface gets
     built. An `EXT` has to stay a narrow, self-contained island (a handful of
@@ -230,6 +230,49 @@ GameInput and evdev builds were not run.
     `SPUDRESULT_GPU_EXT_MESH_SHADING_NOT_SUPPORTED` refuses a mesh pipeline on a
     device created without it — don't assume `SPUDGPU_EXT_MESH_SHADING == 1`
     means a given device can actually draw with it.
+  - `SPUDGPU_EXT_RAY_QUERY` (card S12, built 2026-10-31 from the approved
+    `spudgpu_raytracing_draft.h`, R1-R8) is the mesh shading flavour again:
+    1 on all three backends, with `SPUDGPU_FEATURE_RAY_QUERY` per adapter
+    (Vulkan `VK_KHR_acceleration_structure`, `VK_KHR_ray_query` and
+    `VK_KHR_deferred_host_operations` listed, `accelerationStructure` and
+    `rayQuery` on, all enabled only for a device created with the bit;
+    D3D12 `OPTIONS5::RaytracingTier` 1.1 or later; Metal
+    `supportsRaytracing` and `supportsRaytracingFromRender` on Apple7 or
+    later, macOS 14 / iOS 17 or later) and
+    `SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED` from every call of the
+    section on a device created without it. Acceleration structures are a
+    handle (`spudgpu_acceleration_structure`, committed or placed in a heap
+    of `SPUDGPU_HEAP_RESOURCE_CLASS_ACCELERATION_STRUCTURES`), sized by
+    `spudgpu_get_acceleration_structure_build_sizes()`, built and updated
+    many to a call (`spudgpu_cmd_build_acceleration_structures()`, nothing
+    recorded on a refusal), copied, compacted (the size written into the
+    caller's buffer) and ordered by a barrier call of their own. SpudGPU
+    keeps no scratch, pool or cache and sets no build flag. Instances are in
+    the device's own layout (card S14): a query
+    (`spudgpu_get_acceleration_structure_instance_layout()`: 64 bytes row
+    major on Vulkan and D3D12, Metal's 72-byte indirect descriptor) and a
+    stateless CPU write of many at once; a GPU writer is the caller's, one
+    per layout kind. Metal makes resident the bottom levels a top level's
+    last build named (R5) wherever it is built or its set bound. What every
+    backend checks the same way is in `src/gpu/spudgpushared.c`; each
+    backend's translation is its own `*raytracing` file. Ray tracing
+    *pipelines* (`SPUDGPU_EXT_RAY_TRACING_PIPELINE`,
+    `SPUDGPU_EXT_RAY_FUNCTION_TABLES`) are not built (card S12). Settled
+    while building (cards S23-S26, 2026-10-31): the heap class and the
+    descriptor type are refused with the extension's result on a device
+    without the feature; `placement_alignment` is 256 on Vulkan and 64 KiB
+    on D3D12 and Metal (Metal's until a Mac reads its real value), and a
+    placed structure the API would make larger than that rounding is
+    refused; a SCRATCH to SCRATCH barrier orders two builds sharing a
+    scratch range (D3D12 a UAV barrier between any two states that are both
+    its `UNORDERED_ACCESS`); a build, copy or size write is refused on a
+    copy list or bundle (`SPUDRESULT_GPU_ACCELERATION_STRUCTURE_COMMAND_LIST_TYPE`,
+    368) and inside a rendering pass (`..._INSIDE_RENDERING`, 369), and
+    leaves the compute bindings undefined until bound again. An update is
+    taken only of exactly its source's last layout, kept on the handle as
+    values (an array grown at a bottom level's first update-allowing build
+    or copy), and a build call's checks make all the room it needs, so its
+    recording can't fail.
   - Since 2026-10-21 (`SPUDGPU_DEVICE_TODO.md`): an `EXT` macro says what the
     backend in this build implements and nothing about any GPU, and every
     one's comment says so. Where support also varies by GPU it pairs with a
@@ -899,6 +942,37 @@ frame of Metal's: command buffer, encoder, residency), its present loop
 idle round (none) and SpudInput's poll (2 of GameController's,
 `[GCController controllers]`).
 
+On 2026-10-31 SpudGPU took each API's own shader format and stopped
+compiling (`spudgpu_shaderformat_draft.h`; cards A9, S17-S22): run on
+Windows 11 on the Iris Xe and the RTX A2000 over D3D12 and Vulkan (and WARP
+by a caller's tests), Debug, Release and `-asan`, 15 ctests passing,
+`spud_misuse_tests` ten times on each backend, `spud_noalloc_tests` none of
+ours, `spudgpu_objects_test` on both GPUs with the debug layer and
+validation silent; clip space +Y up (Vulkan by negative viewport heights),
+read back by the objects test and seen in every `spudgpusamples` sample;
+`shaderDrawParameters` in Vulkan's base set. The Metal backend's module
+path (a `.metallib`, the entry point by name and function type) is written,
+not compiled.
+
+On 2026-10-31 `SPUDGPU_EXT_RAY_QUERY` was built (card S12, step 1; the
+approved `spudgpu_raytracing_draft.h`) and run on Windows 11 (ThinkPad P1
+Gen 5): `windows-d3d12` and `windows-vulkan`, Debug and Release, 15
+ctests each, and both `-asan` presets (VsDevCmd), 15 each; the NVIDIA RTX
+A2000 builds, refits, compacts, clones and traces in
+`spudgpu_objects_test` (`--adapter 1`) on both backends, every check
+passing, under the D3D12 debug layer and GPU-based validation and under
+Vulkan validation, synchronization validation and GPU-assisted
+validation, all silent (GPU-AV's notices of its own settings aside); the
+Intel Iris Xe has no `SPUDGPU_FEATURE_RAY_QUERY` on either API and every
+call is refused on it, and on every adapter's first device; WARP (D3D12)
+reports raytracing tier 1.1, and the whole test passes on it (its update
+scratch is 0 bytes). `spud_noalloc_tests` holds the refit-and-trace frame
+to no allocation of ours on the A2000 (both backends) and WARP;
+`spud_misuse_tests` ten runs a backend (269 calls with zeroes, 242 with a
+destroyed handle, no failure). Metal's file (`spudgpumetalraytracing.m`)
+and the Metal halves of the context, heap and descriptor changes are
+written, not compiled. Linux not built. ThreadSanitizer has not seen it.
+
 - **Vulkan** — reference backend, plain C23, complete. Build against this first;
   D3D12 and Metal follow its shape.
 - **D3D12** — complete, C++26. Cross-compiles the project's SPIR-V shaders to HLSL at
@@ -1133,8 +1207,13 @@ idle round (none) and SpudInput's poll (2 of GameController's,
     Vulkan the same day (reported), but that caller renders no depth-only
     pass, so that run doesn't exercise it.
   - Metal's `spudgpu_create_swap_chain` rejects `buffer_count != 1` and
-    `SPUDGPU_PRESENT_MODE_MAILBOX`, and its pipeline rejects geometry and
-    tessellation modules.
+    `SPUDGPU_PRESENT_MODE_MAILBOX`. Geometry and tessellation are behind
+    `SPUDGPU_EXT_GEOMETRY_SHADER` and `SPUDGPU_EXT_TESSELLATION` since
+    2026-10-31 (0 on Metal; a module or pipeline of either stage on a device
+    without the bit is refused the same way on every backend, after the
+    mesh check). Run on Windows 11 on the Iris Xe and the RTX A2000, both of
+    which have both bits over D3D12 and Vulkan; the refusals tested on a
+    device created without them; Metal written, not compiled.
 - **Present scaling (2026-10-23).** How the compositor shows a back buffer
   of another size than the surface was decided silently before, differently
   per backend: D3D12 hardcoded `DXGI_SCALING_STRETCH`, Metal left

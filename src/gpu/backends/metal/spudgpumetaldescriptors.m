@@ -30,6 +30,9 @@ static MTLDataType spudgpumetal___internal_descriptor_argument_data_type(SPUDGPU
 		return MTLDataTypeTexture;
 	case SPUDGPU_DESCRIPTOR_TYPE_SAMPLER:
 		return MTLDataTypeSampler;
+	// A top level: an instance acceleration structure.
+	case SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE:
+		return MTLDataTypeInstanceAccelerationStructure;
 	default:
 		return MTLDataTypeNone;
 	}
@@ -158,6 +161,13 @@ SPUDRESULT spudgpu_create_descriptor_set_layout(
 		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 	if (desc->binding_count > SPUDGPU_MAX_DESCRIPTOR_BINDINGS_PER_SET)
 		return SPUDRESULT_GPU_TOO_MANY_DESCRIPTOR_BINDINGS;
+	// An unknown type, or one the device has no feature for, the same way
+	// on every backend, before anything is made.
+	for (uint32_t i = 0; i < desc->binding_count; ++i) {
+		const SPUDRESULT type_sr = spudgpu___internal_check_descriptor_type(desc->bindings[i].descriptor_type, ((spudgpu_device_metal *)device)->_features);
+		if (type_sr != SPUD_SUCCESS)
+			return type_sr;
+	}
 
 	SPUDRESULT sr = SPUD_SUCCESS;
 
@@ -290,6 +300,11 @@ SPUDRESULT spudgpu_create_descriptor_pool(
 		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 	if (desc->pool_size_count > SPUDGPU_MAX_DESCRIPTOR_POOL_SIZES)
 		return SPUDRESULT_GPU_TOO_MANY_DESCRIPTOR_POOLS;
+	for (uint32_t i = 0; i < desc->pool_size_count; ++i) {
+		const SPUDRESULT type_sr = spudgpu___internal_check_descriptor_type(desc->pool_sizes[i].descriptor_type, ((spudgpu_device_metal *)device)->_features);
+		if (type_sr != SPUD_SUCCESS)
+			return type_sr;
+	}
 	// What the pool takes out of the device's budget, the same count on
 	// every backend; given back when the pool is destroyed.
 	uint64_t budget_descriptors = 0;
@@ -448,6 +463,29 @@ SPUDRESULT spudgpu_create_descriptor_sets(
 	return SPUD_SUCCESS;
 }
 
+// Tracks [resource] (and [structure], for an acceleration structure) as
+// what [set]'s [argument_index] references, replacing what that index
+// tracked before, if anything: the argument buffer no longer references the
+// old resource, and it may since have been destroyed.
+static void spudgpumetal___track_argument(
+    spudgpu_descriptor_set_metal *set,
+    uint32_t argument_index,
+    id<MTLResource> resource,
+    MTLResourceUsage usage,
+    spudgpu_acceleration_structure_metal *structure) {
+	uint32_t slot = 0;
+	while (slot < set->_tracked_resource_count && set->_tracked_argument_indices[slot] != argument_index)
+		slot++;
+	if (slot < SPUDGPU_METAL_MAX_TRACKED_RESOURCES_PER_SET) {
+		set->_tracked_argument_indices[slot]    = argument_index;
+		set->_tracked_resources_mtl[slot]       = resource;
+		set->_tracked_resource_usages_mtl[slot] = usage;
+		set->_tracked_structures[slot]          = structure;
+		if (slot == set->_tracked_resource_count)
+			set->_tracked_resource_count++;
+	}
+}
+
 void spudgpu_update_descriptor_sets(
     spudgpu_device device,
     const spudgpu_write_descriptor_set *writes,
@@ -459,6 +497,23 @@ void spudgpu_update_descriptor_sets(
 	for (uint32_t writes_i = 0; writes_i < write_count; ++writes_i)
 		if (spud_struct_check(&writes[writes_i].base, SPUD_STRUCT_TYPE_GPU_WRITE_DESCRIPTOR_SET) != SPUD_SUCCESS)
 			return;
+	// A storage view of a cube is a 2D array view of its faces on every
+	// backend (spudgpu.h): D3D12 has no storage cube. Checked before the
+	// first write, so a refused call writes nothing.
+	for (uint32_t writes_i = 0; writes_i < write_count; ++writes_i) {
+		const spudgpu_write_descriptor_set *write = &writes[writes_i];
+		if (write->descriptor_type != SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE || !write->image_info)
+			continue;
+		for (uint32_t k = 0; k < write->descriptor_count; ++k) {
+			const spudgpu_image_view view = write->image_info[k].image_view;
+			if (view && (view->_desc.type == SPUDGPU_IMAGE_VIEW_TYPE_CUBE || view->_desc.type == SPUDGPU_IMAGE_VIEW_TYPE_CUBE_ARRAY))
+				return;
+		}
+	}
+	// Acceleration structure writes: the feature, and every element a live
+	// top level (spudgpu.h), checked the same way on every backend.
+	if (!spudgpu___internal_check_acceleration_structure_writes(((spudgpu_device_metal *)device)->_features, writes, write_count))
+		return;
 
 	for (uint32_t i = 0; i < write_count; i++) {
 		const spudgpu_write_descriptor_set *w = &writes[i];
@@ -476,6 +531,7 @@ void spudgpu_update_descriptor_sets(
 
 		id<MTLResource> tracked_resource   = nil;
 		MTLResourceUsage tracked_usage     = MTLResourceUsageRead;
+		spudgpu_acceleration_structure_metal *tracked_structure = NULL;
 
 		switch (w->descriptor_type) {
 		case SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
@@ -518,25 +574,23 @@ void spudgpu_update_descriptor_sets(
 			// tracking (useResource:) applies to samplers on Metal.
 			break;
 		}
+		case SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE: {
+			// Checked above: every element a live top level. Every element
+			// is written, element k at the argument index after k others
+			// (the binding's array), and each tracked.
+			for (uint32_t k = 0; k < w->descriptor_count; ++k) {
+				spudgpu_acceleration_structure_metal *structure = w->acceleration_structures[k];
+				[encoder setAccelerationStructure:structure->_structure_mtl atIndex:argument_index + k];
+				spudgpumetal___track_argument(set_metal, argument_index + k, structure->_structure_mtl, MTLResourceUsageRead, structure);
+			}
+			continue;
+		}
 		default:
 			continue;
 		}
 
-		if (tracked_resource) {
-			// Replace what this argument index tracked before, if anything:
-			// the argument buffer no longer references the old resource, and
-			// it may since have been destroyed.
-			uint32_t slot = 0;
-			while (slot < set_metal->_tracked_resource_count && set_metal->_tracked_argument_indices[slot] != argument_index)
-				slot++;
-			if (slot < SPUDGPU_METAL_MAX_TRACKED_RESOURCES_PER_SET) {
-				set_metal->_tracked_argument_indices[slot]    = argument_index;
-				set_metal->_tracked_resources_mtl[slot]       = tracked_resource;
-				set_metal->_tracked_resource_usages_mtl[slot] = tracked_usage;
-				if (slot == set_metal->_tracked_resource_count)
-					set_metal->_tracked_resource_count++;
-			}
-		}
+		if (tracked_resource)
+			spudgpumetal___track_argument(set_metal, argument_index, tracked_resource, tracked_usage, tracked_structure);
 	}
 }
 
@@ -621,6 +675,8 @@ void spudgpu_cmd_bind_descriptor_sets(
 			[cmd_metal->_active_render_encoder useResource:set_metal->_tracked_resources_mtl[r]
 			                                          usage:set_metal->_tracked_resource_usages_mtl[r]
 			                                         stages:resident_stages];
+			if (set_metal->_tracked_structures[r])
+				spudgpumetal___use_bottom_levels(cmd_metal->_active_render_encoder, true, resident_stages, set_metal->_tracked_structures[r]);
 		}
 	}
 }
@@ -668,6 +724,8 @@ void spudgpu_cmd_bind_descriptor_sets_compute(
 		for (uint32_t r = 0; r < set_metal->_tracked_resource_count; r++) {
 			[cmd_metal->_active_compute_encoder useResource:set_metal->_tracked_resources_mtl[r]
 			                                           usage:set_metal->_tracked_resource_usages_mtl[r]];
+			if (set_metal->_tracked_structures[r])
+				spudgpumetal___use_bottom_levels(cmd_metal->_active_compute_encoder, false, 0, set_metal->_tracked_structures[r]);
 		}
 	}
 }

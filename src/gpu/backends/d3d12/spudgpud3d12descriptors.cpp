@@ -14,6 +14,7 @@ static int spudgpu_d3d12_descriptor_range_type(SPUDGPU_DESCRIPTOR_TYPE type) {
 	case SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE:        return D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
 	case SPUDGPU_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: return D3D12_DESCRIPTOR_RANGE_TYPE_SRV; // SRV half; sampler tracked separately
 	case SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE:        return D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+	case SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE: return D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
 	case SPUDGPU_DESCRIPTOR_TYPE_SAMPLER:              return -1; // sampler heap
 	default:                                           return -2;
 	}
@@ -334,6 +335,13 @@ SPUDRESULT spudgpu_create_descriptor_set_layout(
 		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 	if (desc->binding_count > SPUDGPU_MAX_DESCRIPTOR_BINDINGS_PER_SET)
 		return SPUDRESULT_GPU_TOO_MANY_DESCRIPTOR_BINDINGS;
+	// An unknown type, or one the device has no feature for, the same way
+	// on every backend.
+	for (uint32_t i = 0; i < desc->binding_count; ++i) {
+		const SPUDRESULT type_sr = spudgpu___internal_check_descriptor_type(desc->bindings[i].descriptor_type, device->_features);
+		if (type_sr != SPUD_SUCCESS)
+			return type_sr;
+	}
 
 	spudgpu_descriptor_set_layout_d3d12 *pResult =
 	    SPUD_NEW_ZEROED(&device->head.allocator, spudgpu_descriptor_set_layout_d3d12);
@@ -407,6 +415,11 @@ SPUDRESULT spudgpu_create_descriptor_pool(
 		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
 	if (desc->pool_size_count > SPUDGPU_MAX_DESCRIPTOR_POOL_SIZES)
 		return SPUDRESULT_GPU_TOO_MANY_DESCRIPTOR_POOLS;
+	for (uint32_t i = 0; i < desc->pool_size_count; ++i) {
+		const SPUDRESULT type_sr = spudgpu___internal_check_descriptor_type(desc->pool_sizes[i].descriptor_type, device->_features);
+		if (type_sr != SPUD_SUCCESS)
+			return type_sr;
+	}
 
 	// What the pool takes out of the device's budget, which on D3D12 is its
 	// shader-visible heaps: the same count on every backend.
@@ -584,6 +597,23 @@ void spudgpu_update_descriptor_sets(
 	for (uint32_t writes_i = 0; writes_i < write_count; ++writes_i)
 		if (spud_struct_check(&writes[writes_i].base, SPUD_STRUCT_TYPE_GPU_WRITE_DESCRIPTOR_SET) != SPUD_SUCCESS)
 			return;
+	// A storage view of a cube is a 2D array view of its faces on every
+	// backend (spudgpu.h): D3D12 has no storage cube. Checked before the
+	// first write, so a refused call writes nothing.
+	for (uint32_t writes_i = 0; writes_i < write_count; ++writes_i) {
+		const spudgpu_write_descriptor_set *write = &writes[writes_i];
+		if (write->descriptor_type != SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE || !write->image_info)
+			continue;
+		for (uint32_t k = 0; k < write->descriptor_count; ++k) {
+			const spudgpu_image_view view = write->image_info[k].image_view;
+			if (view && (view->_desc.type == SPUDGPU_IMAGE_VIEW_TYPE_CUBE || view->_desc.type == SPUDGPU_IMAGE_VIEW_TYPE_CUBE_ARRAY))
+				return;
+		}
+	}
+	// Acceleration structure writes: the feature, and every element a live
+	// top level (spudgpu.h), checked the same way on every backend.
+	if (!spudgpu___internal_check_acceleration_structure_writes(device->_features, writes, write_count))
+		return;
 
 	ID3D12Device *d3dDevice = device->_d3d_device.Get();
 
@@ -670,6 +700,15 @@ void spudgpu_update_descriptor_sets(
 					    view->_d3d_uav;
 					d3dDevice->CreateUnorderedAccessView(
 					    view->_image->_d3d_resource.Get(), nullptr, &uavDesc, handle);
+				} else if (dtype == SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE) {
+					// A top level is an SRV of its address, with no
+					// resource: D3D12's rule for acceleration structures.
+					D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc          = {};
+					srvDesc.Format                                   = DXGI_FORMAT_UNKNOWN;
+					srvDesc.ViewDimension                            = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
+					srvDesc.Shader4ComponentMapping                  = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+					srvDesc.RaytracingAccelerationStructure.Location = wr.acceleration_structures[d]->_d3d_gpu_address;
+					d3dDevice->CreateShaderResourceView(nullptr, &srvDesc, handle);
 				}
 			}
 		}

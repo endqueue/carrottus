@@ -245,6 +245,11 @@ typedef struct spudgpu_descriptor_pool_t *spudgpu_descriptor_pool;
 typedef struct spudgpu_descriptor_set_t *spudgpu_descriptor_set;
 /** Opaque handle to a pipeline layout. */
 typedef struct spudgpu_pipeline_layout_t *spudgpu_pipeline_layout;
+/** Opaque handle to an acceleration structure: a bottom level (triangles or
+ * AABBs) or a top level (instances of bottom levels). Declared on every
+ * backend, so a struct can name it; its calls exist only with
+ * SPUDGPU_EXT_RAY_QUERY. */
+typedef struct spudgpu_acceleration_structure_t *spudgpu_acceleration_structure;
 
 /**
  * @brief The graphics API a build of SpudGPU runs on.
@@ -517,6 +522,34 @@ typedef uint64_t SPUDGPU_FEATURES;
  * `VkPhysicalDeviceFeatures::drawIndirectFirstInstance`. D3D12 and Metal:
  * every adapter. */
 #define SPUDGPU_FEATURE_DRAW_INDIRECT_FIRST_INSTANCE (UINT64_C(1) << 12)
+/** The adapter can build acceleration structures and run ray queries in
+ * compute and fragment shaders (SPUDGPU_EXT_RAY_QUERY); every call of the
+ * extension on a device created without it is refused with
+ * SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED. Vulkan:
+ * `VK_KHR_acceleration_structure` and `VK_KHR_ray_query` (with
+ * `VK_KHR_deferred_host_operations`, which the first requires and SpudGPU
+ * never uses) and their `accelerationStructure` and `rayQuery` features, all
+ * enabled with it. D3D12: `D3D12_FEATURE_DATA_D3D12_OPTIONS5::RaytracingTier`
+ * 1.1 or later. Metal: `supportsRaytracing` and `supportsRaytracingFromRender`
+ * (macOS 14, iOS 17 or later; never set on an earlier system) on an
+ * `MTLGPUFamilyApple7` or later GPU.
+ *
+ * A shader module whose code makes ray queries, used on a device created
+ * without it, is the caller's error: no backend reads a module's code for
+ * it, and what the pipeline does is undefined. */
+#define SPUDGPU_FEATURE_RAY_QUERY (UINT64_C(1) << 13)
+/** The adapter runs geometry shaders (SPUDGPU_EXT_GEOMETRY_SHADER). Vulkan:
+ * the geometryShader feature. D3D12: every adapter. Metal: never (the EXT
+ * is 0). A geometry module, or a pipeline naming one, on a device created
+ * without it is refused with
+ * SPUDRESULT_GPU_EXT_GEOMETRY_SHADER_NOT_SUPPORTED. */
+#define SPUDGPU_FEATURE_GEOMETRY_SHADER (UINT64_C(1) << 14)
+/** The adapter runs tessellation control and evaluation shaders
+ * (SPUDGPU_EXT_TESSELLATION). Vulkan: the tessellationShader feature. D3D12:
+ * every adapter. Metal: never (the EXT is 0). A tessellation module, or a
+ * pipeline naming one, on a device created without it is refused with
+ * SPUDRESULT_GPU_EXT_TESSELLATION_NOT_SUPPORTED. */
+#define SPUDGPU_FEATURE_TESSELLATION (UINT64_C(1) << 15)
 
 /** @brief The kinds of queue, as bits, for SPUDGPU_QUEUE_POOL. */
 typedef uint32_t SPUDGPU_QUEUE_KINDS;
@@ -561,6 +594,33 @@ typedef struct SPUDGPU_QUEUE_POOL {
 } SPUDGPU_QUEUE_POOL;
 
 /**
+ * @brief The encoding of a shader module's code.
+ *
+ * Each backend takes exactly one: SPIR-V on Vulkan, DXIL on D3D12, a
+ * .metallib on Metal, reported per adapter in
+ * SPUDGPU_ADAPTER_PROPERTIES::shader_formats. SpudGPU compiles and
+ * translates none of them.
+ */
+typedef uint32_t SPUDGPU_SHADER_FORMAT;
+enum {
+	/** Not a format: a zeroed desc has not chosen, and is refused. */
+	SPUDGPU_SHADER_FORMAT_NONE = 0,
+	/** SPIR-V words (Vulkan). 1.0 to the device's Vulkan version's
+	 * highest; a module using an extension or capability needs the device
+	 * feature that enables it (a mesh shader, SPUDGPU_FEATURE_MESH_SHADING). */
+	SPUDGPU_SHADER_FORMAT_SPIRV = 1,
+	/** A DXIL container as DXC writes it, validated and signed (D3D12).
+	 * Its shader model must be one the device runs. */
+	SPUDGPU_SHADER_FORMAT_DXIL = 2,
+	/** A .metallib: a Metal library as Apple's metallib tool writes it
+	 * (Metal). Its Metal language version must be one the device runs. */
+	SPUDGPU_SHADER_FORMAT_METALLIB = 3
+};
+
+/** @brief A set of SPUDGPU_SHADER_FORMAT values: bit (1 << format). */
+typedef uint32_t SPUDGPU_SHADER_FORMATS;
+
+/**
  * @brief What an adapter is and what it can do, as the graphics API reports
  * it.
  *
@@ -572,8 +632,8 @@ typedef struct SPUDGPU_QUEUE_POOL {
  */
 typedef struct SPUDGPU_ADAPTER_PROPERTIES {
 	/** `type` is SPUD_STRUCT_TYPE_GPU_ADAPTER_PROPERTIES; `next` may chain
-	 * SPUDGPU_MESH_SHADING_LIMITS and SPUDGPU_BINDLESS_LIMITS, each at most
-	 * once, in any order. The caller builds the chain and sets each type;
+	 * SPUDGPU_MESH_SHADING_LIMITS, SPUDGPU_BINDLESS_LIMITS and
+	 * SPUDGPU_RAY_QUERY_LIMITS, each at most once, in any order. The caller builds the chain and sets each type;
 	 * SpudGPU fills in the rest. See SPUD_STRUCT_BASE. */
 	SPUD_STRUCT_BASE_OUT base;
 	/** The adapter's name, null-terminated. */
@@ -608,6 +668,10 @@ typedef struct SPUDGPU_ADAPTER_PROPERTIES {
 	SPUDGPU_ADAPTER_TYPE adapter_type;
 	/** Every SPUDGPU_FEATURE_* the adapter has. */
 	SPUDGPU_FEATURES supported_features;
+	/** The shader formats a device of this adapter takes, as
+	 * (1u << SPUDGPU_SHADER_FORMAT_*): exactly one bit, the backend's own
+	 * (SPIR-V on Vulkan, DXIL on D3D12, a .metallib on Metal). */
+	SPUDGPU_SHADER_FORMATS shader_formats;
 
 	/**
 	 * Bytes of memory that are the GPU's own.
@@ -702,6 +766,49 @@ typedef struct SPUDGPU_ADAPTER_PROPERTIES {
 	/** The number of entries of #queue_pools in use. */
 	uint32_t queue_pool_count;
 } SPUDGPU_ADAPTER_PROPERTIES;
+
+/**
+ * @brief The device's ray query limits, chained onto
+ * SPUDGPU_ADAPTER_PROPERTIES. All 0 on an adapter without
+ * SPUDGPU_FEATURE_RAY_QUERY.
+ *
+ * Declared on every backend, as the feature bit is, so that a chain naming
+ * it compiles everywhere. Each count is a limit of one build; every
+ * alignment is a power of two.
+ */
+typedef struct SPUDGPU_RAY_QUERY_LIMITS {
+	/** `type` is SPUD_STRUCT_TYPE_GPU_RAY_QUERY_LIMITS; `next` is the rest of
+	 * the adapter properties' chain. The caller sets the type; SpudGPU fills
+	 * in the rest. See SPUD_STRUCT_BASE. */
+	SPUD_STRUCT_BASE_OUT base;
+	/** Most geometries in one bottom level
+	 * (spudgpu_acceleration_structure_inputs::geometry_count). Vulkan
+	 * `maxGeometryCount`; D3D12 2^24; Metal 2^24 - 1 (the narrower of
+	 * Apple's documented limits). */
+	uint64_t max_geometries;
+	/** Most instances in one top level
+	 * (spudgpu_acceleration_structure_inputs::instance_count). Vulkan
+	 * `maxInstanceCount`; D3D12 2^24; Metal 2^24 - 1. */
+	uint64_t max_instances;
+	/** Most triangles and AABBs in one bottom level, every geometry's
+	 * summed. Vulkan `maxPrimitiveCount`; D3D12 2^29; Metal 2^28 - 1. */
+	uint64_t max_primitives;
+	/** What a build's scratch address (the scratch buffer's GPU address plus
+	 * spudgpu_acceleration_structure_build::scratch_offset) is a multiple of.
+	 * Vulkan `minAccelerationStructureScratchOffsetAlignment`; D3D12 256;
+	 * Metal 256. */
+	uint32_t scratch_offset_alignment;
+	/** What a placed structure's offset in its heap is a multiple of
+	 * (spudgpu_create_placed_acceleration_structure()), and what its size is
+	 * rounded up to for the range it covers there. Vulkan 256; D3D12 65536
+	 * (`D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT`: a placed buffer's); Metal
+	 * 65536, until a Mac reads the alignment
+	 * `heapAccelerationStructureSizeAndAlignWithSize:` gives and the value is
+	 * set from it (card S24). Where a graphics API asks more of one structure
+	 * than this rule, the create refuses it rather than cover more than the
+	 * rounded range (spudgpu_create_placed_acceleration_structure()). */
+	uint32_t placement_alignment;
+} SPUDGPU_RAY_QUERY_LIMITS;
 
 /**
  * @brief Lists the adapters an instance can create devices on.
@@ -1553,11 +1660,11 @@ enum {
 	 *
 	 * Mappable. The CPU writes through the mapping and flushes; reading
 	 * through the mapping is outside the contract. The GPU only reads: the
-	 * usage must not include SPUDGPU_BUFFER_USAGE_STORAGE,
-	 * SPUDGPU_BUFFER_USAGE_TRANSFER_DST or
-	 * SPUDGPU_BUFFER_USAGE_RAYTRACING_ACCELERATION_STRUCTURE, and the buffer
-	 * is never given to spudgpu_cmd_pipeline_barrier(): it is readable in
-	 * every way its usage allows from creation on.
+	 * usage must not include SPUDGPU_BUFFER_USAGE_STORAGE or
+	 * SPUDGPU_BUFFER_USAGE_TRANSFER_DST, and the buffer is never given to
+	 * spudgpu_cmd_pipeline_barrier(): it is readable in every way its usage
+	 * allows from creation on (SPUDGPU_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT
+	 * included: a build reads it as it is).
 	 *
 	 * Vulkan: a memory type with `VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT`.
 	 * D3D12: `D3D12_HEAP_TYPE_UPLOAD`. Metal: `MTLStorageModeShared` with
@@ -1677,11 +1784,18 @@ enum {
 	SPUDGPU_BUFFER_USAGE_TRANSFER_DST = 1 << 5,
 
 	/**
-	 * Buffer holds a built raytracing acceleration structure (BLAS/TLAS).
-	 * This is a binding-compatibility fact like the other usage bits, not a
-	 * resource-creation flag.
+	 * @brief The buffer holds what an acceleration structure build reads:
+	 * vertices, indices, AABBs or instances (SPUDGPU_EXT_RAY_QUERY).
+	 *
+	 * A structure's own storage is its handle's
+	 * (spudgpu_create_acceleration_structure()), and a build's scratch is a
+	 * SPUDGPU_BUFFER_USAGE_STORAGE buffer. Vulkan:
+	 * `VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR`,
+	 * on a device created with SPUDGPU_FEATURE_RAY_QUERY (on any other device
+	 * the bit is kept and no build can read the buffer). D3D12 and Metal have
+	 * nothing to set.
 	 */
-	SPUDGPU_BUFFER_USAGE_RAYTRACING_ACCELERATION_STRUCTURE = 1 << 6,
+	SPUDGPU_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT = 1 << 6,
 
 	/**
 	 * @brief Buffer holds spudgpu_draw_indirect_args /
@@ -2543,7 +2657,13 @@ enum {
 	SPUDGPU_HEAP_RESOURCE_CLASS_IMAGES = 2,
 	/** Images with a color or depth/stencil attachment usage. The heap's
 	 *  kind is SPUDGPU_MEMORY_KIND_DEVICE. */
-	SPUDGPU_HEAP_RESOURCE_CLASS_ATTACHMENT_IMAGES = 3
+	SPUDGPU_HEAP_RESOURCE_CLASS_ATTACHMENT_IMAGES = 3,
+	/** Acceleration structures (spudgpu_create_placed_acceleration_structure(),
+	 *  SPUDGPU_EXT_RAY_QUERY). The heap's kind is SPUDGPU_MEMORY_KIND_DEVICE,
+	 *  and spudgpu_create_heap() refuses the class with
+	 *  SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED on a device created without
+	 *  SPUDGPU_FEATURE_RAY_QUERY. */
+	SPUDGPU_HEAP_RESOURCE_CLASS_ACCELERATION_STRUCTURES = 4
 };
 /** @} */
 
@@ -2606,14 +2726,18 @@ typedef struct spudgpu_heap_desc {
  * @retval SPUDRESULT_GPU_INVALID_HEAP_RESOURCE_CLASS `desc->resource_class`
  *         is SPUDGPU_HEAP_RESOURCE_CLASS_NONE or not a class.
  * @retval SPUDRESULT_GPU_INVALID_MEMORY_KIND `desc->memory_kind` is
- *         SPUDGPU_MEMORY_KIND_NONE or not a kind, or the class is an image
- *         class and the kind is not SPUDGPU_MEMORY_KIND_DEVICE.
+ *         SPUDGPU_MEMORY_KIND_NONE or not a kind, or the class is not
+ *         SPUDGPU_HEAP_RESOURCE_CLASS_BUFFERS and the kind is not
+ *         SPUDGPU_MEMORY_KIND_DEVICE.
  * @retval SPUDRESULT_GPU_MEMORY_KIND_NOT_SUPPORTED The kind is
  *         SPUDGPU_MEMORY_KIND_UPLOAD, SPUDGPU_MEMORY_KIND_READBACK or
  *         SPUDGPU_MEMORY_KIND_DEVICE_MAPPABLE and the device wasn't created
  *         with SPUDGPU_FEATURE_MAPPABLE_HEAPS, or it is
  *         SPUDGPU_MEMORY_KIND_DEVICE_MAPPABLE and the device wasn't created
  *         with SPUDGPU_FEATURE_DEVICE_MAPPABLE_MEMORY.
+ * @retval SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED The class is
+ *         SPUDGPU_HEAP_RESOURCE_CLASS_ACCELERATION_STRUCTURES and the device
+ *         wasn't created with SPUDGPU_FEATURE_RAY_QUERY.
  * @return Another SPUDRESULT if the backend fails, such as
  *         SPUDRESULT_OUT_OF_MEMORY or SPUDRESULT_API_SPECIFIC_FAILURE (the
  *         device having no room for a heap that size is the usual one).
@@ -2980,7 +3104,19 @@ enum {
 	SPUDGPU_RESOURCE_STATE_PRESENT,          /**< Ready to present */
 	SPUDGPU_RESOURCE_STATE_INDIRECT_ARGUMENT, /**< Read by spudgpu_cmd_draw_indirect / _indexed_indirect */
 	SPUDGPU_RESOURCE_STATE_COPY_SOURCE,       /**< Read by a copy command */
-	SPUDGPU_RESOURCE_STATE_COPY_DEST          /**< Written by a copy command */
+	SPUDGPU_RESOURCE_STATE_COPY_DEST,         /**< Written by a copy command */
+	/** Read by an acceleration structure build: its vertices, indices,
+	 * AABBs or instances (SPUDGPU_EXT_RAY_QUERY). D3D12
+	 * `NON_PIXEL_SHADER_RESOURCE`; Vulkan a shader read at the build stage. */
+	SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_BUILD_INPUT,
+	/** A build's scratch, read and written by the build
+	 * (SPUDGPU_EXT_RAY_QUERY). D3D12 `UNORDERED_ACCESS`; Vulkan the build
+	 * stage's acceleration structure reads and writes. */
+	SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_SCRATCH,
+	/** Written by spudgpu_cmd_write_acceleration_structure_compacted_sizes()
+	 * (SPUDGPU_EXT_RAY_QUERY). D3D12 `UNORDERED_ACCESS`; Vulkan a transfer
+	 * write. */
+	SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_SIZE_DEST
 };
 
 /**
@@ -3089,12 +3225,23 @@ typedef struct spudgpu_image_barrier {
  *   through a storage slot. Without it, what the second sees is undefined.
  *   It is never recorded on the caller's behalf: two writes that don't depend
  *   on each other need none, and only the caller knows which they are.
+ * - A buffer entry whose `state_before` and `state_after` are both
+ *   SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_SCRATCH (SPUDGPU_EXT_RAY_QUERY)
+ *   is not a no-op either: it orders two builds that share a scratch range,
+ *   every write of the build before it complete before any read or write of
+ *   the build after it (card S25). Two builds in one
+ *   spudgpu_cmd_build_acceleration_structures() call never share a range
+ *   (the caller's to keep apart; nothing checks it); two calls that do need
+ *   this barrier between them.
  * - An entry whose two states are equal and are anything else does nothing.
  *
  * Maps to: vkCmdPipelineBarrier (Vulkan); ID3D12GraphicsCommandList::
  * ResourceBarrier, with a transition barrier between two states and a UAV
- * barrier for the UNORDERED_ACCESS pair (D3D12). Records nothing on Metal,
- * which orders access to a resource itself.
+ * barrier between any two states that are both D3D12's UNORDERED_ACCESS
+ * (UNORDERED_ACCESS, ACCELERATION_STRUCTURE_SCRATCH and
+ * ACCELERATION_STRUCTURE_SIZE_DEST, equal or not), which D3D12 has no
+ * transition between (D3D12). Records nothing on Metal, which orders access
+ * to a resource itself.
  *
  * Nothing is recorded if an element of `buffer_barriers` has a `base` other than {SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER, NULL} or an element of `image_barriers` has a `base` other than {SPUD_STRUCT_TYPE_GPU_IMAGE_BARRIER, NULL}
  * (see SPUD_STRUCT_BASE).
@@ -3619,6 +3766,14 @@ enum {
 
 	/** Image the shader can both read and write (compute UAV / storage image). */
 	SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE = 5,
+
+	/** A top level acceleration structure, read by ray queries
+	 * (SPUDGPU_EXT_RAY_QUERY). D3D12 an SRV (`t<b>`), Metal an argument
+	 * buffer member, Vulkan `VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR`.
+	 * A layout or pool naming it on a device created without
+	 * SPUDGPU_FEATURE_RAY_QUERY is refused with
+	 * SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED (card S23). */
+	SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE = 6,
 };
 
 /**
@@ -3744,8 +3899,12 @@ typedef struct spudgpu_descriptor_set_layout_desc {
  * @retval SPUDRESULT_GPU_TOO_MANY_DESCRIPTOR_BINDINGS `desc->binding_count`
  *         exceeds SPUDGPU_MAX_DESCRIPTOR_BINDINGS_PER_SET.
  * @retval SPUDRESULT_GPU_CANNOT_RESOLVE_API_SPECIFIC_DESCRIPTOR_TYPE A
- *         binding's `descriptor_type` has no equivalent on the backend
- *         (Vulkan and Metal only; D3D12 does not check).
+ *         binding's `descriptor_type` is not a SPUDGPU_DESCRIPTOR_TYPE
+ *         (every backend).
+ * @retval SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED A binding's
+ *         `descriptor_type` is SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE
+ *         and the device wasn't created with SPUDGPU_FEATURE_RAY_QUERY. The
+ *         bindings are checked in order, each for both.
  * @retval SPUDRESULT_API_SPECIFIC_FAILURE The native API failed to create the
  *         object (Vulkan and Metal only).
  *
@@ -3829,7 +3988,12 @@ typedef struct spudgpu_descriptor_pool_desc {
  * @retval SPUDRESULT_GPU_TOO_MANY_DESCRIPTOR_POOLS `desc->pool_size_count`
  *         exceeds SPUDGPU_MAX_DESCRIPTOR_POOL_SIZES.
  * @retval SPUDRESULT_GPU_CANNOT_RESOLVE_API_SPECIFIC_DESCRIPTOR_TYPE A pool
- *         size's `descriptor_type` has no equivalent on the backend (Vulkan).
+ *         size's `descriptor_type` is not a SPUDGPU_DESCRIPTOR_TYPE (every
+ *         backend).
+ * @retval SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED A pool size's
+ *         `descriptor_type` is SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE
+ *         and the device wasn't created with SPUDGPU_FEATURE_RAY_QUERY. The
+ *         pool sizes are checked in order, each for both.
  * @return Another SPUDRESULT if the backend fails, such as
  *         SPUDRESULT_OUT_OF_MEMORY or SPUDRESULT_API_SPECIFIC_FAILURE.
  *
@@ -4143,6 +4307,12 @@ typedef struct spudgpu_write_descriptor_set {
 
 	/** Set when writing SAMPLER or COMBINED_IMAGE_SAMPLER descriptors. */
 	spudgpu_sampler sampler;
+
+	/** Set when writing SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE
+	 * descriptors: `descriptor_count` top levels
+	 * (SPUDGPU_ACCELERATION_STRUCTURE_LEVEL_TOP), none NULL. Borrowed for the
+	 * call. */
+	const spudgpu_acceleration_structure *acceleration_structures;
 } spudgpu_write_descriptor_set;
 
 /**
@@ -4153,6 +4323,19 @@ typedef struct spudgpu_write_descriptor_set {
  *
  * Nothing is recorded if an element of `writes` has a `base` other than {SPUD_STRUCT_TYPE_GPU_WRITE_DESCRIPTOR_SET, NULL}
  * (see SPUD_STRUCT_BASE).
+ *
+ * Nothing is written either if a write puts an image view of type
+ * SPUDGPU_IMAGE_VIEW_TYPE_CUBE or SPUDGPU_IMAGE_VIEW_TYPE_CUBE_ARRAY in a
+ * SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE descriptor: a storage view of a
+ * cube is a SPUDGPU_IMAGE_VIEW_TYPE_2D_ARRAY view of its faces, on every
+ * backend (D3D12 has no storage cube), and a shader declares it as a 2D
+ * array image whose layer is face + 6 x cube. Every write is checked before
+ * the first is made.
+ *
+ * Nor if a SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE write is made on a
+ * device created without SPUDGPU_FEATURE_RAY_QUERY, or has a NULL
+ * `acceleration_structures` or an element of it that is NULL (or, in a
+ * Debug build, destroyed) or not a top level.
  *
  * @param[in] device      Device that owns the sets.
  * @param[in] writes      Array of write operations.
@@ -4611,58 +4794,128 @@ typedef struct spudgpu_blend_attachment_desc {
 } spudgpu_blend_attachment_desc;
 
 /**
- * @brief Configuration descriptor for loading a SPIR-V shader binary.
+ * @brief Describes a shader module: one entry point, in the device's own
+ * shader format.
+ *
+ * **Where a module's bindings are.** SpudGPU builds each pipeline's binding
+ * layout from its descriptor set layouts and push constant ranges, never
+ * from the module, so the module must put each resource where its backend
+ * looks. For a binding @c b of set @c s (spudgpu_descriptor_set_layout_binding::binding,
+ * and the set's index in the pipeline desc's descriptor_set_layouts):
+ *
+ * - **Vulkan (SPIR-V):** DescriptorSet @c s, Binding @c b. The push
+ *   constants are the module's push constant block.
+ * - **D3D12 (DXIL):** register @c b of space @c s, of the class its
+ *   descriptor type takes: a uniform buffer @c b<b>; a sampled image @c t<b>;
+ *   a storage buffer or storage image @c u<b> (never an SRV, even read
+ *   only); a sampler @c s<b>; a combined image sampler both @c t<b> and
+ *   @c s<b> (and, with SPUDGPU_EXT_RAY_QUERY, an acceleration structure
+ *   @c t<b>). The push constants are a
+ *   constant buffer at @c b0 of space SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS
+ *   (4). A vertex input at location @c n has the semantic @c TEXCOORD<n>.
+ * - **Metal (.metallib):** set @c s is an argument buffer (tier 1, members
+ *   in binding order) at buffer index 26 + @c s, each binding at
+ *   @c [[id(b)]], an array of @c n at @c b to @c b + @c n - 1, and a
+ *   combined image sampler's sampler at @c [[id(1024 + b)]] (so no binding
+ *   of such a set reaches 1024). The push constants are a constant buffer
+ *   at buffer index 30. A vertex buffer binding @c v is at buffer index
+ *   @c v, so vertex bindings stay below 26.
+ *
+ * A compiler writes the first two from per-resource bindings (in Slang,
+ * `[[vk::binding(b, s)]]` with `register(<class><b>, space<s>)`); SPIR-V
+ * cross-compiled with SPIRV-Cross under these remaps gives the third.
+ *
+ * **Clip space** is +Y up on every backend: a vertex or mesh shader's
+ * position (x, y) = (-1, +1) is the viewport's top left. The Vulkan backend
+ * keeps it by viewport (spudgpu_cmd_set_viewports()); no backend changes a
+ * shader.
+ *
+ * **A vertex shader's vertex and instance index** (SV_VertexID and
+ * SV_InstanceID) are defined only for draws whose first vertex (an indexed
+ * draw's vertex offset too) and first instance are 0: Vulkan and Metal
+ * count them from the buffers' start, D3D12 from the draw's first. Every
+ * Vulkan device has what a module reading them needs (shaderDrawParameters).
+ *
+ * **Stages' outputs and inputs** are matched by location on Vulkan and
+ * Metal and by register in order on D3D12: declare every output from
+ * location 0 up to the last one read (the rule spudgpu_create_shader_pipeline()
+ * already states).
  */
 typedef struct spudgpu_shader_module_desc {
-	/** `type` is SPUD_STRUCT_TYPE_GPU_SHADER_MODULE_DESC; `next` is NULL (nothing is chained onto
-	 * this struct yet). Set by the caller. See SPUD_STRUCT_BASE. */
+	/** `type` is SPUD_STRUCT_TYPE_GPU_SHADER_MODULE_DESC; `next` is NULL.
+	 * Set by the caller. See SPUD_STRUCT_BASE. */
 	SPUD_STRUCT_BASE base;
-	/**
-	 * Which pipeline stage this module targets.
-	 * @see SPUDGPU_SHADER_STAGE
-	 */
+	/** The stage the entry point is for. */
 	SPUDGPU_SHADER_STAGE stage;
-
-	/** Pointer to the raw SPIR-V bytecode. Must be 4-byte aligned. */
-	const void *spirv_code;
-
-	/** Byte size of the SPIR-V blob. Must be a multiple of 4. */
-	uint64_t spirv_size;
-
+	/** What #code is: the format the device takes
+	 * (SPUDGPU_ADAPTER_PROPERTIES::shader_formats). */
+	SPUDGPU_SHADER_FORMAT format;
+	/** The module's bytes, 4-byte aligned. Borrowed for the call: the
+	 * module keeps a copy. */
+	const void *code;
+	/** Bytes in #code, not 0; a multiple of 4 for SPIR-V and DXIL. */
+	uint64_t code_size;
+	/** The entry point's name, null-terminated: the module must have one
+	 * of that name for #stage. Required. Copied. */
+	const char *entry_point;
+	/** The entry point's workgroup size (x, y, z), as the shader declares
+	 * it: each 1 or more for SPUDGPU_SHADER_STAGE_COMPUTE, _MESH
+	 * and _TASK, all 0 for every other stage. A size other than the
+	 * shader's is undefined (Metal can't check it, so no backend does). */
+	uint32_t workgroup_size[3];
 	/** @brief A name for diagnostics, or NULL. Copied, in every build; see
 	 * spud_debug_name_set(). */
 	const char *debug_name;
 } spudgpu_shader_module_desc;
 
 /**
- * @brief Creates a shader module from a SPIR-V binary.
+ * @brief Creates a shader module from code in the device's own shader
+ * format. Translates and compiles nothing.
  *
  * @param[in]  device     Device to create the module on.
- * @param[in]  desc       Shader stage and SPIR-V code.
- * @param[out] out_module Receives the new module on success.
+ * @param[in]  desc       The stage, format, code, entry point and workgroup
+ *                        size.
+ * @param[out] out_module Receives the module; untouched on failure.
  *
+ * Checked in this order, on every backend:
  * @retval SPUD_SUCCESS The module was created.
- * @retval SPUDRESULT_GPU_INVALID_DEVICE `device` is NULL.
+ * @retval SPUDRESULT_GPU_INVALID_DEVICE `device` is NULL (or, in Debug,
+ *         destroyed).
  * @retval SPUDRESULT_NULL_DESC `desc` is NULL.
- * @retval SPUDRESULT_STRUCT_WRONG_TYPE `desc->base.type` is not
- *         SPUD_STRUCT_TYPE_GPU_SHADER_MODULE_DESC.
- * @retval SPUDRESULT_STRUCT_UNKNOWN_IN_CHAIN `desc->base.next` is not NULL.
+ * @retval SPUDRESULT_STRUCT_WRONG_TYPE / SPUDRESULT_STRUCT_UNKNOWN_IN_CHAIN
+ *         `desc->base` is wrong.
  * @retval SPUDRESULT_NULL_OUTPUT_PARAMETER `out_module` is NULL.
- * @retval SPUDRESULT_GPU_NULL_SPIRV `desc->spirv_code` is NULL or
- *         `desc->spirv_size` is 0.
- * @retval SPUDRESULT_GPU_INVALID_SPIRV_ALIGNMENT `desc->spirv_size` is not a
- *         multiple of 4.
- * @retval SPUDRESULT_GPU_EXT_MESH_SHADING_NOT_SUPPORTED `desc->stage` is
- *         SPUDGPU_SHADER_STAGE_MESH or SPUDGPU_SHADER_STAGE_TASK and `device`
- *         was created without SPUDGPU_FEATURE_MESH_SHADING.
- * @retval SPUDRESULT_GPU_INVALID_SHADER_STAGE `desc->stage` is not a single
- *         known shader stage.
- * @retval SPUDRESULT_GPU_SHADER_COMPILATION_FAILED The SPIR-V could not be
- *         translated or compiled for the backend.
- * @return Another SPUDRESULT if the backend fails, such as
- *         SPUDRESULT_OUT_OF_MEMORY or SPUDRESULT_API_SPECIFIC_FAILURE.
- *
- * @see spudgpu_destroy_shader_module()
+ * @retval SPUDRESULT_GPU_INVALID_SHADER_STAGE `desc->stage` is not one
+ *         known stage.
+ * @retval SPUDRESULT_GPU_SHADER_FORMAT_NOT_SUPPORTED `desc->format`
+ *         is not in the device's shader_formats (SPUDGPU_SHADER_FORMAT_NONE
+ *         included).
+ * @retval SPUDRESULT_GPU_NULL_SHADER_CODE `desc->code` is NULL or
+ *         `desc->code_size` is 0.
+ * @retval SPUDRESULT_GPU_INVALID_SHADER_CODE_ALIGNMENT
+ *         `desc->code` is not 4-byte aligned, or `desc->code_size` is not a
+ *         multiple of 4 for SPIR-V or DXIL.
+ * @retval SPUDRESULT_GPU_NULL_ENTRY_POINT `desc->entry_point` is
+ *         NULL or empty.
+ * @retval SPUDRESULT_GPU_INVALID_WORKGROUP_SIZE a compute, mesh or
+ *         task stage with a 0 in `desc->workgroup_size`, or another stage
+ *         with anything but 0.
+ * @retval SPUDRESULT_GPU_EXT_MESH_SHADING_NOT_SUPPORTED a mesh or task
+ *         stage on a device created without SPUDGPU_FEATURE_MESH_SHADING.
+ * @retval SPUDRESULT_GPU_EXT_GEOMETRY_SHADER_NOT_SUPPORTED a geometry stage
+ *         on a device created without SPUDGPU_FEATURE_GEOMETRY_SHADER.
+ * @retval SPUDRESULT_GPU_EXT_TESSELLATION_NOT_SUPPORTED a tessellation
+ *         control or evaluation stage on a device created without
+ *         SPUDGPU_FEATURE_TESSELLATION.
+ * @retval SPUDRESULT_GPU_INVALID_SHADER_CODE the code isn't the format
+ *         (SPIR-V's magic word, a DXIL container's 'DXBC' and its PSV0 part, a
+ *         library Metal refuses).
+ * @retval SPUDRESULT_GPU_SHADER_ENTRY_POINT_NOT_FOUND the module has
+ *         no entry point named `desc->entry_point` for `desc->stage`.
+ * @retval SPUDRESULT_OUT_OF_MEMORY the copy or the module couldn't be
+ *         allocated.
+ * @return SPUDRESULT_API_SPECIFIC_FAILURE if the graphics API fails
+ *         otherwise.
  */
 SPUDRESULT spudgpu_create_shader_module(
     spudgpu_device device,
@@ -4705,8 +4958,6 @@ typedef struct spudgpu_shader_pipeline_desc {
 	 * state at all), never both. @see SPUDGPU_EXT_MESH_SHADING
 	 */
 	spudgpu_shader_module vertex_module;
-	/** Null-terminated entry point name. Pass NULL to default to "main". */
-	const char *vertex_entry_point;
 
 	/**
 	 * Compiled mesh shader module. Mutually exclusive with vertex_module —
@@ -4715,8 +4966,6 @@ typedef struct spudgpu_shader_pipeline_desc {
 	 * vertex-fetch pipeline. @see SPUDGPU_EXT_MESH_SHADING
 	 */
 	spudgpu_shader_module mesh_module;
-	/** Null-terminated entry point name. Pass NULL to default to "main". */
-	const char *mesh_entry_point;
 
 	/**
 	 * Compiled amplification/task shader module, upstream of mesh_module.
@@ -4725,34 +4974,26 @@ typedef struct spudgpu_shader_pipeline_desc {
 	 * Ignored unless mesh_module is also set. @see SPUDGPU_EXT_MESH_SHADING
 	 */
 	spudgpu_shader_module task_module;
-	/** Null-terminated entry point name. Pass NULL to default to "main". */
-	const char *task_entry_point;
 
 	/** Compiled fragment shader module. Required. */
 	spudgpu_shader_module fragment_module;
-	/** Null-terminated entry point name. Pass NULL to default to "main". */
-	const char *fragment_entry_point;
 
-	/** Compiled geometry shader module. Optional — leave NULL to skip. */
+	/** Compiled geometry shader module. Optional — leave NULL to skip. A
+	 * device created without SPUDGPU_FEATURE_GEOMETRY_SHADER refuses one
+	 * (SPUDGPU_EXT_GEOMETRY_SHADER). */
 	spudgpu_shader_module geometry_module;
-	/** Null-terminated entry point name. Pass NULL to default to "main". */
-	const char *geometry_entry_point;
 
 	/**
 	 * Compiled tessellation control shader module. Optional — leave NULL to
 	 * skip.
 	 */
 	spudgpu_shader_module tess_control_module;
-	/** Null-terminated entry point name. Pass NULL to default to "main". */
-	const char *tess_control_entry_point;
 
 	/**
 	 * Compiled tessellation evaluation shader module. Optional — leave NULL to
 	 * skip.
 	 */
 	spudgpu_shader_module tess_eval_module;
-	/** Null-terminated entry point name. Pass NULL to default to "main". */
-	const char *tess_eval_entry_point;
 
 	// -----------------------------------------------------------------------
 	// Vertex input layout
@@ -5051,10 +5292,12 @@ void spudgpu_cmd_push_constants(
  * Maps normalized device coordinates (NDC) ranging [-1, 1] horizontally and
  * vertically directly into a target render target screen pixel domain.
  *
- * Clip space is Vulkan's on every backend: NDC -1 in Y is the viewport's top
- * edge and +1 its bottom (+Y points down), and depth runs 0 to 1. D3D12 and
- * Metal flip Y when they translate a shader, so the same shader and the same
- * vertices give the same picture, the same way up, on all three.
+ * Clip space is the same on every backend: NDC +1 in Y is the viewport's top
+ * edge and -1 its bottom (+Y points up, as D3D12 and Metal have it), and
+ * depth runs 0 to 1. The Vulkan backend keeps it by viewport
+ * (spudgpu_cmd_set_viewports()), so the same shader and the same vertices
+ * give the same picture, the same way up, on all three; no backend changes
+ * a shader.
  */
 /* Frozen: a value. It never changes; a new need gets a new type. */
 typedef struct SPUDGPU_VIEWPORT {
@@ -5085,6 +5328,11 @@ typedef struct SPUDGPU_VIEWPORT {
 
 /**
  * @brief Sets viewports for subsequent draws.
+ *
+ * A viewport's (x, y) is its top-left corner in framebuffer coordinates,
+ * which run right and down from the target's top left, on every backend;
+ * clip space's +Y is toward the viewport's top (spudgpu_shader_module_desc).
+ * The Vulkan backend gives Vulkan y + height and -height to keep that.
  *
  * @param[in] cmd            Command list being recorded.
  * @param[in] first_viewport Index of the first viewport slot to set.
@@ -5357,6 +5605,26 @@ void spudgpu_cmd_draw_indexed_indirect(
  * in the device's features. A mesh-shader pipeline on a device created
  * without it is refused with SPUDRESULT_GPU_EXT_MESH_SHADING_NOT_SUPPORTED.
  */
+/**
+ * @brief Geometry shaders and tessellation (control and evaluation
+ * shaders, patches): 1 where the backend in this build implements them,
+ * Vulkan and D3D12. 0 on Metal, which has no geometry stage and whose
+ * tessellation is a compute kernel and a post-tessellation vertex function,
+ * not these stages. Says nothing about a GPU: each pairs with its feature
+ * bit (SPUDGPU_FEATURE_GEOMETRY_SHADER, SPUDGPU_FEATURE_TESSELLATION), which
+ * a GPU of a backend where the macro is 0 never has. The desc fields
+ * (spudgpu_shader_pipeline_desc::geometry_module, ::tess_control_module,
+ * ::tess_eval_module, ::patch_control_points) are declared on every
+ * backend; naming one without the device's bit is refused.
+ */
+#if SPUDGPU_COMPILE_VULKAN_API || SPUDGPU_COMPILE_D3D12_API
+#define SPUDGPU_EXT_GEOMETRY_SHADER 1
+#define SPUDGPU_EXT_TESSELLATION 1
+#else
+#define SPUDGPU_EXT_GEOMETRY_SHADER 0
+#define SPUDGPU_EXT_TESSELLATION 0
+#endif
+
 #if SPUDGPU_COMPILE_VULKAN_API || SPUDGPU_COMPILE_D3D12_API || SPUDGPU_COMPILE_METAL_API
 #define SPUDGPU_EXT_MESH_SHADING 1
 #else
@@ -5495,6 +5763,898 @@ void spudgpu_cmd_set_depth_bounds(
 
 #endif // SPUDGPU_EXT_DEPTH_BOUNDS_TEST
 
+// ============================================================================
+//  Ray queries: acceleration structures
+// ============================================================================
+
+/**
+ * @brief 1 when the compiled-in backend implements acceleration structures
+ * and inline ray queries and this section is declared, 0 when it is compiled
+ * out. 1 on Vulkan, D3D12 and Metal.
+ *
+ * It says nothing about any GPU: whether one can build acceleration
+ * structures and trace is SPUDGPU_FEATURE_RAY_QUERY in its adapter's
+ * supported_features, and whether a device may is that bit in the device's
+ * features. Every call below returns
+ * SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED on a device created without it
+ * (the void barrier call records nothing).
+ *
+ * **The shape.** An acceleration structure is a handle: a bottom level over
+ * triangles or AABBs, or a top level over instances of bottom levels. The
+ * caller asks how large one must be and how much scratch its build needs
+ * (spudgpu_get_acceleration_structure_build_sizes()), creates it at that
+ * size, committed or placed in a heap of its own, and records builds and
+ * updates in a command list, many in one call, with scratch from a buffer of
+ * its own. Instances are written in the device's own layout: the caller asks
+ * for the layout (spudgpu_get_acceleration_structure_instance_layout()) and
+ * either writes instances with spudgpu_write_acceleration_structure_instances()
+ * or writes the bytes on the GPU itself. A top level is bound as a
+ * SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE descriptor; shaders query it
+ * with inline ray queries (SPIR-V `SPV_KHR_ray_query`, DXIL shader model 6.5
+ * `RayQuery`, Metal `intersection_query`) in compute and fragment shaders.
+ * SpudGPU keeps no pool, no cache and no scratch of its own, and chooses no
+ * build flag: storage, scratch, instance and geometry buffers are all the
+ * caller's, sized from the size query.
+ *
+ * **The rules every backend is held to**, whatever the graphics API
+ * underneath allows:
+ *
+ * - Alignments are the device's, reported in SPUDGPU_RAY_QUERY_LIMITS: a
+ *   build's scratch address, a placed structure's offset, and the instance
+ *   buffer's offset (spudgpu_acceleration_structure_instance_layout::alignment).
+ *   AABB data: offset and stride multiples of 8, stride at least 24. Vertex
+ *   data: offset and stride multiples of 4, stride at least 12. Index data:
+ *   offset a multiple of the index size. Every stride below 2^32.
+ * - Every range is inside its buffer, and every count within its limit,
+ *   checked with overflow-safe arithmetic before anything is recorded. What
+ *   the GPU reads from the buffers is not checked: an index past its
+ *   geometry's vertices, or an instance whose reference is not a live bottom
+ *   level's, is undefined.
+ * - A build's input buffers (vertices, indices, AABBs, instances) and its
+ *   scratch live, unchanged, until the build's submission completes.
+ * - A bottom level outlives every use of every top level whose last build
+ *   named it, and every top level built over it is destroyed or rebuilt
+ *   without it before it is destroyed.
+ * - An update keeps the last build's geometry kinds, counts, flags and index
+ *   layout; only positions, AABBs and instance contents change; the source
+ *   was built with SPUDGPU_ACCELERATION_STRUCTURE_BUILD_ALLOW_UPDATE. It is
+ *   made in place (source = destination) or into another structure of at
+ *   least the update's size.
+ * - A structure is used in a trace only after a barrier from BUILD_WRITE to
+ *   TRACE; a build, copy or size write that reads one (a top level over
+ *   bottom levels, an update's source, a copy's source) only after a barrier
+ *   from BUILD_WRITE to BUILD_READ
+ *   (spudgpu_cmd_acceleration_structure_barrier()). Input buffers move to
+ *   SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_BUILD_INPUT and scratch to
+ *   SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_SCRATCH with
+ *   spudgpu_cmd_pipeline_barrier(), as other buffers move.
+ * - Ray queries run in compute and fragment shaders. A module whose code
+ *   queries is created only on a device with SPUDGPU_FEATURE_RAY_QUERY.
+ *
+ * Every structure is used like a buffer, by one caller at a time, through
+ * the command lists that build it and the passes that read it (@ref
+ * spud_threads "Threads"). Builds are recorded on the GPU, never run on the
+ * host: Vulkan's deferred host operations are not used.
+ *
+ * Maps to `VK_KHR_acceleration_structure` and `VK_KHR_ray_query` (Vulkan),
+ * DXR 1.1's inline ray tracing (D3D12), and Metal 3's acceleration
+ * structures with indirect instances (Metal).
+ */
+#if SPUDGPU_COMPILE_VULKAN_API || SPUDGPU_COMPILE_D3D12_API || SPUDGPU_COMPILE_METAL_API
+#define SPUDGPU_EXT_RAY_QUERY 1
+#else
+#define SPUDGPU_EXT_RAY_QUERY 0
+#endif
+
+#if SPUDGPU_EXT_RAY_QUERY
+
+/** @brief A bottom or a top level. */
+typedef uint32_t SPUDGPU_ACCELERATION_STRUCTURE_LEVEL;
+enum {
+	/** Not a level: a zeroed desc has not chosen, and is refused. */
+	SPUDGPU_ACCELERATION_STRUCTURE_LEVEL_NONE   = 0,
+	/** Triangles or AABBs. */
+	SPUDGPU_ACCELERATION_STRUCTURE_LEVEL_BOTTOM = 1,
+	/** Instances of bottom levels. */
+	SPUDGPU_ACCELERATION_STRUCTURE_LEVEL_TOP    = 2
+};
+
+/**
+ * @brief A build's flags: only those Vulkan, D3D12 and Metal all keep.
+ *
+ * None is set for the caller. Metal has no fast-trace flag (it is Metal's
+ * default) and can always compact; the rules below hold on every backend
+ * all the same. There is no minimize-memory flag, which Metal lacks.
+ */
+typedef uint32_t SPUDGPU_ACCELERATION_STRUCTURE_BUILD_FLAGS;
+enum {
+	/** Trace fast at the cost of build time. Not with PREFER_FAST_BUILD. */
+	SPUDGPU_ACCELERATION_STRUCTURE_BUILD_PREFER_FAST_TRACE = 1u << 0,
+	/** Build fast at the cost of trace time. Not with PREFER_FAST_TRACE. */
+	SPUDGPU_ACCELERATION_STRUCTURE_BUILD_PREFER_FAST_BUILD = 1u << 1,
+	/** The structure may be updated (refitted) from this build:
+	 * SPUDGPU_ACCELERATION_STRUCTURE_BUILD_MODE_UPDATE. Metal's refit usage. */
+	SPUDGPU_ACCELERATION_STRUCTURE_BUILD_ALLOW_UPDATE      = 1u << 2,
+	/** The structure's compacted size may be written and a compacted copy
+	 * made from this build. */
+	SPUDGPU_ACCELERATION_STRUCTURE_BUILD_ALLOW_COMPACTION  = 1u << 3
+};
+
+/** @brief A geometry's flags: the two all three APIs have. */
+typedef uint32_t SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_FLAGS;
+enum {
+	/** Its hits are committed without the shader's say, unless an instance
+	 * or the query forces otherwise. */
+	SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE                  = 1u << 0,
+	/** A primitive is a candidate at most once per query. */
+	SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_NO_DUPLICATE_CANDIDATES = 1u << 1
+};
+
+/** @brief What a geometry is. */
+typedef uint32_t SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_KIND;
+enum {
+	/** Not a kind: refused. */
+	SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_NONE      = 0,
+	/** Triangles: positions, and indices or none. */
+	SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES = 1,
+	/** Procedural: each box a candidate the shader decides. */
+	SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_AABBS     = 2
+};
+
+/**
+ * @brief One geometry of a bottom level.
+ *
+ * Geometry has no transform of its own: Vulkan's and D3D12's 3x4 transform
+ * buffer and Metal's packed 4x3 one differ in layout, and instances carry
+ * transforms on all three. Vertex positions are three 32-bit floats
+ * (SPUDGPU_FORMAT_R32G32B32_FLOAT, the one format all three take on every
+ * device).
+ */
+/* Frozen: an array element of spudgpu_acceleration_structure_inputs. It never changes; a new need gets a new type. */
+typedef struct spudgpu_acceleration_structure_geometry {
+	/** Triangles or AABBs. Every geometry of one bottom level is of one
+	 * kind. */
+	SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_KIND kind;
+	/** SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_FLAGS; no other bit. */
+	SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_FLAGS flags;
+	/** Triangles: float3 positions. AABBs: boxes of six floats, (min x,
+	 * min y, min z, max x, max y, max z). A buffer with
+	 * SPUDGPU_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT. Borrowed until
+	 * the build's submission completes. */
+	spudgpu_buffer data;
+	/** Byte offset of the first vertex or box: a multiple of 4 for
+	 * triangles, 8 for AABBs. */
+	uint64_t data_offset;
+	/** Bytes from one vertex or box to the next: a multiple of 4 and at
+	 * least 12 for triangles, a multiple of 8 and at least 24 for AABBs;
+	 * below 2^32. */
+	uint64_t data_stride;
+	/** Triangles: vertices (with no indices, a multiple of 3, the triangles
+	 * being every three in order). AABBs: boxes, the primitives. Not 0. */
+	uint32_t data_count;
+	/** Triangles: SPUDGPU_FORMAT_R16_UINT or SPUDGPU_FORMAT_R32_UINT with an
+	 * index buffer, as index buffer views name their width, or
+	 * SPUDGPU_FORMAT_UNKNOWN for three vertices per triangle. AABBs:
+	 * SPUDGPU_FORMAT_UNKNOWN. */
+	SPUDGPU_FORMAT index_format;
+	/** The index buffer (with
+	 * SPUDGPU_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT), or NULL with
+	 * SPUDGPU_FORMAT_UNKNOWN. Every index is below #data_count. Borrowed until
+	 * the build's submission completes. */
+	spudgpu_buffer indices;
+	/** Byte offset of the first index: a multiple of the index size. 0
+	 * without indices. */
+	uint64_t index_offset;
+	/** Triangles, with indices: a non-zero multiple of 3, index_count / 3
+	 * being the triangle count. 0 without indices. */
+	uint32_t index_count;
+} spudgpu_acceleration_structure_geometry;
+
+/**
+ * @brief What a build reads: a bottom level's geometries or a top level's
+ * instances. The same inputs give the size query and the build.
+ *
+ * The fields of the other level are 0 and NULL.
+ */
+typedef struct spudgpu_acceleration_structure_inputs {
+	/** `type` is SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_INPUTS; `next` is
+	 * NULL (nothing is chained onto this struct yet). Set by the caller. See
+	 * SPUD_STRUCT_BASE. */
+	SPUD_STRUCT_BASE base;
+	/** The level built: SPUDGPU_ACCELERATION_STRUCTURE_LEVEL_BOTTOM or _TOP. */
+	SPUDGPU_ACCELERATION_STRUCTURE_LEVEL level;
+	/** SPUDGPU_ACCELERATION_STRUCTURE_BUILD_FLAGS; at most one of the two
+	 * PREFER flags, no other bit. */
+	SPUDGPU_ACCELERATION_STRUCTURE_BUILD_FLAGS flags;
+	/** Bottom level: its geometries, all of one kind, #geometry_count of
+	 * them. Borrowed for the call. */
+	const spudgpu_acceleration_structure_geometry *geometries;
+	/** Bottom level: 1 to SPUDGPU_RAY_QUERY_LIMITS::max_geometries, with at
+	 * most SPUDGPU_RAY_QUERY_LIMITS::max_primitives triangles and boxes in
+	 * all. */
+	uint32_t geometry_count;
+	/** Top level: instances in the device's layout
+	 * (spudgpu_get_acceleration_structure_instance_layout()), in a buffer
+	 * with SPUDGPU_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT. Borrowed
+	 * until the build's submission completes. */
+	spudgpu_buffer instances;
+	/** Top level: byte offset of the first instance, a multiple of the
+	 * layout's alignment. */
+	uint64_t instance_offset;
+	/** Top level: 0 to SPUDGPU_RAY_QUERY_LIMITS::max_instances, the layout's
+	 * size apart, inside #instances. */
+	uint32_t instance_count;
+	/** Top level: every bottom level its instances reference, each a bottom
+	 * level, #bottom_level_count of them: at most the destination's
+	 * spudgpu_acceleration_structure_desc::max_bottom_levels. Copied into
+	 * the destination by the build (with no allocation); the size query
+	 * reads only the levels. Metal makes them resident wherever the top
+	 * level is built or traced, which nothing in the instance bytes could
+	 * tell it; Vulkan and D3D12 check them and read them no further. */
+	const spudgpu_acceleration_structure *bottom_levels;
+	/** Top level: the number of entries of #bottom_levels. */
+	uint32_t bottom_level_count;
+} spudgpu_acceleration_structure_inputs;
+
+/** @brief What a structure and its builds need. */
+typedef struct spudgpu_acceleration_structure_sizes {
+	/** `type` is SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_SIZES; `next` is
+	 * NULL. The caller sets the type; SpudGPU fills in the rest. See
+	 * SPUD_STRUCT_BASE. */
+	SPUD_STRUCT_BASE_OUT base;
+	/** Bytes the structure is created with, at least. */
+	uint64_t storage_size;
+	/** Scratch bytes a build (SPUDGPU_ACCELERATION_STRUCTURE_BUILD_MODE_BUILD)
+	 * needs. */
+	uint64_t build_scratch_size;
+	/** Scratch bytes an update needs; 0 without
+	 * SPUDGPU_ACCELERATION_STRUCTURE_BUILD_ALLOW_UPDATE. */
+	uint64_t update_scratch_size;
+} spudgpu_acceleration_structure_sizes;
+
+/**
+ * @brief Reports the sizes a build of `inputs` needs.
+ *
+ * Records nothing and creates nothing. May allocate temporary memory
+ * through the device's allocator, freed before it returns. Maps to
+ * vkGetAccelerationStructureBuildSizesKHR (Vulkan),
+ * GetRaytracingAccelerationStructurePrebuildInfo (D3D12) and
+ * accelerationStructureSizesWithDescriptor: (Metal).
+ *
+ * @param[in]  device    Device the structure would be built on.
+ * @param[in]  inputs    What the build would read.
+ * @param[out] out_sizes Receives the sizes; untouched on failure.
+ *
+ * Checked in this order, on every backend:
+ * @retval SPUD_SUCCESS `out_sizes` was filled in.
+ * @retval SPUDRESULT_GPU_INVALID_DEVICE `device` is NULL (or, in Debug,
+ *         destroyed).
+ * @retval SPUDRESULT_NULL_DESC `inputs` is NULL.
+ * @retval SPUDRESULT_STRUCT_WRONG_TYPE / SPUDRESULT_STRUCT_UNKNOWN_IN_CHAIN
+ *         `inputs->base` is wrong.
+ * @retval SPUDRESULT_NULL_OUTPUT_PARAMETER `out_sizes` is NULL.
+ * @retval SPUDRESULT_STRUCT_WRONG_TYPE / SPUDRESULT_STRUCT_UNKNOWN_IN_CHAIN
+ *         `out_sizes->base` is wrong.
+ * @retval SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED The device wasn't
+ *         created with SPUDGPU_FEATURE_RAY_QUERY.
+ * @retval (the inputs' checks, in field order:)
+ * @retval SPUDRESULT_DESC_INVALID_PARAMETERS `inputs->level` is not a
+ *         level; `inputs->flags` has an unknown bit or both PREFER flags.
+ * @retval (a bottom level, then each geometry in order:)
+ * @retval SPUDRESULT_DESC_INVALID_PARAMETERS The top level's fields are not
+ *         0 and NULL.
+ * @retval SPUDRESULT_NULL_DESC `geometries` is NULL.
+ * @retval SPUDRESULT_ZERO_SIZE `geometry_count` is 0.
+ * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_LIMIT `geometry_count` is
+ *         past max_geometries.
+ * @retval SPUDRESULT_DESC_INVALID_PARAMETERS A geometry's kind is not a
+ *         kind, or not the first geometry's; its flags have an unknown bit.
+ * @retval SPUDRESULT_GPU_INVALID_BUFFER `data` is NULL (or destroyed).
+ * @retval SPUDRESULT_GPU_INVALID_BUFFER_USAGE `data` lacks
+ *         SPUDGPU_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT.
+ * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_ALIGNMENT `data_offset` or
+ *         `data_stride` breaks the rule above.
+ * @retval SPUDRESULT_ZERO_SIZE `data_count` is 0.
+ * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_RANGE The data runs past
+ *         the end of its buffer.
+ * @retval SPUDRESULT_DESC_INVALID_PARAMETERS `index_format` is not one the
+ *         kind takes; `indices` is not NULL without an index format.
+ * @retval SPUDRESULT_GPU_INVALID_BUFFER `indices` is NULL (or destroyed)
+ *         with an index format.
+ * @retval SPUDRESULT_GPU_INVALID_BUFFER_USAGE `indices` lacks
+ *         SPUDGPU_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT.
+ * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_ALIGNMENT `index_offset` is
+ *         not a multiple of the index size.
+ * @retval SPUDRESULT_ZERO_SIZE `index_count` is 0 with indices.
+ * @retval SPUDRESULT_DESC_INVALID_PARAMETERS `index_count` (with indices)
+ *         or `data_count` (triangles without) is not a multiple of 3, or
+ *         `index_offset` or `index_count` is not 0 without indices.
+ * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_RANGE The indices run past
+ *         the end of their buffer.
+ * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_LIMIT The primitives so far
+ *         are past max_primitives.
+ * @retval (a top level:)
+ * @retval SPUDRESULT_DESC_INVALID_PARAMETERS The bottom level's fields are
+ *         not 0 and NULL.
+ * @retval SPUDRESULT_GPU_INVALID_BUFFER `instances` is NULL (or destroyed).
+ * @retval SPUDRESULT_GPU_INVALID_BUFFER_USAGE `instances` lacks
+ *         SPUDGPU_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT.
+ * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_ALIGNMENT `instance_offset`
+ *         is not a multiple of the instance layout's alignment.
+ * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_LIMIT `instance_count` is
+ *         past max_instances.
+ * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_RANGE The instances run
+ *         past the end of their buffer.
+ * @retval SPUDRESULT_NULL_DESC `bottom_levels` is NULL with a count.
+ * @retval SPUDRESULT_GPU_INVALID_ACCELERATION_STRUCTURE An entry of
+ *         `bottom_levels` is NULL (or destroyed) or not a bottom level.
+ * @retval SPUDRESULT_OUT_OF_MEMORY The temporary memory couldn't be
+ *         allocated.
+ * @return SPUDRESULT_API_SPECIFIC_FAILURE if the graphics API fails.
+ */
+SPUDRESULT spudgpu_get_acceleration_structure_build_sizes(
+    spudgpu_device device,
+    const spudgpu_acceleration_structure_inputs *inputs,
+    spudgpu_acceleration_structure_sizes *out_sizes);
+
+/** @brief Describes an acceleration structure to create. */
+typedef struct spudgpu_acceleration_structure_desc {
+	/** `type` is SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_DESC; `next` is
+	 * NULL. Set by the caller. See SPUD_STRUCT_BASE. */
+	SPUD_STRUCT_BASE base;
+	/** SPUDGPU_ACCELERATION_STRUCTURE_LEVEL_BOTTOM or _TOP: what every build
+	 * into it builds. */
+	SPUDGPU_ACCELERATION_STRUCTURE_LEVEL level;
+	/** Bytes, not 0: a size query's storage_size, or a compacted size read
+	 * back (spudgpu_cmd_write_acceleration_structure_compacted_sizes()). */
+	uint64_t size;
+	/** Top level: the most bottom levels one build may name
+	 * (spudgpu_acceleration_structure_inputs::bottom_levels); the list is
+	 * kept with the structure, made with it. 0 for a bottom level. */
+	uint32_t max_bottom_levels;
+	/** Whether a compacted size may be written for it. Vulkan makes the one
+	 * query that holds the size with it, freed with it. */
+	bool allow_compaction;
+	/** A name for diagnostics, or NULL. Copied, in every build; see
+	 * spud_debug_name_set(). */
+	const char *debug_name;
+} spudgpu_acceleration_structure_desc;
+
+/**
+ * @brief Creates an acceleration structure with storage of its own.
+ *
+ * Its contents are undefined until a build or copy writes it. Allocates the
+ * handle, a top level's list of max_bottom_levels entries, and the debug
+ * name, through the device's allocator. Vulkan: a buffer of the size, its
+ * own memory, and the `VkAccelerationStructureKHR` over it. D3D12: a
+ * committed buffer in `RAYTRACING_ACCELERATION_STRUCTURE` state. Metal:
+ * newAccelerationStructureWithSize:.
+ *
+ * @param[in]  device        Device to create it on.
+ * @param[in]  desc          Its level, size, limit and name.
+ * @param[out] out_structure Receives the structure; untouched on failure.
+ *
+ * Checked in this order, on every backend:
+ * @retval SPUD_SUCCESS The structure was created.
+ * @retval SPUDRESULT_GPU_INVALID_DEVICE `device` is NULL (or, in Debug,
+ *         destroyed).
+ * @retval SPUDRESULT_NULL_DESC `desc` is NULL.
+ * @retval SPUDRESULT_STRUCT_WRONG_TYPE / SPUDRESULT_STRUCT_UNKNOWN_IN_CHAIN
+ *         `desc->base` is wrong.
+ * @retval SPUDRESULT_NULL_OUTPUT_PARAMETER `out_structure` is NULL.
+ * @retval SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED The device wasn't
+ *         created with SPUDGPU_FEATURE_RAY_QUERY.
+ * @retval SPUDRESULT_DESC_INVALID_PARAMETERS `desc->level` is not a level,
+ *         or a bottom level has a max_bottom_levels.
+ * @retval SPUDRESULT_ZERO_SIZE `desc->size` is 0.
+ * @retval SPUDRESULT_OUT_OF_MEMORY The handle or list couldn't be
+ *         allocated.
+ * @retval SPUDRESULT_API_SPECIFIC_FAILURE The graphics API fails (the
+ *         device having no room for it is the usual one).
+ * @retval SPUDRESULT_OUT_OF_MEMORY The name couldn't be copied.
+ *
+ * @see spudgpu_destroy_acceleration_structure()
+ */
+SPUDRESULT spudgpu_create_acceleration_structure(
+    spudgpu_device device,
+    const spudgpu_acceleration_structure_desc *desc,
+    spudgpu_acceleration_structure *out_structure);
+
+/**
+ * @brief Creates an acceleration structure placed at `offset` in `heap`, for
+ * a caller whose allocator places everything.
+ *
+ * The structure covers `desc->size` rounded up to
+ * SPUDGPU_RAY_QUERY_LIMITS::placement_alignment bytes from `offset`.
+ * SpudGPU checks no overlap, as for placed buffers: two live resources over
+ * one byte are undefined. Destroying it frees nothing to the device. Vulkan:
+ * a buffer bound at the offset of the heap's memory. D3D12: a placed buffer.
+ * Metal: newAccelerationStructureWithSize:offset:.
+ *
+ * @param[in]  heap          A heap of
+ *                           SPUDGPU_HEAP_RESOURCE_CLASS_ACCELERATION_STRUCTURES.
+ * @param[in]  offset        Byte offset in the heap: a multiple of
+ *                           placement_alignment.
+ * @param[in]  desc          As for spudgpu_create_acceleration_structure().
+ * @param[out] out_structure Receives the structure; untouched on failure.
+ *
+ * Checked in this order, on every backend:
+ * @retval SPUD_SUCCESS The structure was created.
+ * @retval SPUDRESULT_GPU_INVALID_HEAP `heap` is NULL (or, in Debug,
+ *         destroyed).
+ * @retval (each result of spudgpu_create_acceleration_structure() from
+ *         SPUDRESULT_NULL_DESC on, in its order, for the heap's device.)
+ * @retval SPUDRESULT_GPU_HEAP_MISMATCH The heap is not of
+ *         SPUDGPU_HEAP_RESOURCE_CLASS_ACCELERATION_STRUCTURES.
+ * @retval SPUDRESULT_GPU_PLACEMENT_MISALIGNED `offset` is not a multiple of
+ *         placement_alignment.
+ * @retval SPUDRESULT_GPU_PLACEMENT_OUT_OF_RANGE The range it covers runs
+ *         past the end of the heap.
+ * @retval SPUDRESULT_OUT_OF_MEMORY The handle or its list couldn't be
+ *         allocated.
+ * @retval SPUDRESULT_GPU_PLACEMENT_MISALIGNED The graphics API asks a larger
+ *         alignment of this structure than placement_alignment, and `offset`
+ *         is not a multiple of it (none has, on the GPUs tested).
+ * @retval SPUDRESULT_GPU_PLACEMENT_OUT_OF_RANGE The graphics API's own size
+ *         for this structure is larger than `desc->size` rounded up to
+ *         placement_alignment, the range the caller placed it over (none
+ *         has, on the GPUs tested): it is refused rather than cover bytes
+ *         past that range.
+ * @retval SPUDRESULT_API_SPECIFIC_FAILURE The graphics API fails.
+ * @retval SPUDRESULT_OUT_OF_MEMORY The name couldn't be copied.
+ */
+SPUDRESULT spudgpu_create_placed_acceleration_structure(
+    spudgpu_heap heap,
+    uint64_t offset,
+    const spudgpu_acceleration_structure_desc *desc,
+    spudgpu_acceleration_structure *out_structure);
+
+/**
+ * @brief Destroys an acceleration structure.
+ *
+ * The caller has waited for every submission that builds, copies or traces
+ * it, and every top level built over it is destroyed or rebuilt without it
+ * first. A placed structure's bytes stay the heap's.
+ *
+ * @param[in] structure Structure to destroy. NULL does nothing.
+ */
+void spudgpu_destroy_acceleration_structure(spudgpu_acceleration_structure structure);
+
+/**
+ * @brief Reads a bottom level's reference, what an instance names it by.
+ *
+ * Vulkan its device address (vkGetAccelerationStructureDeviceAddressKHR),
+ * D3D12 its GPU virtual address, Metal its `gpuResourceID`. Constant for the
+ * structure's life, built or not, so a caller writing instances on the GPU
+ * reads it once.
+ *
+ * @param[in]  bottom_level  A bottom level.
+ * @param[out] out_reference Receives the reference.
+ *
+ * @retval SPUD_SUCCESS `out_reference` was written.
+ * @retval SPUDRESULT_GPU_INVALID_ACCELERATION_STRUCTURE `bottom_level` is
+ *         NULL (or, in Debug, destroyed) or a top level.
+ * @retval SPUDRESULT_NULL_OUTPUT_PARAMETER `out_reference` is NULL.
+ */
+SPUDRESULT spudgpu_get_acceleration_structure_reference(
+    spudgpu_acceleration_structure bottom_level,
+    uint64_t *out_reference);
+
+/** @brief How the device lays an instance out. */
+typedef uint32_t SPUDGPU_ACCELERATION_STRUCTURE_INSTANCE_LAYOUT;
+enum {
+	/** Not a layout. */
+	SPUDGPU_ACCELERATION_STRUCTURE_INSTANCE_LAYOUT_NONE           = 0,
+	/** 64 bytes (Vulkan, D3D12): a row-major 3x4 float transform (48
+	 * bytes); a 32-bit word of the 24-bit user index (low bits) and the
+	 * 8-bit mask; a 32-bit word of the 24-bit table offset (low bits) and 8
+	 * bits of flags; the 64-bit reference. */
+	SPUDGPU_ACCELERATION_STRUCTURE_INSTANCE_LAYOUT_ROW_MAJOR_64    = 1,
+	/** 72 bytes (Metal's indirect instance descriptor): a column-major
+	 * packed 4x3 float transform (48 bytes, four columns of three floats);
+	 * 32-bit options (the flags), mask, table offset and user index; the
+	 * 64-bit reference. */
+	SPUDGPU_ACCELERATION_STRUCTURE_INSTANCE_LAYOUT_COLUMN_MAJOR_72 = 2
+};
+
+/** @brief An instance's layout on a device. */
+/* Frozen: a value read back. It never changes; a new need gets a new type. */
+typedef struct spudgpu_acceleration_structure_instance_layout {
+	/** Which layout. */
+	SPUDGPU_ACCELERATION_STRUCTURE_INSTANCE_LAYOUT kind;
+	/** Bytes per instance, and the stride between them. */
+	uint32_t size;
+	/** What the instance buffer's offset is a multiple of
+	 * (spudgpu_acceleration_structure_inputs::instance_offset). */
+	uint32_t alignment;
+} spudgpu_acceleration_structure_instance_layout;
+
+/**
+ * @brief Reads how `device` lays an instance out, for a caller that writes
+ * instance bytes on the GPU, one writer per layout kind.
+ *
+ * @param[in]  device     Device to ask.
+ * @param[out] out_layout Receives the layout.
+ *
+ * Checked in this order, on every backend:
+ * @retval SPUD_SUCCESS `out_layout` was written.
+ * @retval SPUDRESULT_GPU_INVALID_DEVICE `device` is NULL (or, in Debug,
+ *         destroyed).
+ * @retval SPUDRESULT_NULL_OUTPUT_PARAMETER `out_layout` is NULL.
+ * @retval SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED The device wasn't
+ *         created with SPUDGPU_FEATURE_RAY_QUERY.
+ */
+SPUDRESULT spudgpu_get_acceleration_structure_instance_layout(
+    spudgpu_device device,
+    spudgpu_acceleration_structure_instance_layout *out_layout);
+
+/** @brief The flags an instance has on all three APIs. */
+typedef uint32_t SPUDGPU_ACCELERATION_STRUCTURE_INSTANCE_FLAGS;
+enum {
+	/** Its triangles are not culled by facing. */
+	SPUDGPU_ACCELERATION_STRUCTURE_INSTANCE_DISABLE_TRIANGLE_CULLING = 1u << 0,
+	/** Its triangles' front faces are counter-clockwise. */
+	SPUDGPU_ACCELERATION_STRUCTURE_INSTANCE_FRONT_COUNTERCLOCKWISE   = 1u << 1,
+	/** Every geometry of it is opaque. Not with FORCE_NON_OPAQUE. */
+	SPUDGPU_ACCELERATION_STRUCTURE_INSTANCE_FORCE_OPAQUE             = 1u << 2,
+	/** No geometry of it is opaque. Not with FORCE_OPAQUE. */
+	SPUDGPU_ACCELERATION_STRUCTURE_INSTANCE_FORCE_NON_OPAQUE         = 1u << 3
+};
+
+/** @brief One instance, portable: what
+ * spudgpu_write_acceleration_structure_instances() writes in the device's
+ * layout. The narrowest contract: an 8-bit mask, a 24-bit user index and
+ * table offset, and the flags all three share. */
+/* Frozen: an array element of spudgpu_write_acceleration_structure_instances(). It never changes; a new need gets a new type. */
+typedef struct spudgpu_acceleration_structure_instance {
+	/** Object to world, row-major 3x4: rows of (x, y, z, translation). */
+	float transform[12];
+	/** Below 2^24: the shader's committed instance id
+	 * (`CommittedInstanceID`). */
+	uint32_t user_index;
+	/** Tested against a query's cull mask: the instance is skipped where
+	 * the two have no bit in common. */
+	uint8_t mask;
+	/** Below 2^24. Unused by ray queries; kept for a ray tracing pipeline,
+	 * which this extension doesn't have. */
+	uint32_t table_offset;
+	/** SPUDGPU_ACCELERATION_STRUCTURE_INSTANCE_FLAGS; no other bit. */
+	SPUDGPU_ACCELERATION_STRUCTURE_INSTANCE_FLAGS flags;
+	/** spudgpu_get_acceleration_structure_reference() of its bottom level. */
+	uint64_t bottom_level_reference;
+} spudgpu_acceleration_structure_instance;
+
+/**
+ * @brief Writes `count` instances in `device`'s layout into `out_bytes`: a
+ * CPU translation, with no state and nothing recorded.
+ *
+ * Batch shaped: a caller writes a top level's instances in one call, into a
+ * mapped instance buffer or any memory it copies from, never one call per
+ * instance. Every instance is checked before the first byte is written.
+ *
+ * @param[in]  device    Device whose layout is written.
+ * @param[in]  instances `count` instances. Borrowed for the call.
+ * @param[in]  count     1 or more.
+ * @param[out] out_bytes `count` x the layout's size bytes, at the layout's
+ *                       alignment; written whole, or not at all on failure.
+ *
+ * Checked in this order, on every backend:
+ * @retval SPUD_SUCCESS Every instance was written.
+ * @retval SPUDRESULT_GPU_INVALID_DEVICE `device` is NULL (or, in Debug,
+ *         destroyed).
+ * @retval SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED The device wasn't
+ *         created with SPUDGPU_FEATURE_RAY_QUERY.
+ * @retval SPUDRESULT_NULL_DESC `instances` is NULL.
+ * @retval SPUDRESULT_ZERO_SIZE `count` is 0.
+ * @retval SPUDRESULT_NULL_OUTPUT_PARAMETER `out_bytes` is NULL.
+ * @retval SPUDRESULT_DESC_INVALID_PARAMETERS An instance, the first in
+ *         order, has a user index or table offset of 2^24 or more, an
+ *         unknown flag, or both opacity flags.
+ */
+SPUDRESULT spudgpu_write_acceleration_structure_instances(
+    spudgpu_device device,
+    const spudgpu_acceleration_structure_instance *instances,
+    uint32_t count,
+    void *out_bytes);
+
+/** @brief Build or update. */
+typedef uint32_t SPUDGPU_ACCELERATION_STRUCTURE_BUILD_MODE;
+enum {
+	/** Built from nothing; `source` is NULL. */
+	SPUDGPU_ACCELERATION_STRUCTURE_BUILD_MODE_BUILD  = 1,
+	/** Updated (refitted) from `source`, last built with ALLOW_UPDATE and
+	 * the same layout of inputs. */
+	SPUDGPU_ACCELERATION_STRUCTURE_BUILD_MODE_UPDATE = 2
+};
+
+/** @brief One build in spudgpu_cmd_build_acceleration_structures(). */
+typedef struct spudgpu_acceleration_structure_build {
+	/** `type` is SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_BUILD; `next` is
+	 * NULL. Set by the caller. See SPUD_STRUCT_BASE. */
+	SPUD_STRUCT_BASE base;
+	/** Build or update. */
+	SPUDGPU_ACCELERATION_STRUCTURE_BUILD_MODE mode;
+	/** What it reads. Borrowed for the call; the buffers it names until
+	 * the build's submission completes. */
+	const spudgpu_acceleration_structure_inputs *inputs;
+	/** UPDATE: the structure updated from, of the inputs' level (may be
+	 * #destination). BUILD: NULL. */
+	spudgpu_acceleration_structure source;
+	/** The structure written, of the inputs' level, at least storage_size
+	 * bytes. */
+	spudgpu_acceleration_structure destination;
+	/** Scratch: a SPUDGPU_BUFFER_USAGE_STORAGE buffer, in
+	 * SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_SCRATCH. */
+	spudgpu_buffer scratch;
+	/** Byte offset of the scratch range: its address a multiple of
+	 * scratch_offset_alignment, the mode's scratch size inside the buffer. */
+	uint64_t scratch_offset;
+} spudgpu_acceleration_structure_build;
+
+/**
+ * @brief Records `count` builds and updates.
+ *
+ * Builds in one call may run at once: no two of them write the same
+ * structure or scratch range, and none reads what another writes. Every
+ * build is checked before the first is recorded, and a refused call records
+ * nothing. A top level's build copies its bottom_levels into the
+ * destination as it is recorded. Vulkan one
+ * vkCmdBuildAccelerationStructuresKHR; D3D12 one
+ * BuildRaytracingAccelerationStructure each; Metal one acceleration
+ * structure command encoder.
+ *
+ * After it, the list's compute pipeline, descriptor sets and push constants
+ * are undefined until bound again (Metal ends the compute encoder they were
+ * set on); a dispatch recorded next binds them first. The same holds after
+ * spudgpu_cmd_copy_acceleration_structure() and
+ * spudgpu_cmd_write_acceleration_structure_compacted_sizes().
+ *
+ * A bottom level built with ALLOW_UPDATE keeps each geometry's kind, flags,
+ * counts and index format on its handle, for an update to compare exactly:
+ * an array grown through the structure's allocator the first time a build
+ * or copy records more geometries than it holds, and never again for the
+ * same layout.
+ *
+ * @param[in] cmd    Command list being recorded, of a direct or compute
+ *                   queue, outside a rendering pass.
+ * @param[in] builds `count` builds. Borrowed for the call.
+ * @param[in] count  1 or more.
+ *
+ * Checked in this order, on every backend:
+ * @retval SPUD_SUCCESS Every build was recorded.
+ * @retval SPUDRESULT_GPU_INVALID_COMMAND_LIST `cmd` is NULL (or, in Debug,
+ *         destroyed).
+ * @retval SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED The device wasn't
+ *         created with SPUDGPU_FEATURE_RAY_QUERY.
+ * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_COMMAND_LIST_TYPE `cmd` is
+ *         of a copy queue or a bundle (card S26).
+ * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_INSIDE_RENDERING `cmd` is
+ *         between spudgpu_cmd_begin_rendering() and
+ *         spudgpu_cmd_end_rendering() (card S26).
+ * @retval SPUDRESULT_NULL_DESC `builds` is NULL.
+ * @retval SPUDRESULT_ZERO_SIZE `count` is 0.
+ * @retval (then each build in order, its fields in order:)
+ * @retval SPUDRESULT_STRUCT_WRONG_TYPE / SPUDRESULT_STRUCT_UNKNOWN_IN_CHAIN
+ *         its `base` is wrong.
+ * @retval SPUDRESULT_DESC_INVALID_PARAMETERS `mode` is not a mode.
+ * @retval SPUDRESULT_NULL_DESC `inputs` is NULL.
+ * @retval (the base and every check of
+ *         spudgpu_get_acceleration_structure_build_sizes() on `inputs`, in
+ *         its order.)
+ * @retval SPUDRESULT_OUT_OF_MEMORY The command list's arrays couldn't grow
+ *         to ask this build's sizes and record the builds so far (Vulkan
+ *         and D3D12; Metal keeps none).
+ * @retval SPUDRESULT_DESC_INVALID_PARAMETERS `source` is not NULL for a
+ *         BUILD.
+ * @retval SPUDRESULT_GPU_INVALID_ACCELERATION_STRUCTURE `source` is NULL
+ *         (or destroyed) or not of the inputs' level for an UPDATE.
+ * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_UPDATE_REFUSED An UPDATE's
+ *         source was never built, was last built without ALLOW_UPDATE, or
+ *         with other flags or another layout of inputs.
+ * @retval SPUDRESULT_GPU_INVALID_ACCELERATION_STRUCTURE `destination` is
+ *         NULL (or destroyed) or not of the inputs' level.
+ * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_TOO_SMALL `destination` is
+ *         smaller than storage_size.
+ * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_LIMIT A top level names
+ *         more bottom levels than the destination's max_bottom_levels.
+ * @retval SPUDRESULT_GPU_INVALID_BUFFER `scratch` is NULL (or destroyed).
+ * @retval SPUDRESULT_GPU_INVALID_BUFFER_USAGE `scratch` lacks
+ *         SPUDGPU_BUFFER_USAGE_STORAGE.
+ * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_ALIGNMENT The scratch
+ *         address is not a multiple of scratch_offset_alignment.
+ * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_SCRATCH_TOO_SMALL The
+ *         scratch range is smaller than the mode's scratch size.
+ * @retval SPUDRESULT_OUT_OF_MEMORY A bottom level built with ALLOW_UPDATE:
+ *         the destination's kept layout couldn't grow to its geometries.
+ *
+ * Once every build has passed, the call records them and can't fail.
+ */
+SPUDRESULT spudgpu_cmd_build_acceleration_structures(
+    spudgpu_command_list cmd,
+    const spudgpu_acceleration_structure_build *builds,
+    uint32_t count);
+
+/** @brief What a copy makes. */
+typedef uint32_t SPUDGPU_ACCELERATION_STRUCTURE_COPY_MODE;
+enum {
+	/** The same structure, into one of at least the source's size. */
+	SPUDGPU_ACCELERATION_STRUCTURE_COPY_MODE_CLONE   = 1,
+	/** A compacted copy, into one of at least the compacted size the
+	 * source's last build has (read back, not checked); the source built with
+	 * ALLOW_COMPACTION. */
+	SPUDGPU_ACCELERATION_STRUCTURE_COPY_MODE_COMPACT = 2
+};
+
+/**
+ * @brief Records a copy of one acceleration structure into another.
+ *
+ * The destination takes the source's last build as its own: it can be
+ * updated, compacted or copied as the source could. A top level's
+ * bottom-level list is copied with it. Vulkan
+ * vkCmdCopyAccelerationStructureKHR; D3D12
+ * CopyRaytracingAccelerationStructure; Metal copy or copyAndCompact.
+ *
+ * After it, the list's compute pipeline, descriptor sets and push constants
+ * are undefined until bound again, as after
+ * spudgpu_cmd_build_acceleration_structures().
+ *
+ * @param[in] cmd         Command list being recorded, of a direct or
+ *                        compute queue, outside a rendering pass.
+ * @param[in] source      The structure read, built, after a barrier to
+ *                        BUILD_READ.
+ * @param[in] destination The structure written, of the source's level.
+ * @param[in] mode        Clone or compact.
+ *
+ * Checked in this order, on every backend:
+ * @retval SPUD_SUCCESS The copy was recorded.
+ * @retval SPUDRESULT_GPU_INVALID_COMMAND_LIST `cmd` is NULL (or, in Debug,
+ *         destroyed).
+ * @retval SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED The device wasn't
+ *         created with SPUDGPU_FEATURE_RAY_QUERY.
+ * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_COMMAND_LIST_TYPE `cmd` is
+ *         of a copy queue or a bundle (card S26).
+ * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_INSIDE_RENDERING `cmd` is
+ *         between spudgpu_cmd_begin_rendering() and
+ *         spudgpu_cmd_end_rendering() (card S26).
+ * @retval SPUDRESULT_GPU_INVALID_ACCELERATION_STRUCTURE `source` is NULL (or
+ *         destroyed) or has no build recorded; `destination` is NULL (or
+ *         destroyed), `source` itself, or of another level.
+ * @retval SPUDRESULT_DESC_INVALID_PARAMETERS `mode` is not a mode.
+ * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_COMPACTION_REFUSED A
+ *         COMPACT whose source was last built without ALLOW_COMPACTION.
+ * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_TOO_SMALL A CLONE into a
+ *         destination smaller than the source.
+ * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_LIMIT A top level's source
+ *         names more bottom levels than the destination's
+ *         max_bottom_levels.
+ * @retval SPUDRESULT_OUT_OF_MEMORY The source keeps a layout (a bottom
+ *         level built with ALLOW_UPDATE) and the destination's couldn't grow
+ *         to it.
+ */
+SPUDRESULT spudgpu_cmd_copy_acceleration_structure(
+    spudgpu_command_list cmd,
+    spudgpu_acceleration_structure source,
+    spudgpu_acceleration_structure destination,
+    SPUDGPU_ACCELERATION_STRUCTURE_COPY_MODE mode);
+
+/**
+ * @brief Records writing each structure's compacted size, a uint64_t, into
+ * `buffer` from `offset`, in the order of `structures`.
+ *
+ * The caller reads the sizes back and creates each compacted structure at
+ * its size, then copies into it (SPUDGPU_ACCELERATION_STRUCTURE_COPY_MODE_COMPACT).
+ * D3D12 EmitRaytracingAccelerationStructurePostbuildInfo; Metal
+ * writeCompactedAccelerationStructureSize:toBuffer:offset:sizeDataType:;
+ * Vulkan the structure's own query, reset, written and copied into the
+ * buffer.
+ *
+ * After it, the list's compute pipeline, descriptor sets and push constants
+ * are undefined until bound again, as after
+ * spudgpu_cmd_build_acceleration_structures().
+ *
+ * @param[in] cmd        Command list being recorded, of a direct or
+ *                       compute queue, outside a rendering pass.
+ * @param[in] structures `count` structures, each created with
+ *                       allow_compaction and last built with
+ *                       ALLOW_COMPACTION, after a barrier to BUILD_READ.
+ *                       Borrowed for the call.
+ * @param[in] count      1 or more.
+ * @param[in] buffer     A buffer with SPUDGPU_BUFFER_USAGE_STORAGE and
+ *                       SPUDGPU_BUFFER_USAGE_TRANSFER_DST, in
+ *                       SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_SIZE_DEST.
+ * @param[in] offset     Byte offset: a multiple of 8, with `count` x 8 bytes
+ *                       inside the buffer.
+ *
+ * Checked in this order, on every backend:
+ * @retval SPUD_SUCCESS The writes were recorded.
+ * @retval SPUDRESULT_GPU_INVALID_COMMAND_LIST `cmd` is NULL (or, in Debug,
+ *         destroyed).
+ * @retval SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED The device wasn't
+ *         created with SPUDGPU_FEATURE_RAY_QUERY.
+ * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_COMMAND_LIST_TYPE `cmd` is
+ *         of a copy queue or a bundle (card S26).
+ * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_INSIDE_RENDERING `cmd` is
+ *         between spudgpu_cmd_begin_rendering() and
+ *         spudgpu_cmd_end_rendering() (card S26).
+ * @retval SPUDRESULT_NULL_DESC `structures` is NULL.
+ * @retval SPUDRESULT_ZERO_SIZE `count` is 0.
+ * @retval SPUDRESULT_GPU_INVALID_ACCELERATION_STRUCTURE An entry is NULL (or
+ *         destroyed).
+ * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_COMPACTION_REFUSED An entry
+ *         wasn't created with allow_compaction or last built with
+ *         ALLOW_COMPACTION.
+ * @retval SPUDRESULT_GPU_INVALID_BUFFER `buffer` is NULL (or destroyed).
+ * @retval SPUDRESULT_GPU_INVALID_BUFFER_USAGE `buffer` lacks STORAGE or
+ *         TRANSFER_DST.
+ * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_ALIGNMENT `offset` is not a
+ *         multiple of 8.
+ * @retval SPUDRESULT_GPU_ACCELERATION_STRUCTURE_RANGE The sizes run past
+ *         the end of the buffer.
+ * @retval SPUDRESULT_OUT_OF_MEMORY The command list's array of addresses
+ *         couldn't grow to `count` (D3D12; Vulkan and Metal keep none).
+ */
+SPUDRESULT spudgpu_cmd_write_acceleration_structure_compacted_sizes(
+    spudgpu_command_list cmd,
+    const spudgpu_acceleration_structure *structures,
+    uint32_t count,
+    spudgpu_buffer buffer,
+    uint64_t offset);
+
+/** @brief How a structure is being used, for its barriers. */
+typedef uint32_t SPUDGPU_ACCELERATION_STRUCTURE_ACCESS;
+enum {
+	/** Not yet used in this submission. A barrier out of it is ordered
+	 * after everything earlier submissions on the queue did with the
+	 * structure, as a buffer's out of SPUDGPU_RESOURCE_STATE_COMMON is. */
+	SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_NONE        = 0,
+	/** Built, updated, or copied into. */
+	SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_BUILD_WRITE = 1,
+	/** Read by a build (a top level's bottom levels, an update's source), a
+	 * copy or a size write. */
+	SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_BUILD_READ  = 2,
+	/** Read by ray queries in compute and fragment shaders. */
+	SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_TRACE       = 3
+};
+
+/** @brief One structure's barrier. */
+typedef struct spudgpu_acceleration_structure_barrier {
+	/** `type` is SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_BARRIER; `next`
+	 * is NULL. Set by the caller. See SPUD_STRUCT_BASE. */
+	SPUD_STRUCT_BASE base;
+	/** The structure. */
+	spudgpu_acceleration_structure structure;
+	/** How it was used before the barrier. */
+	SPUDGPU_ACCELERATION_STRUCTURE_ACCESS access_before;
+	/** How it is used after it. */
+	SPUDGPU_ACCELERATION_STRUCTURE_ACCESS access_after;
+} spudgpu_acceleration_structure_barrier;
+
+/**
+ * @brief Records barriers between structures' accesses.
+ *
+ * Kept apart from spudgpu_cmd_pipeline_barrier(): a structure moves between
+ * accesses no resource state names. Vulkan one memory barrier from the
+ * stages before (the build stage, or compute and fragment shaders) to the
+ * stages after; D3D12 a UAV barrier on each structure's buffer; Metal
+ * nothing beyond its own tracking. Void, as spudgpu_cmd_pipeline_barrier()
+ * is: nothing is recorded if `cmd` is NULL (or destroyed), the device wasn't
+ * created with SPUDGPU_FEATURE_RAY_QUERY, `barriers` is NULL with a count,
+ * or an element has a `base` other than
+ * {SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_BARRIER, NULL}, a NULL (or
+ * destroyed) structure, or an access that is not one.
+ *
+ * @param[in] cmd      Command list being recorded, outside a rendering
+ *                     pass.
+ * @param[in] barriers `count` barriers. Borrowed for the call.
+ * @param[in] count    Number of elements of `barriers`; 0 records nothing.
+ */
+void spudgpu_cmd_acceleration_structure_barrier(
+    spudgpu_command_list cmd,
+    const spudgpu_acceleration_structure_barrier *barriers,
+    uint32_t count);
+
+#endif // SPUDGPU_EXT_RAY_QUERY
+
 /**
  * @brief Complete configuration descriptor for creating a compute shader
  * pipeline.
@@ -5508,9 +6668,6 @@ typedef struct spudgpu_compute_pipeline_desc {
 	SPUD_STRUCT_BASE base;
 	/** Compiled compute shader module. Required. */
 	spudgpu_shader_module compute_module;
-
-	/** Null-terminated entry point name. Pass NULL to default to "main". */
-	const char *compute_entry_point;
 
 	// -----------------------------------------------------------------------
 	// Pipeline layout

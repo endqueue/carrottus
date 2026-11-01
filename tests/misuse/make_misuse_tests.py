@@ -166,6 +166,7 @@ static spudgpu_instance gpu_instance;
 static spudgpu_device gpu_device;
 static spudgpu_command_queue gpu_queue;
 static SPUDGPU_FEATURES gpu_features;
+static SPUDGPU_SHADER_FORMAT gpu_shader_format;
 #if defined(_WIN32)
 static HWND gpu_window;
 
@@ -220,8 +221,10 @@ static void freed_setup(void) {
 			SPUDGPU_ADAPTER_PROPERTIES properties;
 			memset(&properties, 0, sizeof(properties));
 			properties.base.type = SPUD_STRUCT_TYPE_GPU_ADAPTER_PROPERTIES;
-			if (spudgpu_get_adapter_properties(adapters[0], &properties) == SPUD_SUCCESS)
-				gpu_features = properties.supported_features & (SPUDGPU_FEATURE_PRESENT | SPUDGPU_FEATURE_PASS_TIMESTAMPS);
+			if (spudgpu_get_adapter_properties(adapters[0], &properties) == SPUD_SUCCESS) {
+				gpu_features      = properties.supported_features & (SPUDGPU_FEATURE_PRESENT | SPUDGPU_FEATURE_PASS_TIMESTAMPS);
+				gpu_shader_format = spudgpu_test_shader_format(properties.shader_formats);
+			}
 		}
 		gpu_device = make_gpu_device(gpu_instance, gpu_features);
 		if (gpu_device)
@@ -294,14 +297,9 @@ static spudgpu_image make_image(void) {
 	return image;
 }
 
-static spudgpu_shader_module make_module(const uint32_t *words, size_t size, SPUDGPU_SHADER_STAGE stage) {
-	spudgpu_shader_module_desc desc;
-	memset(&desc, 0, sizeof(desc));
-	desc.base.type               = SPUD_STRUCT_TYPE_GPU_SHADER_MODULE_DESC;
-	desc.stage                   = stage;
-	desc.spirv_code              = words;
-	desc.spirv_size              = size;
-	spudgpu_shader_module module = NULL;
+static spudgpu_shader_module make_module(const spudgpu_test_shader *shader) {
+	const spudgpu_shader_module_desc desc = spudgpu_test_module_desc(shader, gpu_shader_format, NULL);
+	spudgpu_shader_module module          = NULL;
 	if (spudgpu_create_shader_module(gpu_device, &desc, &module) != SPUD_SUCCESS)
 		return NULL;
 	return module;
@@ -745,6 +743,54 @@ FACTORIES = {
 	else
 		why = "spudgpu_create_timestamp_set failed";
 	return set;''',
+    'spudgpu_acceleration_structure': r'''
+	/* Its own instance and device, on the first adapter with ray queries
+	 * (the shared device is adapter 0's, which may have none), both gone
+	 * after: only the handle is read once it is destroyed. */
+	spudgpu_instance instance = make_gpu_instance();
+	if (!instance) {
+		why = "no SpudGPU instance";
+		return NULL;
+	}
+	const spudgpu_adapter *adapters = NULL;
+	uint32_t count                  = 0;
+	spudgpu_enumerate_adapters(instance, &adapters, &count);
+	spudgpu_adapter adapter = NULL;
+	for (uint32_t i = 0; i < count && !adapter; ++i) {
+		SPUDGPU_ADAPTER_PROPERTIES properties;
+		memset(&properties, 0, sizeof(properties));
+		properties.base.type = SPUD_STRUCT_TYPE_GPU_ADAPTER_PROPERTIES;
+		if (spudgpu_get_adapter_properties(adapters[i], &properties) == SPUD_SUCCESS &&
+		    (properties.supported_features & SPUDGPU_FEATURE_RAY_QUERY))
+			adapter = adapters[i];
+	}
+	spudgpu_acceleration_structure structure = NULL;
+	if (!adapter) {
+		why = "no adapter has ray queries";
+	} else {
+		spudgpu_device_desc device_desc;
+		memset(&device_desc, 0, sizeof(device_desc));
+		device_desc.base.type          = SPUD_STRUCT_TYPE_GPU_DEVICE_DESC;
+		device_desc.required_features  = SPUDGPU_FEATURE_RAY_QUERY;
+		device_desc.direct_queue_count = 1;
+		spudgpu_device device          = NULL;
+		if (spudgpu_create_device(adapter, &device_desc, &device) != SPUD_SUCCESS) {
+			why = "spudgpu_create_device with SPUDGPU_FEATURE_RAY_QUERY failed";
+		} else {
+			spudgpu_acceleration_structure_desc desc;
+			memset(&desc, 0, sizeof(desc));
+			desc.base.type = SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_DESC;
+			desc.level     = SPUDGPU_ACCELERATION_STRUCTURE_LEVEL_BOTTOM;
+			desc.size      = 4096;
+			if (spudgpu_create_acceleration_structure(device, &desc, &structure) == SPUD_SUCCESS)
+				spudgpu_destroy_acceleration_structure(structure);
+			else
+				why = "spudgpu_create_acceleration_structure failed";
+			spudgpu_destroy_device(device);
+		}
+	}
+	spudgpu_destroy_instance(instance);
+	return structure;''',
     'spudgpu_sampler': r'''
 	if (!have_device())
 		return NULL;
@@ -768,7 +814,7 @@ FACTORIES = {
 	if (!have_device())
 		return NULL;
 	spudgpu_shader_module module =
-	    make_module(spudgpu_test_objects_double_comp, sizeof(spudgpu_test_objects_double_comp), SPUDGPU_SHADER_STAGE_COMPUTE);
+	    make_module(&spudgpu_test_objects_double_comp);
 	if (module)
 		spudgpu_destroy_shader_module(module);
 	else
@@ -804,7 +850,7 @@ FACTORIES = {
 	if (!have_device())
 		return NULL;
 	spudgpu_shader_module module =
-	    make_module(spudgpu_test_objects_double_comp, sizeof(spudgpu_test_objects_double_comp), SPUDGPU_SHADER_STAGE_COMPUTE);
+	    make_module(&spudgpu_test_objects_double_comp);
 	const SPUDGPU_DESCRIPTOR_TYPE types[2] = {SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER, SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER};
 	spudgpu_descriptor_set_layout layout   = make_set_layout(types, 2, SPUDGPU_SHADER_STAGE_COMPUTE);
 	spudgpu_compute_pipeline pipeline      = NULL;
@@ -834,9 +880,9 @@ FACTORIES = {
 	/* tests/shaders/objects_draw.vert and .frag, as spudgpu_objects_test
 	 * draws with them. */
 	spudgpu_shader_module vertex =
-	    make_module(spudgpu_test_objects_draw_vert, sizeof(spudgpu_test_objects_draw_vert), SPUDGPU_SHADER_STAGE_VERTEX);
+	    make_module(&spudgpu_test_objects_draw_vert);
 	spudgpu_shader_module fragment =
-	    make_module(spudgpu_test_objects_draw_frag, sizeof(spudgpu_test_objects_draw_frag), SPUDGPU_SHADER_STAGE_FRAGMENT);
+	    make_module(&spudgpu_test_objects_draw_frag);
 	const SPUDGPU_DESCRIPTOR_TYPE types[3] = {SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER, SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
 	                                          SPUDGPU_DESCRIPTOR_TYPE_SAMPLER};
 	spudgpu_descriptor_set_layout layout   = make_set_layout(types, 3, SPUDGPU_SHADER_STAGE_FRAGMENT);

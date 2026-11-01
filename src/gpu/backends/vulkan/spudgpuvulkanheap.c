@@ -41,11 +41,10 @@ static SPUDGPU_BUFFER_USAGE spudgpuvulkan___internal_kind_buffer_usages(SPUDGPU_
     const SPUDGPU_BUFFER_USAGE all =
         SPUDGPU_BUFFER_USAGE_VERTEX | SPUDGPU_BUFFER_USAGE_INDEX | SPUDGPU_BUFFER_USAGE_UNIFORM |
         SPUDGPU_BUFFER_USAGE_STORAGE | SPUDGPU_BUFFER_USAGE_TRANSFER_SRC | SPUDGPU_BUFFER_USAGE_TRANSFER_DST |
-        SPUDGPU_BUFFER_USAGE_RAYTRACING_ACCELERATION_STRUCTURE | SPUDGPU_BUFFER_USAGE_INDIRECT;
+        SPUDGPU_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT | SPUDGPU_BUFFER_USAGE_INDIRECT;
     switch (kind) {
     case SPUDGPU_MEMORY_KIND_UPLOAD:
-        return all & ~(SPUDGPU_BUFFER_USAGE_STORAGE | SPUDGPU_BUFFER_USAGE_TRANSFER_DST |
-                       SPUDGPU_BUFFER_USAGE_RAYTRACING_ACCELERATION_STRUCTURE);
+        return all & ~(SPUDGPU_BUFFER_USAGE_STORAGE | SPUDGPU_BUFFER_USAGE_TRANSFER_DST);
     case SPUDGPU_MEMORY_KIND_READBACK:
         return SPUDGPU_BUFFER_USAGE_TRANSFER_DST;
     default:
@@ -105,7 +104,7 @@ static SPUDRESULT spudgpuvulkan___internal_heap_type_bits(
         probe.memory_kind = desc->memory_kind;
         probe.size = SPUDGPU_HEAP_SIZE_GRANULARITY;
         VkBufferCreateInfo info;
-        spudgpuvulkan___buffer_create_info(&probe, &info);
+        spudgpuvulkan___buffer_create_info(device->_features, &probe, &info);
 
         VkBuffer buffer = VK_NULL_HANDLE;
         if (vkCreateBuffer(device->_logical_device_vk, &info, NULL, &buffer) != VK_SUCCESS)
@@ -115,6 +114,14 @@ static SPUDRESULT spudgpuvulkan___internal_heap_type_bits(
         vkDestroyBuffer(device->_logical_device_vk, buffer, NULL);
         *out_bits = requirements.memoryTypeBits;
         return SPUD_SUCCESS;
+    }
+    // An acceleration structure's buffer, as spudgpuvulkanraytracing.c makes
+    // one, which every structure placed in the heap is.
+    if (desc->resource_class == SPUDGPU_HEAP_RESOURCE_CLASS_ACCELERATION_STRUCTURES) {
+        uint32_t bits = 0;
+        const SPUDRESULT sr = spudgpuvulkan___acceleration_structure_memory_bits(device, SPUDGPU_HEAP_SIZE_GRANULARITY, &bits, NULL);
+        *out_bits = bits;
+        return sr;
     }
 
     const bool attachments = desc->resource_class == SPUDGPU_HEAP_RESOURCE_CLASS_ATTACHMENT_IMAGES;
@@ -241,7 +248,7 @@ SPUDRESULT spudgpu_create_heap(
     if (desc->size == 0) return SPUDRESULT_ZERO_SIZE;
     if (desc->size % SPUDGPU_HEAP_SIZE_GRANULARITY) return SPUDRESULT_GPU_INVALID_HEAP_SIZE;
     if (desc->resource_class < SPUDGPU_HEAP_RESOURCE_CLASS_BUFFERS ||
-        desc->resource_class > SPUDGPU_HEAP_RESOURCE_CLASS_ATTACHMENT_IMAGES)
+        desc->resource_class > SPUDGPU_HEAP_RESOURCE_CLASS_ACCELERATION_STRUCTURES)
         return SPUDRESULT_GPU_INVALID_HEAP_RESOURCE_CLASS;
     if (desc->memory_kind < SPUDGPU_MEMORY_KIND_DEVICE || desc->memory_kind > SPUDGPU_MEMORY_KIND_DEVICE_MAPPABLE)
         return SPUDRESULT_GPU_INVALID_MEMORY_KIND;
@@ -251,6 +258,8 @@ SPUDRESULT spudgpu_create_heap(
         return SPUDRESULT_GPU_MEMORY_KIND_NOT_SUPPORTED;
     if (desc->memory_kind == SPUDGPU_MEMORY_KIND_DEVICE_MAPPABLE && !(device->_features & SPUDGPU_FEATURE_DEVICE_MAPPABLE_MEMORY))
         return SPUDRESULT_GPU_MEMORY_KIND_NOT_SUPPORTED;
+    if (desc->resource_class == SPUDGPU_HEAP_RESOURCE_CLASS_ACCELERATION_STRUCTURES && !(device->_features & SPUDGPU_FEATURE_RAY_QUERY))
+        return SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED;
 
     VkDevice vk_device = device->_logical_device_vk;
 
@@ -271,7 +280,10 @@ SPUDRESULT spudgpu_create_heap(
 
     VkMemoryAllocateInfo allocInfo = {0};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.pNext = (desc->resource_class == SPUDGPU_HEAP_RESOURCE_CLASS_BUFFERS) ? &allocFlagsInfo : NULL;
+    allocInfo.pNext = (desc->resource_class == SPUDGPU_HEAP_RESOURCE_CLASS_BUFFERS ||
+                       desc->resource_class == SPUDGPU_HEAP_RESOURCE_CLASS_ACCELERATION_STRUCTURES)
+                          ? &allocFlagsInfo
+                          : NULL;
     allocInfo.allocationSize = desc->size;
     allocInfo.memoryTypeIndex = memoryTypeIndex;
 
@@ -360,7 +372,7 @@ SPUDRESULT spudgpu_get_buffer_placement_requirements(
     // asked.
     VkDevice vk_device = heap->_device._logical_device_vk;
     VkBufferCreateInfo info;
-    spudgpuvulkan___buffer_create_info(desc, &info);
+    spudgpuvulkan___buffer_create_info(heap->_device._features, desc, &info);
     VkBuffer buffer = VK_NULL_HANDLE;
     if (vkCreateBuffer(vk_device, &info, NULL, &buffer) != VK_SUCCESS)
         return SPUDRESULT_API_SPECIFIC_FAILURE;
@@ -421,7 +433,7 @@ SPUDRESULT spudgpu_create_placed_buffer(
 
     VkDevice vk_device = heap->_device._logical_device_vk;
     VkBufferCreateInfo info;
-    spudgpuvulkan___buffer_create_info(desc, &info);
+    spudgpuvulkan___buffer_create_info(heap->_device._features, desc, &info);
     VkBuffer vk_buffer = VK_NULL_HANDLE;
     if (vkCreateBuffer(vk_device, &info, NULL, &vk_buffer) != VK_SUCCESS)
         return SPUDRESULT_API_SPECIFIC_FAILURE;

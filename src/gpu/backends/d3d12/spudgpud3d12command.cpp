@@ -142,6 +142,7 @@ SPUDRESULT spudgpu_create_command_allocator(
 	SPUD_BIRTH(pResult);
 	pResult->_device        = device;
     pResult->_d3d_cmd_list_type = spudgpu_d3d12_get_command_list_type(desc->type);
+    pResult->_type = desc->type;
 	if (FAILED(device->_d3d_device->CreateCommandAllocator(
 	        pResult->_d3d_cmd_list_type,
 	        IID_PPV_ARGS(&pResult->_d3d_cmd_allocator)))) {
@@ -200,6 +201,8 @@ SPUDRESULT spudgpu_create_command_list(
     pResult->_scratch_barriers = eq::array<D3D12_RESOURCE_BARRIER>(&allocator->_device->_eq_allocator);
     pResult->_scratch_rects = eq::array<D3D12_RECT>(&allocator->_device->_eq_allocator);
     pResult->_scratch_vb_views = eq::array<D3D12_VERTEX_BUFFER_VIEW>(&allocator->_device->_eq_allocator);
+    pResult->_scratch_geometries = eq::array<D3D12_RAYTRACING_GEOMETRY_DESC>(&allocator->_device->_eq_allocator);
+    pResult->_scratch_addresses = eq::array<D3D12_GPU_VIRTUAL_ADDRESS>(&allocator->_device->_eq_allocator);
     if (FAILED(pResult->_allocator->_device->_d3d_device->CreateCommandList1(
         1, allocator->_d3d_cmd_list_type, D3D12_COMMAND_LIST_FLAG_NONE,
         IID_PPV_ARGS(&pResult->_d3d_cmd_list)
@@ -614,6 +617,13 @@ static D3D12_RESOURCE_STATES spudgpu_d3d12___resource_state(SPUDGPU_RESOURCE_STA
 		return D3D12_RESOURCE_STATE_COPY_SOURCE;
 	case SPUDGPU_RESOURCE_STATE_COPY_DEST:
 		return D3D12_RESOURCE_STATE_COPY_DEST;
+	// A build reads its inputs as a non-pixel shader resource and uses its
+	// scratch, and a size write its destination, as unordered access.
+	case SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_BUILD_INPUT:
+		return D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+	case SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_SCRATCH:
+	case SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_SIZE_DEST:
+		return D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 	case SPUDGPU_RESOURCE_STATE_COMMON:
 	default:
 		return D3D12_RESOURCE_STATE_COMMON;
@@ -655,16 +665,18 @@ void spudgpu_cmd_pipeline_barrier(
 
 	for (uint32_t i = 0; i < buffer_barrier_count; i++) {
 		const spudgpu_buffer_barrier &b = buffer_barriers[i];
-		// UNORDERED_ACCESS to UNORDERED_ACCESS is not a transition and not
-		// nothing: it is the header's "writes before are complete before
-		// accesses after", which D3D12 has its own barrier type for.
-		if (b.state_before == SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS &&
-		    b.state_after == SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS) {
+		D3D12_RESOURCE_STATES before = spudgpu_d3d12___resource_state(b.state_before);
+		D3D12_RESOURCE_STATES after = spudgpu_d3d12___resource_state(b.state_after);
+		// Two states that are both D3D12's UNORDERED_ACCESS (storage, a
+		// build's scratch, a size write's destination), the same or not,
+		// order the writes before against the accesses after, which Vulkan
+		// does with its stages: D3D12 has no transition between them, so a
+		// UAV barrier orders it. SCRATCH to SCRATCH orders two builds sharing
+		// a scratch range (card S25).
+		if (before == D3D12_RESOURCE_STATE_UNORDERED_ACCESS && after == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
 			(void)barriers.push(CD3DX12_RESOURCE_BARRIER::UAV(b.buffer->_d3d_resource.Get()));
 			continue;
 		}
-		D3D12_RESOURCE_STATES before = spudgpu_d3d12___resource_state(b.state_before);
-		D3D12_RESOURCE_STATES after = spudgpu_d3d12___resource_state(b.state_after);
 		// Any other pair of equal states does nothing, as the header says.
 		if (before == after)
 			continue;

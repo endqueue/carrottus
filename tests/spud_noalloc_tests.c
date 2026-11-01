@@ -27,6 +27,12 @@
  * - SpudNet with a loopback connection open and idle: a receive with
  *   SPUDNET_NO_WAIT on each end and a wait set's poll, per round.
  * - SpudInput's poll, on the platform's native API, gamepads or none.
+ * - SpudGPU's ray queries (SPUDGPU_EXT_RAY_QUERY), on an adapter with them:
+ *   a bottom level and a top level built once, then per frame the instance
+ *   written by spudgpu_write_acceleration_structure_instances() into a
+ *   mapped buffer, the top level refitted in place and rq_trace.slang
+ *   tracing a 64 x 64 grid. Creating each structure's bytes from the
+ *   caller's allocator are printed.
  *
  * Each scenario also times its iterations, uncounted, and prints the best
  * of a few runs: what a change to its path costs or saves.
@@ -51,6 +57,7 @@
 #include <string.h>
 
 #include "alloctrace.h"
+#include "spudgpu_test_shaders.h"
 
 #if SPUDGPU_COMPILE_METAL_API
 #include "spudgpu_test_metal_layer.h"
@@ -387,6 +394,10 @@ static void hidden_window_destroy(HWND window) {
 }
 #endif
 
+#if SPUDGPU_EXT_RAY_QUERY
+static void test_gpu_ray_query(uint32_t adapter_index);
+#endif
+
 static void test_gpu(uint32_t adapter_index) {
 	const SPUD_ALLOCATOR allocator = spud_allocator_system();
 	spudgpu_instance_desc instance_desc;
@@ -464,7 +475,439 @@ static void test_gpu(uint32_t adapter_index) {
 		spudgpu_destroy_device(f.device);
 	}
 	spudgpu_destroy_instance(instance);
+#if SPUDGPU_EXT_RAY_QUERY
+	test_gpu_ray_query(adapter_index);
+#endif
 }
+
+#if SPUDGPU_EXT_RAY_QUERY
+// ---- SpudGPU ray queries ---------------------------------------------------
+
+/* What SpudLib takes from its allocator, counted: the bytes a structure's
+ * creation allocates. */
+typedef struct counting {
+	SPUD_ALLOCATOR system;
+	size_t blocks;
+	size_t bytes;
+} counting;
+
+static void *counting_allocate(void *user_data, size_t size, size_t alignment) {
+	counting *c = (counting *)user_data;
+	++c->blocks;
+	c->bytes += size;
+	return c->system.allocate(c->system.user_data, size, alignment);
+}
+
+static void counting_free(void *user_data, void *memory, size_t size, size_t alignment) {
+	counting *c = (counting *)user_data;
+	c->system.free(c->system.user_data, memory, size, alignment);
+}
+
+#define RQ_GRID 64u
+
+/* rq_trace.slang's RqParams. */
+typedef struct rq_params {
+	float origin[4];
+	float step_and_tmax[4];
+	uint32_t width, height, cull_mask, ray_flags;
+} rq_params;
+
+typedef struct rq_frame {
+	gpu_frame f;
+	spudgpu_fence fence;
+	uint64_t frame;
+	spudgpu_buffer instances, scratch, hits;
+	uint64_t top_scratch_offset;
+	void *mapped_instances;
+	uint32_t instance_size;
+	spudgpu_acceleration_structure bottom, top;
+	uint64_t bottom_reference;
+	spudgpu_acceleration_structure_inputs top_inputs;
+	spudgpu_compute_pipeline trace;
+	spudgpu_descriptor_set set;
+} rq_frame;
+
+/* One frame: the instance moved and written by the CPU call into the mapped
+ * instance buffer, the top level refitted in place, and the grid traced. */
+static bool rq_frame_run(rq_frame *r) {
+	if (r->frame > 0) {
+		uint64_t value = r->frame;
+		if (spudgpu_wait_for_fences(r->f.device, &r->fence, &value, 1, true, UINT64_MAX) != SPUD_SUCCESS)
+			return false;
+	}
+	spudgpu_acceleration_structure_instance instance;
+	memset(&instance, 0, sizeof(instance));
+	instance.transform[0]           = 1.0f;
+	instance.transform[3]           = (float)(r->frame % 8) * 0.125f;
+	instance.transform[5]           = 1.0f;
+	instance.transform[10]          = 1.0f;
+	instance.transform[11]          = 2.0f;
+	instance.user_index             = 7;
+	instance.mask                   = 0xFF;
+	instance.bottom_level_reference = r->bottom_reference;
+	if (spudgpu_write_acceleration_structure_instances(r->f.device, &instance, 1, r->mapped_instances) != SPUD_SUCCESS)
+		return false;
+	if (spudgpu_flush_buffer(r->instances, 0, r->instance_size) != SPUD_SUCCESS)
+		return false;
+	if (spudgpu_reset_command_allocator(r->f.allocator) != SPUD_SUCCESS)
+		return false;
+	spudgpu_command_list cmd = r->f.cmd;
+	spudgpu_begin_command_list(cmd);
+	spudgpu_buffer_barrier b[2];
+	memset(b, 0, sizeof(b));
+	b[0].base.type    = SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER;
+	b[0].buffer       = r->scratch;
+	b[0].state_before = SPUDGPU_RESOURCE_STATE_COMMON;
+	b[0].state_after  = SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_SCRATCH;
+	b[1]              = b[0];
+	b[1].buffer       = r->hits;
+	b[1].state_after  = SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS;
+	spudgpu_cmd_pipeline_barrier(cmd, b, 2, NULL, 0);
+	spudgpu_acceleration_structure_barrier ab[2];
+	memset(ab, 0, sizeof(ab));
+	ab[0].base.type     = SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_BARRIER;
+	ab[0].structure     = r->bottom;
+	ab[0].access_before = SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_NONE;
+	ab[0].access_after  = SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_BUILD_READ;
+	ab[1]               = ab[0];
+	ab[1].structure     = r->top;
+	spudgpu_cmd_acceleration_structure_barrier(cmd, ab, 2);
+	spudgpu_acceleration_structure_build build;
+	memset(&build, 0, sizeof(build));
+	build.base.type   = SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_BUILD;
+	build.mode        = SPUDGPU_ACCELERATION_STRUCTURE_BUILD_MODE_UPDATE;
+	build.inputs      = &r->top_inputs;
+	build.source      = r->top;
+	build.destination = r->top;
+	build.scratch     = r->scratch;
+	build.scratch_offset = r->top_scratch_offset;
+	if (spudgpu_cmd_build_acceleration_structures(cmd, &build, 1) != SPUD_SUCCESS) {
+		spudgpu_end_command_list(cmd);
+		return false;
+	}
+	ab[1].access_before = SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_BUILD_WRITE;
+	ab[1].access_after  = SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_TRACE;
+	spudgpu_cmd_acceleration_structure_barrier(cmd, &ab[1], 1);
+	spudgpu_cmd_bind_compute_pipeline(cmd, r->trace);
+	spudgpu_cmd_bind_descriptor_sets_compute(cmd, r->trace, 0, &r->set, 1);
+	const rq_params params = {{0.0f, 0.0f, -1.0f, 0.0f}, {1.5f / RQ_GRID, 1.5f / RQ_GRID, 100.0f, 0.0f}, RQ_GRID, RQ_GRID, 0xFF, 0};
+	spudgpu_cmd_push_constants_compute(cmd, r->trace, 0, sizeof(params), &params);
+	spudgpu_cmd_dispatch(cmd, RQ_GRID / 8, RQ_GRID / 8, 1);
+	spudgpu_end_command_list(cmd);
+	++r->frame;
+	spudgpu_submit_desc submit;
+	memset(&submit, 0, sizeof(submit));
+	submit.base.type          = SPUD_STRUCT_TYPE_GPU_SUBMIT_DESC;
+	submit.cmd_lists          = &cmd;
+	submit.cmd_list_count     = 1;
+	submit.signal_fence       = r->fence;
+	submit.signal_fence_value = r->frame;
+	return spudgpu_queue_submit(r->f.queue, &submit) == SPUD_SUCCESS;
+}
+
+static spudgpu_buffer rq_buffer(spudgpu_device device, SPUDGPU_MEMORY_KIND kind, SPUDGPU_BUFFER_USAGE usage, uint64_t size) {
+	spudgpu_buffer_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type        = SPUD_STRUCT_TYPE_GPU_BUFFER_DESC;
+	desc.usage            = usage;
+	desc.memory_kind      = kind;
+	desc.size             = size;
+	spudgpu_buffer buffer = NULL;
+	CHECK(spudgpu_create_buffer(device, &desc, &buffer) == SPUD_SUCCESS);
+	return buffer;
+}
+
+/* SpudGPU's ray query frame: a bottom level of one triangle and a top
+ * level of one instance built once, then, per frame, the instance written
+ * by the CPU call, the top level refitted and a 64 x 64 grid traced. */
+static void test_gpu_ray_query(uint32_t adapter_index) {
+	counting count;
+	memset(&count, 0, sizeof(count));
+	count.system             = spud_allocator_system();
+	SPUD_ALLOCATOR allocator = {&count, counting_allocate, counting_free};
+	spudgpu_instance_desc instance_desc;
+	memset(&instance_desc, 0, sizeof(instance_desc));
+	instance_desc.base.type        = SPUD_STRUCT_TYPE_GPU_INSTANCE_DESC;
+	instance_desc.allocator        = &allocator;
+	instance_desc.application_name = "spud_noalloc_tests";
+	instance_desc.engine_name      = "spud_noalloc_tests";
+	spudgpu_instance instance      = NULL;
+	if (spudgpu_create_instance(&instance_desc, &instance) != SPUD_SUCCESS)
+		return;
+	const spudgpu_adapter *adapters = NULL;
+	uint32_t adapter_count          = 0;
+	spudgpu_enumerate_adapters(instance, &adapters, &adapter_count);
+	SPUDGPU_ADAPTER_PROPERTIES properties;
+	memset(&properties, 0, sizeof(properties));
+	properties.base.type = SPUD_STRUCT_TYPE_GPU_ADAPTER_PROPERTIES;
+	if (adapter_index >= adapter_count || spudgpu_get_adapter_properties(adapters[adapter_index], &properties) != SPUD_SUCCESS ||
+	    !(properties.supported_features & SPUDGPU_FEATURE_RAY_QUERY)) {
+		printf("spud_noalloc_tests: SpudGPU: the adapter has no SPUDGPU_FEATURE_RAY_QUERY, the ray query frame skipped\n");
+		spudgpu_destroy_instance(instance);
+		return;
+	}
+	rq_frame r;
+	memset(&r, 0, sizeof(r));
+	spudgpu_device_desc device_desc;
+	memset(&device_desc, 0, sizeof(device_desc));
+	device_desc.base.type          = SPUD_STRUCT_TYPE_GPU_DEVICE_DESC;
+	device_desc.required_features  = SPUDGPU_FEATURE_RAY_QUERY;
+	device_desc.direct_queue_count = 1;
+	device_desc.max_descriptors    = 16;
+	device_desc.max_samplers       = 4;
+	device_desc.debug_name         = "spud_noalloc_tests ray queries";
+	CHECK(spudgpu_create_device(adapters[adapter_index], &device_desc, &r.f.device) == SPUD_SUCCESS);
+	spudgpu_device device = r.f.device;
+	if (!device) {
+		spudgpu_destroy_instance(instance);
+		return;
+	}
+	CHECK(spudgpu_get_command_queue(device, SPUDGPU_COMMAND_LIST_TYPE_DIRECT, 0, &r.f.queue) == SPUD_SUCCESS);
+	spudgpu_command_allocator_desc allocator_desc;
+	memset(&allocator_desc, 0, sizeof(allocator_desc));
+	allocator_desc.base.type = SPUD_STRUCT_TYPE_GPU_COMMAND_ALLOCATOR_DESC;
+	allocator_desc.type      = SPUDGPU_COMMAND_LIST_TYPE_DIRECT;
+	CHECK(spudgpu_create_command_allocator(device, &allocator_desc, &r.f.allocator) == SPUD_SUCCESS);
+	if (r.f.allocator)
+		CHECK(spudgpu_create_command_list(r.f.allocator, &r.f.cmd) == SPUD_SUCCESS);
+	CHECK(spudgpu_create_fence(device, SPUDGPU_FENCE_FLAG_NONE, 0, &r.fence) == SPUD_SUCCESS);
+	spudgpu_acceleration_structure_instance_layout layout;
+	memset(&layout, 0, sizeof(layout));
+	CHECK(spudgpu_get_acceleration_structure_instance_layout(device, &layout) == SPUD_SUCCESS);
+	r.instance_size = layout.size;
+
+	const float vertices[9]          = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+	spudgpu_buffer vertex_buffer     = rq_buffer(device, SPUDGPU_MEMORY_KIND_UPLOAD, SPUDGPU_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT, sizeof(vertices));
+	r.instances                      = rq_buffer(device, SPUDGPU_MEMORY_KIND_UPLOAD, SPUDGPU_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT, layout.size);
+	r.hits                           = rq_buffer(device, SPUDGPU_MEMORY_KIND_DEVICE, SPUDGPU_BUFFER_USAGE_STORAGE, 32ull * RQ_GRID * RQ_GRID);
+	spudgpu_shader_module module     = NULL;
+	spudgpu_descriptor_set_layout set_layout = NULL;
+	spudgpu_descriptor_pool pool     = NULL;
+	if (vertex_buffer) {
+		void *mapped = NULL;
+		if (spudgpu_map_buffer(vertex_buffer, 0, sizeof(vertices), &mapped) == SPUD_SUCCESS) {
+			memcpy(mapped, vertices, sizeof(vertices));
+			spudgpu_flush_buffer(vertex_buffer, 0, sizeof(vertices));
+			spudgpu_unmap_buffer(vertex_buffer);
+		}
+	}
+	if (r.instances)
+		CHECK(spudgpu_map_buffer(r.instances, 0, layout.size, &r.mapped_instances) == SPUD_SUCCESS);
+
+	spudgpu_acceleration_structure_geometry geometry;
+	memset(&geometry, 0, sizeof(geometry));
+	geometry.kind        = SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES;
+	geometry.flags       = SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE;
+	geometry.data        = vertex_buffer;
+	geometry.data_stride = 12;
+	geometry.data_count  = 3;
+	spudgpu_acceleration_structure_inputs bottom_inputs;
+	memset(&bottom_inputs, 0, sizeof(bottom_inputs));
+	bottom_inputs.base.type      = SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_INPUTS;
+	bottom_inputs.level          = SPUDGPU_ACCELERATION_STRUCTURE_LEVEL_BOTTOM;
+	bottom_inputs.flags          = SPUDGPU_ACCELERATION_STRUCTURE_BUILD_PREFER_FAST_TRACE;
+	bottom_inputs.geometries     = &geometry;
+	bottom_inputs.geometry_count = 1;
+	spudgpu_acceleration_structure_sizes bottom_sizes, top_sizes;
+	memset(&bottom_sizes, 0, sizeof(bottom_sizes));
+	bottom_sizes.base.type = SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_SIZES;
+	top_sizes              = bottom_sizes;
+	CHECK(spudgpu_get_acceleration_structure_build_sizes(device, &bottom_inputs, &bottom_sizes) == SPUD_SUCCESS);
+
+	// What creating a structure takes from the caller's allocator.
+	spudgpu_acceleration_structure_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type          = SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_DESC;
+	desc.level              = SPUDGPU_ACCELERATION_STRUCTURE_LEVEL_BOTTOM;
+	desc.size               = bottom_sizes.storage_size;
+	size_t blocks           = count.blocks;
+	size_t bytes            = count.bytes;
+	CHECK(spudgpu_create_acceleration_structure(device, &desc, &r.bottom) == SPUD_SUCCESS);
+	printf("spud_noalloc_tests: SpudGPU: creating a bottom level took %zu block(s), %zu bytes, from the caller's allocator\n",
+	       count.blocks - blocks, count.bytes - bytes);
+	CHECK(spudgpu_get_acceleration_structure_reference(r.bottom, &r.bottom_reference) == SPUD_SUCCESS);
+
+	r.top_inputs.base.type          = SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_INPUTS;
+	r.top_inputs.level              = SPUDGPU_ACCELERATION_STRUCTURE_LEVEL_TOP;
+	r.top_inputs.flags              = SPUDGPU_ACCELERATION_STRUCTURE_BUILD_ALLOW_UPDATE | SPUDGPU_ACCELERATION_STRUCTURE_BUILD_PREFER_FAST_BUILD;
+	r.top_inputs.instances          = r.instances;
+	r.top_inputs.instance_count     = 1;
+	r.top_inputs.bottom_levels      = &r.bottom;
+	r.top_inputs.bottom_level_count = 1;
+	if (r.bottom)
+		CHECK(spudgpu_get_acceleration_structure_build_sizes(device, &r.top_inputs, &top_sizes) == SPUD_SUCCESS);
+	desc.level             = SPUDGPU_ACCELERATION_STRUCTURE_LEVEL_TOP;
+	desc.size              = top_sizes.storage_size ? top_sizes.storage_size : 1;
+	desc.max_bottom_levels = 1;
+	blocks                 = count.blocks;
+	bytes                  = count.bytes;
+	CHECK(spudgpu_create_acceleration_structure(device, &desc, &r.top) == SPUD_SUCCESS);
+	printf("spud_noalloc_tests: SpudGPU: creating a top level of 1 bottom level took %zu block(s), %zu bytes\n", count.blocks - blocks,
+	       count.bytes - bytes);
+	// The bottom level's scratch, then the top level's at 64 KiB past it
+	// (a multiple of every device's scratch alignment), for its build and
+	// every update: no scratch range is used by two builds in one list.
+	r.top_scratch_offset = (bottom_sizes.build_scratch_size + 65535u) / 65536u * 65536u;
+	uint64_t top_scratch = top_sizes.build_scratch_size;
+	if (top_sizes.update_scratch_size > top_scratch)
+		top_scratch = top_sizes.update_scratch_size;
+	r.scratch = rq_buffer(device, SPUDGPU_MEMORY_KIND_DEVICE, SPUDGPU_BUFFER_USAGE_STORAGE, r.top_scratch_offset + top_scratch + 256);
+
+	// The pipeline and its set.
+	SPUDGPU_SHADER_FORMAT format = SPUDGPU_SHADER_FORMAT_NONE;
+	for (SPUDGPU_SHADER_FORMAT f = SPUDGPU_SHADER_FORMAT_SPIRV; f <= SPUDGPU_SHADER_FORMAT_METALLIB; ++f)
+		if (properties.shader_formats & (1u << f))
+			format = f;
+	spudgpu_shader_module_desc module_desc = spudgpu_test_module_desc(&spudgpu_test_rq_trace, format, "rq_trace");
+	if (module_desc.code)
+		CHECK(spudgpu_create_shader_module(device, &module_desc, &module) == SPUD_SUCCESS);
+	spudgpu_descriptor_set_layout_desc layout_desc;
+	memset(&layout_desc, 0, sizeof(layout_desc));
+	layout_desc.base.type                   = SPUD_STRUCT_TYPE_GPU_DESCRIPTOR_SET_LAYOUT_DESC;
+	layout_desc.bindings[0].binding         = 0;
+	layout_desc.bindings[0].descriptor_type = SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE;
+	layout_desc.bindings[0].count           = 1;
+	layout_desc.bindings[0].stage_flags     = SPUDGPU_SHADER_STAGE_COMPUTE;
+	layout_desc.bindings[1]                 = layout_desc.bindings[0];
+	layout_desc.bindings[1].binding         = 1;
+	layout_desc.bindings[1].descriptor_type = SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	layout_desc.binding_count               = 2;
+	CHECK(spudgpu_create_descriptor_set_layout(device, &layout_desc, &set_layout) == SPUD_SUCCESS);
+	spudgpu_compute_pipeline_desc pipeline_desc;
+	memset(&pipeline_desc, 0, sizeof(pipeline_desc));
+	pipeline_desc.base.type                           = SPUD_STRUCT_TYPE_GPU_COMPUTE_PIPELINE_DESC;
+	pipeline_desc.compute_module                      = module;
+	pipeline_desc.descriptor_set_layouts[0]           = set_layout;
+	pipeline_desc.descriptor_set_layout_count         = 1;
+	pipeline_desc.push_constant_ranges[0].stage_flags = SPUDGPU_SHADER_STAGE_COMPUTE;
+	pipeline_desc.push_constant_ranges[0].size        = sizeof(rq_params);
+	pipeline_desc.push_constant_range_count           = 1;
+	if (module && set_layout)
+		CHECK(spudgpu_create_compute_pipeline(device, &pipeline_desc, &r.trace) == SPUD_SUCCESS);
+	spudgpu_descriptor_pool_desc pool_desc;
+	memset(&pool_desc, 0, sizeof(pool_desc));
+	pool_desc.base.type                     = SPUD_STRUCT_TYPE_GPU_DESCRIPTOR_POOL_DESC;
+	pool_desc.max_sets                      = 1;
+	pool_desc.pool_sizes[0].descriptor_type = SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE;
+	pool_desc.pool_sizes[0].count           = 1;
+	pool_desc.pool_sizes[1].descriptor_type = SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	pool_desc.pool_sizes[1].count           = 1;
+	pool_desc.pool_size_count               = 2;
+	CHECK(spudgpu_create_descriptor_pool(device, &pool_desc, &pool) == SPUD_SUCCESS);
+	if (pool && set_layout) {
+		spudgpu_descriptor_set_desc set_desc;
+		memset(&set_desc, 0, sizeof(set_desc));
+		set_desc.base.type      = SPUD_STRUCT_TYPE_GPU_DESCRIPTOR_SET_DESC;
+		set_desc.pool           = pool;
+		set_desc.set_layouts[0] = set_layout;
+		set_desc.set_count      = 1;
+		CHECK(spudgpu_create_descriptor_sets(device, &set_desc, &r.set) == SPUD_SUCCESS);
+	}
+
+	const bool ready = r.f.queue && r.f.cmd && r.fence && vertex_buffer && r.mapped_instances && r.hits && r.scratch && r.bottom && r.top &&
+	                   r.trace && r.set;
+	CHECK(ready);
+	if (ready) {
+		spudgpu_write_descriptor_set writes[2];
+		memset(writes, 0, sizeof(writes));
+		writes[0].base.type               = SPUD_STRUCT_TYPE_GPU_WRITE_DESCRIPTOR_SET;
+		writes[0].dst_set                 = r.set;
+		writes[0].descriptor_count        = 1;
+		writes[0].descriptor_type         = SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE;
+		writes[0].acceleration_structures = &r.top;
+		const spudgpu_descriptor_buffer_info hits = {r.hits, 0, 32ull * RQ_GRID * RQ_GRID};
+		writes[1].base.type                       = SPUD_STRUCT_TYPE_GPU_WRITE_DESCRIPTOR_SET;
+		writes[1].dst_set                         = r.set;
+		writes[1].dst_binding                     = 1;
+		writes[1].descriptor_count                = 1;
+		writes[1].descriptor_type                 = SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		writes[1].buffer_info                     = &hits;
+		spudgpu_update_descriptor_sets(device, writes, 2);
+
+		// The one build of both levels, before the loop.
+		spudgpu_acceleration_structure_instance instance;
+		memset(&instance, 0, sizeof(instance));
+		instance.transform[0]           = 1.0f;
+		instance.transform[5]           = 1.0f;
+		instance.transform[10]          = 1.0f;
+		instance.mask                   = 0xFF;
+		instance.bottom_level_reference = r.bottom_reference;
+		CHECK(spudgpu_write_acceleration_structure_instances(device, &instance, 1, r.mapped_instances) == SPUD_SUCCESS);
+		spudgpu_flush_buffer(r.instances, 0, layout.size);
+		spudgpu_begin_command_list(r.f.cmd);
+		spudgpu_buffer_barrier b;
+		memset(&b, 0, sizeof(b));
+		b.base.type    = SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER;
+		b.buffer       = r.scratch;
+		b.state_before = SPUDGPU_RESOURCE_STATE_COMMON;
+		b.state_after  = SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_SCRATCH;
+		spudgpu_cmd_pipeline_barrier(r.f.cmd, &b, 1, NULL, 0);
+		spudgpu_acceleration_structure_build build;
+		memset(&build, 0, sizeof(build));
+		build.base.type   = SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_BUILD;
+		build.mode        = SPUDGPU_ACCELERATION_STRUCTURE_BUILD_MODE_BUILD;
+		build.inputs      = &bottom_inputs;
+		build.destination = r.bottom;
+		build.scratch     = r.scratch;
+		CHECK(spudgpu_cmd_build_acceleration_structures(r.f.cmd, &build, 1) == SPUD_SUCCESS);
+		spudgpu_acceleration_structure_barrier ab;
+		memset(&ab, 0, sizeof(ab));
+		ab.base.type     = SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_BARRIER;
+		ab.structure     = r.bottom;
+		ab.access_before = SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_BUILD_WRITE;
+		ab.access_after  = SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_BUILD_READ;
+		spudgpu_cmd_acceleration_structure_barrier(r.f.cmd, &ab, 1);
+		build.inputs         = &r.top_inputs;
+		build.destination    = r.top;
+		build.scratch_offset = r.top_scratch_offset;
+		CHECK(spudgpu_cmd_build_acceleration_structures(r.f.cmd, &build, 1) == SPUD_SUCCESS);
+		spudgpu_end_command_list(r.f.cmd);
+		CHECK(spudgpu_submit_command_lists(r.f.queue, &r.f.cmd, 1) == SPUD_SUCCESS);
+		spudgpu_queue_wait_idle(r.f.queue);
+
+		bool ok = true;
+		for (int i = 0; i < WARM_UP && ok; ++i)
+			ok = rq_frame_run(&r);
+		CHECK(ok);
+		alloc_trace_start();
+		for (int i = 0; i < ITERATIONS && ok; ++i)
+			ok = rq_frame_run(&r);
+		alloc_trace_stop();
+		CHECK(ok);
+		report("SpudGPU ray queries: the instance written, the top level refitted, a 64 x 64 grid traced");
+		uint64_t best = UINT64_MAX;
+		for (int run = 0; run < TIMED_RUNS && ok; ++run) {
+			const uint64_t start = spudperf_get_monotonic_time_ns();
+			for (int i = 0; i < TIMED_ITERATIONS && ok; ++i)
+				ok = rq_frame_run(&r);
+			const uint64_t took = spudperf_get_monotonic_time_ns() - start;
+			if (took < best)
+				best = took;
+		}
+		if (ok)
+			print_time("SpudGPU ray query frame (write, refit, trace, fence wait)", best, TIMED_ITERATIONS);
+		uint64_t value = r.frame;
+		spudgpu_wait_for_fences(device, &r.fence, &value, 1, true, UINT64_MAX);
+	}
+	if (r.mapped_instances)
+		spudgpu_unmap_buffer(r.instances);
+	spudgpu_destroy_descriptor_pool(pool);
+	spudgpu_destroy_compute_pipeline(r.trace);
+	spudgpu_destroy_descriptor_set_layout(set_layout);
+	spudgpu_destroy_shader_module(module);
+	spudgpu_destroy_acceleration_structure(r.top);
+	spudgpu_destroy_acceleration_structure(r.bottom);
+	spudgpu_destroy_buffer(r.scratch);
+	spudgpu_destroy_buffer(r.hits);
+	spudgpu_destroy_buffer(r.instances);
+	spudgpu_destroy_buffer(vertex_buffer);
+	spudgpu_destroy_fence(r.fence);
+	spudgpu_destroy_command_list(r.f.cmd);
+	spudgpu_destroy_command_allocator(r.f.allocator);
+	spudgpu_destroy_device(device);
+	spudgpu_destroy_instance(instance);
+}
+#endif
 
 // ---- SpudAudio -------------------------------------------------------------
 

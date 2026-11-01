@@ -101,6 +101,33 @@ const SPUDFILE_SHARE_DELETE = 4
 const SPUDFILE_SHARE_NONE = 0
 const SPUDFILE_SHARE_READ = 1
 const SPUDFILE_SHARE_WRITE = 2
+const SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_BUILD_READ = 2
+const SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_BUILD_WRITE = 1
+const SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_NONE = 0
+const SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_TRACE = 3
+const SPUDGPU_ACCELERATION_STRUCTURE_BUILD_ALLOW_COMPACTION = 3
+const SPUDGPU_ACCELERATION_STRUCTURE_BUILD_ALLOW_UPDATE = 2
+const SPUDGPU_ACCELERATION_STRUCTURE_BUILD_MODE_BUILD = 1
+const SPUDGPU_ACCELERATION_STRUCTURE_BUILD_MODE_UPDATE = 2
+const SPUDGPU_ACCELERATION_STRUCTURE_BUILD_PREFER_FAST_BUILD = 1
+const SPUDGPU_ACCELERATION_STRUCTURE_BUILD_PREFER_FAST_TRACE = 0
+const SPUDGPU_ACCELERATION_STRUCTURE_COPY_MODE_CLONE = 1
+const SPUDGPU_ACCELERATION_STRUCTURE_COPY_MODE_COMPACT = 2
+const SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_AABBS = 2
+const SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_NONE = 0
+const SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_NO_DUPLICATE_CANDIDATES = 1
+const SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE = 0
+const SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES = 1
+const SPUDGPU_ACCELERATION_STRUCTURE_INSTANCE_DISABLE_TRIANGLE_CULLING = 0
+const SPUDGPU_ACCELERATION_STRUCTURE_INSTANCE_FORCE_NON_OPAQUE = 3
+const SPUDGPU_ACCELERATION_STRUCTURE_INSTANCE_FORCE_OPAQUE = 2
+const SPUDGPU_ACCELERATION_STRUCTURE_INSTANCE_FRONT_COUNTERCLOCKWISE = 1
+const SPUDGPU_ACCELERATION_STRUCTURE_INSTANCE_LAYOUT_COLUMN_MAJOR_72 = 2
+const SPUDGPU_ACCELERATION_STRUCTURE_INSTANCE_LAYOUT_NONE = 0
+const SPUDGPU_ACCELERATION_STRUCTURE_INSTANCE_LAYOUT_ROW_MAJOR_64 = 1
+const SPUDGPU_ACCELERATION_STRUCTURE_LEVEL_BOTTOM = 1
+const SPUDGPU_ACCELERATION_STRUCTURE_LEVEL_NONE = 0
+const SPUDGPU_ACCELERATION_STRUCTURE_LEVEL_TOP = 2
 const SPUDGPU_ADAPTER_TYPE_DISCRETE = 2
 const SPUDGPU_ADAPTER_TYPE_INTEGRATED = 1
 const SPUDGPU_ADAPTER_TYPE_OTHER = 0
@@ -125,10 +152,10 @@ const SPUDGPU_BLEND_OP_MAX = 4
 const SPUDGPU_BLEND_OP_MIN = 3
 const SPUDGPU_BLEND_OP_REVERSE_SUBTRACT = 2
 const SPUDGPU_BLEND_OP_SUBTRACT = 1
+const SPUDGPU_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT = 64
 const SPUDGPU_BUFFER_USAGE_INDEX = 2
 const SPUDGPU_BUFFER_USAGE_INDIRECT = 128
 const SPUDGPU_BUFFER_USAGE_NONE = 0
-const SPUDGPU_BUFFER_USAGE_RAYTRACING_ACCELERATION_STRUCTURE = 64
 const SPUDGPU_BUFFER_USAGE_STORAGE = 8
 const SPUDGPU_BUFFER_USAGE_TRANSFER_DST = 32
 const SPUDGPU_BUFFER_USAGE_TRANSFER_SRC = 16
@@ -149,6 +176,7 @@ const SPUDGPU_COMPARE_OP_NOT_EQUAL = 5
 const SPUDGPU_CULL_MODE_BACK = 2
 const SPUDGPU_CULL_MODE_FRONT = 1
 const SPUDGPU_CULL_MODE_NONE = 0
+const SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE = 6
 const SPUDGPU_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER = 2
 const SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE = 3
 const SPUDGPU_DESCRIPTOR_TYPE_SAMPLER = 4
@@ -282,6 +310,7 @@ const SPUDGPU_FORMAT_YUY2 = 107
 const SPUDGPU_FULLSCREEN_MODE_BORDERLESS = 2
 const SPUDGPU_FULLSCREEN_MODE_FULLSCREEN = 1
 const SPUDGPU_FULLSCREEN_MODE_WINDOWED = 0
+const SPUDGPU_HEAP_RESOURCE_CLASS_ACCELERATION_STRUCTURES = 4
 const SPUDGPU_HEAP_RESOURCE_CLASS_ATTACHMENT_IMAGES = 3
 const SPUDGPU_HEAP_RESOURCE_CLASS_BUFFERS = 1
 const SPUDGPU_HEAP_RESOURCE_CLASS_IMAGES = 2
@@ -363,6 +392,9 @@ const SPUDGPU_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP = 1
 const SPUDGPU_QUEUE_POOL_ENGINE_GRAPHICS = 1
 const SPUDGPU_QUEUE_POOL_ENGINE_SEPARATE = 2
 const SPUDGPU_QUEUE_POOL_ENGINE_UNKNOWN = 0
+const SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_BUILD_INPUT = 11
+const SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_SCRATCH = 12
+const SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_SIZE_DEST = 13
 const SPUDGPU_RESOURCE_STATE_COMMON = 0
 const SPUDGPU_RESOURCE_STATE_COPY_DEST = 10
 const SPUDGPU_RESOURCE_STATE_COPY_SOURCE = 9
@@ -374,6 +406,10 @@ const SPUDGPU_RESOURCE_STATE_RENDER_TARGET = 3
 const SPUDGPU_RESOURCE_STATE_SHADER_RESOURCE = 5
 const SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS = 6
 const SPUDGPU_RESOURCE_STATE_VERTEX_BUFFER = 1
+const SPUDGPU_SHADER_FORMAT_DXIL = 2
+const SPUDGPU_SHADER_FORMAT_METALLIB = 3
+const SPUDGPU_SHADER_FORMAT_NONE = 0
+const SPUDGPU_SHADER_FORMAT_SPIRV = 1
 const SPUDGPU_SHADER_STAGE_COMPUTE = 4
 const SPUDGPU_SHADER_STAGE_FRAGMENT = 2
 const SPUDGPU_SHADER_STAGE_GEOMETRY = 8
@@ -459,6 +495,15 @@ const SPUDNET_WEBSOCKET_MESSAGE_TEXT = 0
 const SPUDRESULT_API_SPECIFIC_FAILURE = 2
 const SPUDRESULT_DESC_INVALID_PARAMETERS = 6
 const SPUDRESULT_GENERAL_FAILURE = 1
+const SPUDRESULT_GPU_ACCELERATION_STRUCTURE_ALIGNMENT = 364
+const SPUDRESULT_GPU_ACCELERATION_STRUCTURE_COMMAND_LIST_TYPE = 368
+const SPUDRESULT_GPU_ACCELERATION_STRUCTURE_COMPACTION_REFUSED = 367
+const SPUDRESULT_GPU_ACCELERATION_STRUCTURE_INSIDE_RENDERING = 369
+const SPUDRESULT_GPU_ACCELERATION_STRUCTURE_LIMIT = 365
+const SPUDRESULT_GPU_ACCELERATION_STRUCTURE_RANGE = 363
+const SPUDRESULT_GPU_ACCELERATION_STRUCTURE_SCRATCH_TOO_SMALL = 362
+const SPUDRESULT_GPU_ACCELERATION_STRUCTURE_TOO_SMALL = 361
+const SPUDRESULT_GPU_ACCELERATION_STRUCTURE_UPDATE_REFUSED = 366
 const SPUDRESULT_GPU_ADAPTER_IN_USE = 214
 const SPUDRESULT_GPU_BINDLESS_OUT_OF_SLOTS = 324
 const SPUDRESULT_GPU_BUFFER_OR_IMAGE_VIEW_RANGE_OUT_OF_SCOPE = 238
@@ -469,12 +514,16 @@ const SPUDRESULT_GPU_DEVICE_ENUMERATION_FAILURE = 199
 const SPUDRESULT_GPU_DEVICE_LOST = 253
 const SPUDRESULT_GPU_EXT_BINDLESS_NOT_SUPPORTED = 325
 const SPUDRESULT_GPU_EXT_DEPTH_BOUNDS_TEST_NOT_SUPPORTED = 327
+const SPUDRESULT_GPU_EXT_GEOMETRY_SHADER_NOT_SUPPORTED = 329
 const SPUDRESULT_GPU_EXT_MESH_SHADING_NOT_SUPPORTED = 326
+const SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED = 328
+const SPUDRESULT_GPU_EXT_TESSELLATION_NOT_SUPPORTED = 330
 const SPUDRESULT_GPU_FEATURE_NOT_SUPPORTED = 212
 const SPUDRESULT_GPU_FENCE_WAIT_TIMED_OUT = 252
 const SPUDRESULT_GPU_HEAP_MISMATCH = 243
 const SPUDRESULT_GPU_INDEPENDENT_BLEND_NOT_SUPPORTED = 228
 const SPUDRESULT_GPU_INTERNAL_DESCRIPTOR_SET_ALLOCATION_FAIL = 322
+const SPUDRESULT_GPU_INVALID_ACCELERATION_STRUCTURE = 360
 const SPUDRESULT_GPU_INVALID_ADAPTER = 211
 const SPUDRESULT_GPU_INVALID_BLEND_FACTOR = 290
 const SPUDRESULT_GPU_INVALID_BLEND_OP = 291
@@ -521,23 +570,27 @@ const SPUDRESULT_GPU_INVALID_PRESENT_SCALING = 218
 const SPUDRESULT_GPU_INVALID_PRIMITIVE_TOPOLOGY = 281
 const SPUDRESULT_GPU_INVALID_RESOURCE_STATE = 350
 const SPUDRESULT_GPU_INVALID_SEMAPHORE = 250
+const SPUDRESULT_GPU_INVALID_SHADER_CODE = 307
+const SPUDRESULT_GPU_INVALID_SHADER_CODE_ALIGNMENT = 305
 const SPUDRESULT_GPU_INVALID_SHADER_MODULE = 300
 const SPUDRESULT_GPU_INVALID_SHADER_PIPELINE = 301
 const SPUDRESULT_GPU_INVALID_SHADER_STAGE = 280
-const SPUDRESULT_GPU_INVALID_SPIRV_ALIGNMENT = 305
 const SPUDRESULT_GPU_INVALID_SURFACE = 206
 const SPUDRESULT_GPU_INVALID_SWAP_CHAIN = 205
 const SPUDRESULT_GPU_INVALID_TIMESTAMP_SET = 246
 const SPUDRESULT_GPU_INVALID_WINDOW_HANDLE = 208
+const SPUDRESULT_GPU_INVALID_WORKGROUP_SIZE = 285
 const SPUDRESULT_GPU_INVALID_WRITE_DESCRIPTOR_SET = 317
 const SPUDRESULT_GPU_MAP_OUT_OF_RANGE = 239
 const SPUDRESULT_GPU_MEMORY_KIND_NOT_SUPPORTED = 225
-const SPUDRESULT_GPU_NULL_SPIRV = 304
+const SPUDRESULT_GPU_NULL_ENTRY_POINT = 284
+const SPUDRESULT_GPU_NULL_SHADER_CODE = 304
 const SPUDRESULT_GPU_OUT_OF_DESCRIPTORS = 216
 const SPUDRESULT_GPU_PLACEMENT_MISALIGNED = 244
 const SPUDRESULT_GPU_PLACEMENT_OUT_OF_RANGE = 245
 const SPUDRESULT_GPU_PRESENT_SCALING_NOT_SUPPORTED = 219
-const SPUDRESULT_GPU_SHADER_COMPILATION_FAILED = 307
+const SPUDRESULT_GPU_SHADER_ENTRY_POINT_NOT_FOUND = 309
+const SPUDRESULT_GPU_SHADER_FORMAT_NOT_SUPPORTED = 308
 const SPUDRESULT_GPU_TIMESTAMPS_NOT_SUPPORTED = 229
 const SPUDRESULT_GPU_TOO_MANY_COLOR_ATTACHMENTS = 226
 const SPUDRESULT_GPU_TOO_MANY_DESCRIPTOR_BINDINGS = 318
@@ -629,6 +682,11 @@ const SPUD_STRUCT_TYPE_AUDIO_TIMING_CAPS = 2001
 const SPUD_STRUCT_TYPE_FILES_INSTANCE_DESC = 5001
 const SPUD_STRUCT_TYPE_FILES_OPEN_DESC = 5000
 const SPUD_STRUCT_TYPE_FILES_PATH_INFO = 5002
+const SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_BARRIER = 1035
+const SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_BUILD = 1034
+const SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_DESC = 1033
+const SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_INPUTS = 1031
+const SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_SIZES = 1032
 const SPUD_STRUCT_TYPE_GPU_ADAPTER_PROPERTIES = 1026
 const SPUD_STRUCT_TYPE_GPU_BINDLESS_LIMITS = 1029
 const SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER = 1009
@@ -648,6 +706,7 @@ const SPUD_STRUCT_TYPE_GPU_IMAGE_VIEW_DESC = 1006
 const SPUD_STRUCT_TYPE_GPU_INSTANCE_DESC = 1025
 const SPUD_STRUCT_TYPE_GPU_MESH_SHADING_LIMITS = 1028
 const SPUD_STRUCT_TYPE_GPU_PLACEMENT_REQUIREMENTS = 1008
+const SPUD_STRUCT_TYPE_GPU_RAY_QUERY_LIMITS = 1030
 const SPUD_STRUCT_TYPE_GPU_RENDERING_BEGIN_DESC = 1023
 const SPUD_STRUCT_TYPE_GPU_SAMPLER_DESC = 1015
 const SPUD_STRUCT_TYPE_GPU_SHADER_MODULE_DESC = 1018
@@ -714,6 +773,7 @@ fn spudgpu_begin_command_list void (spudgpu_command_list)
 [linux,windows] fn spudgpu_bindless_unregister_sampled_image void (spudgpu_device, uint32_t)
 [linux,windows] fn spudgpu_bindless_unregister_storage_buffer void (spudgpu_device, uint32_t)
 [linux,windows] fn spudgpu_bindless_unregister_storage_image void (spudgpu_device, uint32_t)
+fn spudgpu_cmd_acceleration_structure_barrier void (spudgpu_command_list, const spudgpu_acceleration_structure_barrier *, uint32_t)
 fn spudgpu_cmd_begin_debug_label void (spudgpu_command_list, const char *)
 fn spudgpu_cmd_begin_rendering void (spudgpu_command_list, const spudgpu_rendering_begin_desc *)
 [linux,windows] fn spudgpu_cmd_bind_bindless_resources void (spudgpu_command_list, spudgpu_shader_pipeline, uint32_t)
@@ -723,8 +783,10 @@ fn spudgpu_cmd_bind_descriptor_sets void (spudgpu_command_list, spudgpu_shader_p
 fn spudgpu_cmd_bind_descriptor_sets_compute void (spudgpu_command_list, spudgpu_compute_pipeline, uint32_t, const spudgpu_descriptor_set *, uint32_t)
 fn spudgpu_cmd_bind_pipeline void (spudgpu_command_list, spudgpu_shader_pipeline)
 fn spudgpu_cmd_blit_image void (spudgpu_command_list, spudgpu_image, spudgpu_image, const spudgpu_image_blit_desc *)
+fn spudgpu_cmd_build_acceleration_structures SPUDRESULT (spudgpu_command_list, const spudgpu_acceleration_structure_build *, uint32_t)
 fn spudgpu_cmd_clear_color_attachment void (spudgpu_command_list, spudgpu_image_view, float, float, float, float, uint32_t, uint32_t)
 fn spudgpu_cmd_clear_depth_attachment void (spudgpu_command_list, spudgpu_image_view, bool, bool, float, uint32_t, uint32_t, uint32_t)
+fn spudgpu_cmd_copy_acceleration_structure SPUDRESULT (spudgpu_command_list, spudgpu_acceleration_structure, spudgpu_acceleration_structure, SPUDGPU_ACCELERATION_STRUCTURE_COPY_MODE)
 fn spudgpu_cmd_copy_buffer void (spudgpu_command_list, spudgpu_buffer, spudgpu_buffer, uint64_t, uint64_t, uint64_t)
 fn spudgpu_cmd_copy_buffer_to_image void (spudgpu_command_list, spudgpu_buffer, spudgpu_image, const spudgpu_image_buffer_copy_desc *)
 fn spudgpu_cmd_copy_image_to_buffer void (spudgpu_command_list, spudgpu_image, spudgpu_buffer, const spudgpu_image_buffer_copy_desc *)
@@ -752,6 +814,8 @@ fn spudgpu_cmd_set_index_buffer void (spudgpu_command_list, spudgpu_buffer_view)
 fn spudgpu_cmd_set_scissor_rects void (spudgpu_command_list, uint32_t, uint32_t, const SPUDGPU_SCISSOR_RECT *)
 fn spudgpu_cmd_set_vertex_buffers void (spudgpu_command_list, uint32_t, uint32_t, spudgpu_buffer_view *)
 fn spudgpu_cmd_set_viewports void (spudgpu_command_list, uint32_t, uint32_t, const SPUDGPU_VIEWPORT *)
+fn spudgpu_cmd_write_acceleration_structure_compacted_sizes SPUDRESULT (spudgpu_command_list, const spudgpu_acceleration_structure *, uint32_t, spudgpu_buffer, uint64_t)
+fn spudgpu_create_acceleration_structure SPUDRESULT (spudgpu_device, const spudgpu_acceleration_structure_desc *, spudgpu_acceleration_structure *)
 fn spudgpu_create_buffer SPUDRESULT (spudgpu_device, const spudgpu_buffer_desc *, spudgpu_buffer *)
 fn spudgpu_create_buffer_view SPUDRESULT (spudgpu_buffer, const spudgpu_buffer_view_desc *, spudgpu_buffer_view *)
 fn spudgpu_create_command_allocator SPUDRESULT (spudgpu_device, const spudgpu_command_allocator_desc *, spudgpu_command_allocator *)
@@ -766,6 +830,7 @@ fn spudgpu_create_heap SPUDRESULT (spudgpu_device, const spudgpu_heap_desc *, sp
 fn spudgpu_create_image SPUDRESULT (spudgpu_device, const spudgpu_image_desc *, spudgpu_image *)
 fn spudgpu_create_image_view SPUDRESULT (spudgpu_image, const spudgpu_image_view_desc *, spudgpu_image_view *)
 fn spudgpu_create_instance SPUDRESULT (const spudgpu_instance_desc *, spudgpu_instance *)
+fn spudgpu_create_placed_acceleration_structure SPUDRESULT (spudgpu_heap, uint64_t, const spudgpu_acceleration_structure_desc *, spudgpu_acceleration_structure *)
 fn spudgpu_create_placed_buffer SPUDRESULT (spudgpu_heap, uint64_t, const spudgpu_buffer_desc *, spudgpu_buffer *)
 fn spudgpu_create_placed_image SPUDRESULT (spudgpu_heap, uint64_t, const spudgpu_image_desc *, spudgpu_image *)
 fn spudgpu_create_sampler SPUDRESULT (spudgpu_device, const spudgpu_sampler_desc *, spudgpu_sampler *)
@@ -776,6 +841,7 @@ fn spudgpu_create_surface SPUDRESULT (spudgpu_instance, void *, void *, spudgpu_
 fn spudgpu_create_surface_from_callback spudgpu_surface (spudgpu_instance, void *, spudgpu_surface_create_fn)
 fn spudgpu_create_swap_chain SPUDRESULT (spudgpu_device, const spudgpu_swap_chain_desc *, spudgpu_swap_chain *)
 fn spudgpu_create_timestamp_set SPUDRESULT (spudgpu_device, spudgpu_command_queue, uint32_t, spudgpu_timestamp_set *)
+fn spudgpu_destroy_acceleration_structure void (spudgpu_acceleration_structure)
 fn spudgpu_destroy_buffer void (spudgpu_buffer)
 fn spudgpu_destroy_buffer_view void (spudgpu_buffer_view)
 fn spudgpu_destroy_command_allocator void (spudgpu_command_allocator)
@@ -801,6 +867,9 @@ fn spudgpu_enumerate_adapters SPUDRESULT (spudgpu_instance, const spudgpu_adapte
 fn spudgpu_flush_buffer SPUDRESULT (spudgpu_buffer, uint64_t, uint64_t)
 fn spudgpu_format_bit_count uint32_t (SPUDGPU_FORMAT)
 fn spudgpu_format_from_string SPUDGPU_FORMAT (const char *)
+fn spudgpu_get_acceleration_structure_build_sizes SPUDRESULT (spudgpu_device, const spudgpu_acceleration_structure_inputs *, spudgpu_acceleration_structure_sizes *)
+fn spudgpu_get_acceleration_structure_instance_layout SPUDRESULT (spudgpu_device, spudgpu_acceleration_structure_instance_layout *)
+fn spudgpu_get_acceleration_structure_reference SPUDRESULT (spudgpu_acceleration_structure, uint64_t *)
 fn spudgpu_get_adapter_properties SPUDRESULT (spudgpu_adapter, SPUDGPU_ADAPTER_PROPERTIES *)
 [linux,windows] fn spudgpu_get_bindless_descriptor_set_layout spudgpu_descriptor_set_layout (spudgpu_device)
 fn spudgpu_get_buffer_desc SPUDRESULT (spudgpu_buffer, spudgpu_buffer_desc *)
@@ -839,6 +908,7 @@ fn spudgpu_swap_chain_present void (spudgpu_swap_chain)
 fn spudgpu_unmap_buffer void (spudgpu_buffer)
 fn spudgpu_update_descriptor_sets void (spudgpu_device, const spudgpu_write_descriptor_set *, uint32_t)
 fn spudgpu_wait_for_fences SPUDRESULT (spudgpu_device, spudgpu_fence *, const uint64_t *, uint32_t, bool, uint64_t)
+fn spudgpu_write_acceleration_structure_instances SPUDRESULT (spudgpu_device, const spudgpu_acceleration_structure_instance *, uint32_t, void *)
 fn spudinput_gamepad_get_axis_label SPUDRESULT (spudinput_instance, spudinput_gamepad_id, SPUDINPUT_GAMEPAD_AXIS, char *, uint32_t)
 fn spudinput_gamepad_get_battery SPUDRESULT (spudinput_instance, spudinput_gamepad_id, SPUDINPUT_GAMEPAD_BATTERY *)
 fn spudinput_gamepad_get_button_label SPUDRESULT (spudinput_instance, spudinput_gamepad_id, SPUDINPUT_GAMEPAD_BUTTONS, char *, uint32_t)
@@ -955,13 +1025,19 @@ macro SPUDFAIL(sr) ((sr) != SPUD_SUCCESS)
 [apple] macro SPUDGPU_EXT_BUNDLES 0
 [linux,windows] macro SPUDGPU_EXT_BUNDLES 1
 macro SPUDGPU_EXT_DEPTH_BOUNDS_TEST 1
+[apple] macro SPUDGPU_EXT_GEOMETRY_SHADER 0
+[linux,windows] macro SPUDGPU_EXT_GEOMETRY_SHADER 1
 macro SPUDGPU_EXT_MESH_SHADING 1
+macro SPUDGPU_EXT_RAY_QUERY 1
+[apple] macro SPUDGPU_EXT_TESSELLATION 0
+[linux,windows] macro SPUDGPU_EXT_TESSELLATION 1
 macro SPUDGPU_FEATURE_BINDLESS (UINT64_C(1) << 8)
 macro SPUDGPU_FEATURE_CUBE_ARRAY_VIEWS (UINT64_C(1) << 4)
 macro SPUDGPU_FEATURE_DEPTH_BIAS_CLAMP (UINT64_C(1) << 1)
 macro SPUDGPU_FEATURE_DEPTH_BOUNDS_TEST (UINT64_C(1) << 10)
 macro SPUDGPU_FEATURE_DEVICE_MAPPABLE_MEMORY (UINT64_C(1) << 6)
 macro SPUDGPU_FEATURE_DRAW_INDIRECT_FIRST_INSTANCE (UINT64_C(1) << 12)
+macro SPUDGPU_FEATURE_GEOMETRY_SHADER (UINT64_C(1) << 14)
 macro SPUDGPU_FEATURE_INDEPENDENT_BLEND (UINT64_C(1) << 2)
 macro SPUDGPU_FEATURE_LAYERED_RENDERING (UINT64_C(1) << 0)
 macro SPUDGPU_FEATURE_MAPPABLE_HEAPS (UINT64_C(1) << 7)
@@ -969,6 +1045,8 @@ macro SPUDGPU_FEATURE_MESH_SHADING (UINT64_C(1) << 9)
 macro SPUDGPU_FEATURE_MULTI_DRAW_INDIRECT (UINT64_C(1) << 3)
 macro SPUDGPU_FEATURE_PASS_TIMESTAMPS (UINT64_C(1) << 5)
 macro SPUDGPU_FEATURE_PRESENT (UINT64_C(1) << 11)
+macro SPUDGPU_FEATURE_RAY_QUERY (UINT64_C(1) << 13)
+macro SPUDGPU_FEATURE_TESSELLATION (UINT64_C(1) << 15)
 macro SPUDGPU_HEAP_SIZE_GRANULARITY 65536u
 macro SPUDGPU_MAX_COLOR_ATTACHMENTS 8
 macro SPUDGPU_MAX_DESCRIPTOR_BINDINGS_PER_SET 16
@@ -1036,6 +1114,7 @@ opaque spudaudio_stream_t
 opaque spudfile_file_t
 opaque spudfile_instance_t
 opaque spudfile_mapping_t
+opaque spudgpu_acceleration_structure_t
 opaque spudgpu_adapter_t
 opaque spudgpu_buffer_t
 opaque spudgpu_buffer_view_t
@@ -1133,7 +1212,7 @@ field SPUDFILE_PATH_INFO.base @0 SPUD_STRUCT_BASE_OUT
 field SPUDFILE_PATH_INFO.kind @16 SPUDFILE_PATH_KIND
 field SPUDFILE_PATH_INFO.size @24 uint64_t
 field SPUDFILE_PATH_INFO.modified_ns @32 int64_t
-struct SPUDGPU_ADAPTER_PROPERTIES size=288 align=8
+struct SPUDGPU_ADAPTER_PROPERTIES size=296 align=8
 field SPUDGPU_ADAPTER_PROPERTIES.base @0 SPUD_STRUCT_BASE_OUT
 field SPUDGPU_ADAPTER_PROPERTIES.description @16 char[128]
 field SPUDGPU_ADAPTER_PROPERTIES.vendor_id @144 uint32_t
@@ -1145,17 +1224,18 @@ field SPUDGPU_ADAPTER_PROPERTIES.luid @176 uint8_t[8]
 field SPUDGPU_ADAPTER_PROPERTIES.luid_valid @184 bool
 field SPUDGPU_ADAPTER_PROPERTIES.adapter_type @188 SPUDGPU_ADAPTER_TYPE
 field SPUDGPU_ADAPTER_PROPERTIES.supported_features @192 SPUDGPU_FEATURES
-field SPUDGPU_ADAPTER_PROPERTIES.dedicated_video_memory @200 uint64_t
-field SPUDGPU_ADAPTER_PROPERTIES.dedicated_system_memory @208 uint64_t
-field SPUDGPU_ADAPTER_PROPERTIES.shared_system_memory @216 uint64_t
-field SPUDGPU_ADAPTER_PROPERTIES.unified_memory @224 bool
-field SPUDGPU_ADAPTER_PROPERTIES.uniform_buffer_offset_alignment @228 uint32_t
-field SPUDGPU_ADAPTER_PROPERTIES.storage_buffer_offset_alignment @232 uint32_t
-field SPUDGPU_ADAPTER_PROPERTIES.max_draw_indirect_count @236 uint32_t
-field SPUDGPU_ADAPTER_PROPERTIES.max_descriptors @240 uint32_t
-field SPUDGPU_ADAPTER_PROPERTIES.max_samplers @244 uint32_t
-field SPUDGPU_ADAPTER_PROPERTIES.queue_pools @248 SPUDGPU_QUEUE_POOL[3]
-field SPUDGPU_ADAPTER_PROPERTIES.queue_pool_count @284 uint32_t
+field SPUDGPU_ADAPTER_PROPERTIES.shader_formats @200 SPUDGPU_SHADER_FORMATS
+field SPUDGPU_ADAPTER_PROPERTIES.dedicated_video_memory @208 uint64_t
+field SPUDGPU_ADAPTER_PROPERTIES.dedicated_system_memory @216 uint64_t
+field SPUDGPU_ADAPTER_PROPERTIES.shared_system_memory @224 uint64_t
+field SPUDGPU_ADAPTER_PROPERTIES.unified_memory @232 bool
+field SPUDGPU_ADAPTER_PROPERTIES.uniform_buffer_offset_alignment @236 uint32_t
+field SPUDGPU_ADAPTER_PROPERTIES.storage_buffer_offset_alignment @240 uint32_t
+field SPUDGPU_ADAPTER_PROPERTIES.max_draw_indirect_count @244 uint32_t
+field SPUDGPU_ADAPTER_PROPERTIES.max_descriptors @248 uint32_t
+field SPUDGPU_ADAPTER_PROPERTIES.max_samplers @252 uint32_t
+field SPUDGPU_ADAPTER_PROPERTIES.queue_pools @256 SPUDGPU_QUEUE_POOL[3]
+field SPUDGPU_ADAPTER_PROPERTIES.queue_pool_count @292 uint32_t
 [linux,windows] struct SPUDGPU_BINDLESS_LIMITS size=32 align=8
 [linux,windows] field SPUDGPU_BINDLESS_LIMITS.base @0 SPUD_STRUCT_BASE_OUT
 [linux,windows] field SPUDGPU_BINDLESS_LIMITS.max_sampled_images @16 uint32_t
@@ -1177,6 +1257,13 @@ struct SPUDGPU_QUEUE_POOL size=12 align=4
 field SPUDGPU_QUEUE_POOL.kinds @0 SPUDGPU_QUEUE_KINDS
 field SPUDGPU_QUEUE_POOL.max_queues @4 uint32_t
 field SPUDGPU_QUEUE_POOL.engine @8 SPUDGPU_QUEUE_POOL_ENGINE
+struct SPUDGPU_RAY_QUERY_LIMITS size=48 align=8
+field SPUDGPU_RAY_QUERY_LIMITS.base @0 SPUD_STRUCT_BASE_OUT
+field SPUDGPU_RAY_QUERY_LIMITS.max_geometries @16 uint64_t
+field SPUDGPU_RAY_QUERY_LIMITS.max_instances @24 uint64_t
+field SPUDGPU_RAY_QUERY_LIMITS.max_primitives @32 uint64_t
+field SPUDGPU_RAY_QUERY_LIMITS.scratch_offset_alignment @40 uint32_t
+field SPUDGPU_RAY_QUERY_LIMITS.placement_alignment @44 uint32_t
 struct SPUDGPU_SCISSOR_RECT size=16 align=4
 field SPUDGPU_SCISSOR_RECT.x @0 float
 field SPUDGPU_SCISSOR_RECT.y @4 float
@@ -1257,6 +1344,64 @@ field spudfile_open_desc.access @24 SPUDFILE_ACCESS
 field spudfile_open_desc.create @28 SPUDFILE_CREATE
 field spudfile_open_desc.share @32 SPUDFILE_SHARE
 field spudfile_open_desc.debug_name @40 const char *
+struct spudgpu_acceleration_structure_barrier size=32 align=8
+field spudgpu_acceleration_structure_barrier.base @0 SPUD_STRUCT_BASE
+field spudgpu_acceleration_structure_barrier.structure @16 spudgpu_acceleration_structure
+field spudgpu_acceleration_structure_barrier.access_before @24 SPUDGPU_ACCELERATION_STRUCTURE_ACCESS
+field spudgpu_acceleration_structure_barrier.access_after @28 SPUDGPU_ACCELERATION_STRUCTURE_ACCESS
+struct spudgpu_acceleration_structure_build size=64 align=8
+field spudgpu_acceleration_structure_build.base @0 SPUD_STRUCT_BASE
+field spudgpu_acceleration_structure_build.mode @16 SPUDGPU_ACCELERATION_STRUCTURE_BUILD_MODE
+field spudgpu_acceleration_structure_build.inputs @24 const spudgpu_acceleration_structure_inputs *
+field spudgpu_acceleration_structure_build.source @32 spudgpu_acceleration_structure
+field spudgpu_acceleration_structure_build.destination @40 spudgpu_acceleration_structure
+field spudgpu_acceleration_structure_build.scratch @48 spudgpu_buffer
+field spudgpu_acceleration_structure_build.scratch_offset @56 uint64_t
+struct spudgpu_acceleration_structure_desc size=48 align=8
+field spudgpu_acceleration_structure_desc.base @0 SPUD_STRUCT_BASE
+field spudgpu_acceleration_structure_desc.level @16 SPUDGPU_ACCELERATION_STRUCTURE_LEVEL
+field spudgpu_acceleration_structure_desc.size @24 uint64_t
+field spudgpu_acceleration_structure_desc.max_bottom_levels @32 uint32_t
+field spudgpu_acceleration_structure_desc.allow_compaction @36 bool
+field spudgpu_acceleration_structure_desc.debug_name @40 const char *
+struct spudgpu_acceleration_structure_geometry size=64 align=8
+field spudgpu_acceleration_structure_geometry.kind @0 SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_KIND
+field spudgpu_acceleration_structure_geometry.flags @4 SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_FLAGS
+field spudgpu_acceleration_structure_geometry.data @8 spudgpu_buffer
+field spudgpu_acceleration_structure_geometry.data_offset @16 uint64_t
+field spudgpu_acceleration_structure_geometry.data_stride @24 uint64_t
+field spudgpu_acceleration_structure_geometry.data_count @32 uint32_t
+field spudgpu_acceleration_structure_geometry.index_format @36 SPUDGPU_FORMAT
+field spudgpu_acceleration_structure_geometry.indices @40 spudgpu_buffer
+field spudgpu_acceleration_structure_geometry.index_offset @48 uint64_t
+field spudgpu_acceleration_structure_geometry.index_count @56 uint32_t
+struct spudgpu_acceleration_structure_inputs size=80 align=8
+field spudgpu_acceleration_structure_inputs.base @0 SPUD_STRUCT_BASE
+field spudgpu_acceleration_structure_inputs.level @16 SPUDGPU_ACCELERATION_STRUCTURE_LEVEL
+field spudgpu_acceleration_structure_inputs.flags @20 SPUDGPU_ACCELERATION_STRUCTURE_BUILD_FLAGS
+field spudgpu_acceleration_structure_inputs.geometries @24 const spudgpu_acceleration_structure_geometry *
+field spudgpu_acceleration_structure_inputs.geometry_count @32 uint32_t
+field spudgpu_acceleration_structure_inputs.instances @40 spudgpu_buffer
+field spudgpu_acceleration_structure_inputs.instance_offset @48 uint64_t
+field spudgpu_acceleration_structure_inputs.instance_count @56 uint32_t
+field spudgpu_acceleration_structure_inputs.bottom_levels @64 const spudgpu_acceleration_structure *
+field spudgpu_acceleration_structure_inputs.bottom_level_count @72 uint32_t
+struct spudgpu_acceleration_structure_instance size=72 align=8
+field spudgpu_acceleration_structure_instance.transform @0 float[12]
+field spudgpu_acceleration_structure_instance.user_index @48 uint32_t
+field spudgpu_acceleration_structure_instance.mask @52 uint8_t
+field spudgpu_acceleration_structure_instance.table_offset @56 uint32_t
+field spudgpu_acceleration_structure_instance.flags @60 SPUDGPU_ACCELERATION_STRUCTURE_INSTANCE_FLAGS
+field spudgpu_acceleration_structure_instance.bottom_level_reference @64 uint64_t
+struct spudgpu_acceleration_structure_instance_layout size=12 align=4
+field spudgpu_acceleration_structure_instance_layout.kind @0 SPUDGPU_ACCELERATION_STRUCTURE_INSTANCE_LAYOUT
+field spudgpu_acceleration_structure_instance_layout.size @4 uint32_t
+field spudgpu_acceleration_structure_instance_layout.alignment @8 uint32_t
+struct spudgpu_acceleration_structure_sizes size=40 align=8
+field spudgpu_acceleration_structure_sizes.base @0 SPUD_STRUCT_BASE_OUT
+field spudgpu_acceleration_structure_sizes.storage_size @16 uint64_t
+field spudgpu_acceleration_structure_sizes.build_scratch_size @24 uint64_t
+field spudgpu_acceleration_structure_sizes.update_scratch_size @32 uint64_t
 struct spudgpu_blend_attachment_desc size=28 align=4
 field spudgpu_blend_attachment_desc.blend_enable @0 bool
 field spudgpu_blend_attachment_desc.src_color_blend_factor @4 SPUDGPU_BLEND_FACTOR
@@ -1298,15 +1443,14 @@ struct spudgpu_command_allocator_desc size=24 align=8
 field spudgpu_command_allocator_desc.base @0 SPUD_STRUCT_BASE
 field spudgpu_command_allocator_desc.type @16 SPUDGPU_COMMAND_LIST_TYPE
 field spudgpu_command_allocator_desc.flags @20 uint32_t
-struct spudgpu_compute_pipeline_desc size=128 align=8
+struct spudgpu_compute_pipeline_desc size=120 align=8
 field spudgpu_compute_pipeline_desc.base @0 SPUD_STRUCT_BASE
 field spudgpu_compute_pipeline_desc.compute_module @16 spudgpu_shader_module
-field spudgpu_compute_pipeline_desc.compute_entry_point @24 const char *
-field spudgpu_compute_pipeline_desc.descriptor_set_layouts @32 void *[4]
-field spudgpu_compute_pipeline_desc.descriptor_set_layout_count @64 uint32_t
-field spudgpu_compute_pipeline_desc.push_constant_ranges @68 spudgpu_push_constant_range_desc[4]
-field spudgpu_compute_pipeline_desc.push_constant_range_count @116 uint32_t
-field spudgpu_compute_pipeline_desc.debug_name @120 const char *
+field spudgpu_compute_pipeline_desc.descriptor_set_layouts @24 void *[4]
+field spudgpu_compute_pipeline_desc.descriptor_set_layout_count @56 uint32_t
+field spudgpu_compute_pipeline_desc.push_constant_ranges @60 spudgpu_push_constant_range_desc[4]
+field spudgpu_compute_pipeline_desc.push_constant_range_count @108 uint32_t
+field spudgpu_compute_pipeline_desc.debug_name @112 const char *
 struct spudgpu_depth_attachment_desc size=32 align=8
 field spudgpu_depth_attachment_desc.image_view @0 spudgpu_image_view
 field spudgpu_depth_attachment_desc.depth_load_op @8 SPUDGPU_LOAD_OP
@@ -1478,53 +1622,49 @@ field spudgpu_sampler_desc.max_anisotropy @52 float
 field spudgpu_sampler_desc.compare_enable @56 bool
 field spudgpu_sampler_desc.compare_op @60 SPUDGPU_COMPARE_OP
 field spudgpu_sampler_desc.debug_name @64 const char *
-struct spudgpu_shader_module_desc size=48 align=8
+struct spudgpu_shader_module_desc size=72 align=8
 field spudgpu_shader_module_desc.base @0 SPUD_STRUCT_BASE
 field spudgpu_shader_module_desc.stage @16 SPUDGPU_SHADER_STAGE
-field spudgpu_shader_module_desc.spirv_code @24 const void *
-field spudgpu_shader_module_desc.spirv_size @32 uint64_t
-field spudgpu_shader_module_desc.debug_name @40 const char *
-struct spudgpu_shader_pipeline_desc size=896 align=8
+field spudgpu_shader_module_desc.format @20 SPUDGPU_SHADER_FORMAT
+field spudgpu_shader_module_desc.code @24 const void *
+field spudgpu_shader_module_desc.code_size @32 uint64_t
+field spudgpu_shader_module_desc.entry_point @40 const char *
+field spudgpu_shader_module_desc.workgroup_size @48 uint32_t[3]
+field spudgpu_shader_module_desc.debug_name @64 const char *
+struct spudgpu_shader_pipeline_desc size=840 align=8
 field spudgpu_shader_pipeline_desc.base @0 SPUD_STRUCT_BASE
 field spudgpu_shader_pipeline_desc.debug_name @16 const char *
 field spudgpu_shader_pipeline_desc.vertex_module @24 spudgpu_shader_module
-field spudgpu_shader_pipeline_desc.vertex_entry_point @32 const char *
-field spudgpu_shader_pipeline_desc.mesh_module @40 spudgpu_shader_module
-field spudgpu_shader_pipeline_desc.mesh_entry_point @48 const char *
-field spudgpu_shader_pipeline_desc.task_module @56 spudgpu_shader_module
-field spudgpu_shader_pipeline_desc.task_entry_point @64 const char *
-field spudgpu_shader_pipeline_desc.fragment_module @72 spudgpu_shader_module
-field spudgpu_shader_pipeline_desc.fragment_entry_point @80 const char *
-field spudgpu_shader_pipeline_desc.geometry_module @88 spudgpu_shader_module
-field spudgpu_shader_pipeline_desc.geometry_entry_point @96 const char *
-field spudgpu_shader_pipeline_desc.tess_control_module @104 spudgpu_shader_module
-field spudgpu_shader_pipeline_desc.tess_control_entry_point @112 const char *
-field spudgpu_shader_pipeline_desc.tess_eval_module @120 spudgpu_shader_module
-field spudgpu_shader_pipeline_desc.tess_eval_entry_point @128 const char *
-field spudgpu_shader_pipeline_desc.vertex_attributes @136 spudgpu_vertex_attribute_desc[16]
-field spudgpu_shader_pipeline_desc.vertex_attribute_count @392 uint32_t
-field spudgpu_shader_pipeline_desc.vertex_bindings @396 spudgpu_vertex_binding_desc[8]
-field spudgpu_shader_pipeline_desc.vertex_binding_count @492 uint32_t
-field spudgpu_shader_pipeline_desc.primitive_topology @496 SPUDGPU_PRIMITIVE_TOPOLOGY
-field spudgpu_shader_pipeline_desc.cull_mode @500 SPUDGPU_CULL_MODE
-field spudgpu_shader_pipeline_desc.front_face_ccw @504 bool
-field spudgpu_shader_pipeline_desc.wireframe @505 bool
-field spudgpu_shader_pipeline_desc.depth_bias_constant @508 int32_t
-field spudgpu_shader_pipeline_desc.depth_bias_slope @512 float
-field spudgpu_shader_pipeline_desc.depth_bias_clamp @516 float
-field spudgpu_shader_pipeline_desc.depth_test_enable @520 bool
-field spudgpu_shader_pipeline_desc.depth_write_enable @521 bool
-field spudgpu_shader_pipeline_desc.depth_compare_op @524 SPUDGPU_COMPARE_OP
-field spudgpu_shader_pipeline_desc.depth_bounds_test_enable @528 bool
-field spudgpu_shader_pipeline_desc.blend_attachments @532 spudgpu_blend_attachment_desc[8]
-field spudgpu_shader_pipeline_desc.color_attachment_formats @756 SPUDGPU_FORMAT[8]
-field spudgpu_shader_pipeline_desc.color_attachment_count @788 uint32_t
-field spudgpu_shader_pipeline_desc.depth_format @792 SPUDGPU_FORMAT
-field spudgpu_shader_pipeline_desc.descriptor_set_layouts @800 void *[4]
-field spudgpu_shader_pipeline_desc.descriptor_set_layout_count @832 uint32_t
-field spudgpu_shader_pipeline_desc.push_constant_ranges @836 spudgpu_push_constant_range_desc[4]
-field spudgpu_shader_pipeline_desc.push_constant_range_count @884 uint32_t
-field spudgpu_shader_pipeline_desc.patch_control_points @888 uint32_t
+field spudgpu_shader_pipeline_desc.mesh_module @32 spudgpu_shader_module
+field spudgpu_shader_pipeline_desc.task_module @40 spudgpu_shader_module
+field spudgpu_shader_pipeline_desc.fragment_module @48 spudgpu_shader_module
+field spudgpu_shader_pipeline_desc.geometry_module @56 spudgpu_shader_module
+field spudgpu_shader_pipeline_desc.tess_control_module @64 spudgpu_shader_module
+field spudgpu_shader_pipeline_desc.tess_eval_module @72 spudgpu_shader_module
+field spudgpu_shader_pipeline_desc.vertex_attributes @80 spudgpu_vertex_attribute_desc[16]
+field spudgpu_shader_pipeline_desc.vertex_attribute_count @336 uint32_t
+field spudgpu_shader_pipeline_desc.vertex_bindings @340 spudgpu_vertex_binding_desc[8]
+field spudgpu_shader_pipeline_desc.vertex_binding_count @436 uint32_t
+field spudgpu_shader_pipeline_desc.primitive_topology @440 SPUDGPU_PRIMITIVE_TOPOLOGY
+field spudgpu_shader_pipeline_desc.cull_mode @444 SPUDGPU_CULL_MODE
+field spudgpu_shader_pipeline_desc.front_face_ccw @448 bool
+field spudgpu_shader_pipeline_desc.wireframe @449 bool
+field spudgpu_shader_pipeline_desc.depth_bias_constant @452 int32_t
+field spudgpu_shader_pipeline_desc.depth_bias_slope @456 float
+field spudgpu_shader_pipeline_desc.depth_bias_clamp @460 float
+field spudgpu_shader_pipeline_desc.depth_test_enable @464 bool
+field spudgpu_shader_pipeline_desc.depth_write_enable @465 bool
+field spudgpu_shader_pipeline_desc.depth_compare_op @468 SPUDGPU_COMPARE_OP
+field spudgpu_shader_pipeline_desc.depth_bounds_test_enable @472 bool
+field spudgpu_shader_pipeline_desc.blend_attachments @476 spudgpu_blend_attachment_desc[8]
+field spudgpu_shader_pipeline_desc.color_attachment_formats @700 SPUDGPU_FORMAT[8]
+field spudgpu_shader_pipeline_desc.color_attachment_count @732 uint32_t
+field spudgpu_shader_pipeline_desc.depth_format @736 SPUDGPU_FORMAT
+field spudgpu_shader_pipeline_desc.descriptor_set_layouts @744 void *[4]
+field spudgpu_shader_pipeline_desc.descriptor_set_layout_count @776 uint32_t
+field spudgpu_shader_pipeline_desc.push_constant_ranges @780 spudgpu_push_constant_range_desc[4]
+field spudgpu_shader_pipeline_desc.push_constant_range_count @828 uint32_t
+field spudgpu_shader_pipeline_desc.patch_control_points @832 uint32_t
 struct spudgpu_submit_desc size=96 align=8
 field spudgpu_submit_desc.base @0 SPUD_STRUCT_BASE
 field spudgpu_submit_desc.cmd_lists @16 spudgpu_command_list *
@@ -1558,7 +1698,7 @@ struct spudgpu_vertex_binding_desc size=12 align=4
 field spudgpu_vertex_binding_desc.binding @0 uint32_t
 field spudgpu_vertex_binding_desc.stride @4 uint32_t
 field spudgpu_vertex_binding_desc.per_instance @8 bool
-struct spudgpu_write_descriptor_set size=64 align=8
+struct spudgpu_write_descriptor_set size=72 align=8
 field spudgpu_write_descriptor_set.base @0 SPUD_STRUCT_BASE
 field spudgpu_write_descriptor_set.dst_set @16 spudgpu_descriptor_set
 field spudgpu_write_descriptor_set.dst_binding @24 uint32_t
@@ -1568,6 +1708,7 @@ field spudgpu_write_descriptor_set.descriptor_type @36 SPUDGPU_DESCRIPTOR_TYPE
 field spudgpu_write_descriptor_set.buffer_info @40 const spudgpu_descriptor_buffer_info *
 field spudgpu_write_descriptor_set.image_info @48 const spudgpu_descriptor_image_info *
 field spudgpu_write_descriptor_set.sampler @56 spudgpu_sampler
+field spudgpu_write_descriptor_set.acceleration_structures @64 const spudgpu_acceleration_structure *
 struct spudnet_error size=272 align=8
 field spudnet_error.result @0 SPUDRESULT
 field spudnet_error.source @4 SPUDNET_ERROR_SOURCE
@@ -1663,6 +1804,15 @@ typedef SPUDFILE_FLUSH_LEVEL = enum SPUDFILE_FLUSH_LEVEL
 typedef SPUDFILE_PATH_INFO = struct SPUDFILE_PATH_INFO
 typedef SPUDFILE_PATH_KIND = enum SPUDFILE_PATH_KIND
 typedef SPUDFILE_SHARE = uint32_t
+typedef SPUDGPU_ACCELERATION_STRUCTURE_ACCESS = uint32_t
+typedef SPUDGPU_ACCELERATION_STRUCTURE_BUILD_FLAGS = uint32_t
+typedef SPUDGPU_ACCELERATION_STRUCTURE_BUILD_MODE = uint32_t
+typedef SPUDGPU_ACCELERATION_STRUCTURE_COPY_MODE = uint32_t
+typedef SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_FLAGS = uint32_t
+typedef SPUDGPU_ACCELERATION_STRUCTURE_GEOMETRY_KIND = uint32_t
+typedef SPUDGPU_ACCELERATION_STRUCTURE_INSTANCE_FLAGS = uint32_t
+typedef SPUDGPU_ACCELERATION_STRUCTURE_INSTANCE_LAYOUT = uint32_t
+typedef SPUDGPU_ACCELERATION_STRUCTURE_LEVEL = uint32_t
 typedef SPUDGPU_ADAPTER_PROPERTIES = struct SPUDGPU_ADAPTER_PROPERTIES
 typedef SPUDGPU_ADAPTER_TYPE = uint32_t
 typedef SPUDGPU_ADDRESS_MODE = uint32_t
@@ -1698,8 +1848,11 @@ typedef SPUDGPU_PRIMITIVE_TOPOLOGY = uint32_t
 typedef SPUDGPU_QUEUE_KINDS = uint32_t
 typedef SPUDGPU_QUEUE_POOL = struct SPUDGPU_QUEUE_POOL
 typedef SPUDGPU_QUEUE_POOL_ENGINE = uint32_t
+typedef SPUDGPU_RAY_QUERY_LIMITS = struct SPUDGPU_RAY_QUERY_LIMITS
 typedef SPUDGPU_RESOURCE_STATE = uint32_t
 typedef SPUDGPU_SCISSOR_RECT = struct SPUDGPU_SCISSOR_RECT
+typedef SPUDGPU_SHADER_FORMAT = uint32_t
+typedef SPUDGPU_SHADER_FORMATS = uint32_t
 typedef SPUDGPU_SHADER_STAGE = uint32_t
 typedef SPUDGPU_STORE_OP = uint32_t
 typedef SPUDGPU_VIEWPORT = struct SPUDGPU_VIEWPORT
@@ -1740,6 +1893,15 @@ typedef spudfile_instance = struct spudfile_instance_t *
 typedef spudfile_instance_desc = struct spudfile_instance_desc
 typedef spudfile_mapping = struct spudfile_mapping_t *
 typedef spudfile_open_desc = struct spudfile_open_desc
+typedef spudgpu_acceleration_structure = struct spudgpu_acceleration_structure_t *
+typedef spudgpu_acceleration_structure_barrier = struct spudgpu_acceleration_structure_barrier
+typedef spudgpu_acceleration_structure_build = struct spudgpu_acceleration_structure_build
+typedef spudgpu_acceleration_structure_desc = struct spudgpu_acceleration_structure_desc
+typedef spudgpu_acceleration_structure_geometry = struct spudgpu_acceleration_structure_geometry
+typedef spudgpu_acceleration_structure_inputs = struct spudgpu_acceleration_structure_inputs
+typedef spudgpu_acceleration_structure_instance = struct spudgpu_acceleration_structure_instance
+typedef spudgpu_acceleration_structure_instance_layout = struct spudgpu_acceleration_structure_instance_layout
+typedef spudgpu_acceleration_structure_sizes = struct spudgpu_acceleration_structure_sizes
 typedef spudgpu_adapter = struct spudgpu_adapter_t *
 typedef spudgpu_blend_attachment_desc = struct spudgpu_blend_attachment_desc
 typedef spudgpu_buffer = struct spudgpu_buffer_t *

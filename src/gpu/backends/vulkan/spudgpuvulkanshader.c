@@ -132,6 +132,71 @@ VkShaderStageFlags spudgpuvulkan___shader_stages(SPUDGPU_SHADER_STAGE stages) {
 	return sf;
 }
 
+// Whether [words] (word_count of them) is SPIR-V with an OpEntryPoint named
+// [name] for [stage]: SPUD_SUCCESS; SPUDRESULT_GPU_INVALID_SHADER_CODE for
+// words that aren't SPIR-V (the magic word, or an instruction running past
+// the end); SPUDRESULT_GPU_SHADER_ENTRY_POINT_NOT_FOUND for none. Reads the
+// header and walks the instructions as far as the entry points, which
+// come first in a module's layout.
+static SPUDRESULT spudgpuvulkan___find_entry_point(
+    const uint32_t *words,
+    size_t word_count,
+    SPUDGPU_SHADER_STAGE stage,
+    const char *name) {
+	const uint32_t magic          = 0x07230203u;
+	const uint32_t op_entry_point = 15;
+	const uint32_t op_function    = 54;
+	uint32_t model;
+	switch (stage) {
+	case SPUDGPU_SHADER_STAGE_VERTEX:
+		model = 0;
+		break;
+	case SPUDGPU_SHADER_STAGE_TESSELLATION_CONTROL:
+		model = 1;
+		break;
+	case SPUDGPU_SHADER_STAGE_TESSELLATION_EVALUATION:
+		model = 2;
+		break;
+	case SPUDGPU_SHADER_STAGE_GEOMETRY:
+		model = 3;
+		break;
+	case SPUDGPU_SHADER_STAGE_FRAGMENT:
+		model = 4;
+		break;
+	case SPUDGPU_SHADER_STAGE_COMPUTE:
+		model = 5;
+		break;
+	case SPUDGPU_SHADER_STAGE_TASK:
+		model = 5364; // TaskEXT
+		break;
+	default:
+		model = 5365; // MeshEXT
+		break;
+	}
+	if (word_count < 5 || words[0] != magic)
+		return SPUDRESULT_GPU_INVALID_SHADER_CODE;
+	const size_t name_length = strlen(name);
+	size_t i                 = 5;
+	while (i < word_count) {
+		const uint32_t count  = words[i] >> 16;
+		const uint32_t opcode = words[i] & 0xFFFFu;
+		if (count == 0 || count > word_count - i)
+			return SPUDRESULT_GPU_INVALID_SHADER_CODE;
+		if (opcode == op_function)
+			break; // Past the entry points.
+		// OpEntryPoint: model, id, then the name, a nul-terminated string
+		// packed into the words that follow.
+		if (opcode == op_entry_point && count >= 4 && words[i + 1] == model) {
+			const char *literal       = (const char *)&words[i + 3];
+			const size_t literal_room = (size_t)(count - 3) * 4;
+			if (name_length < literal_room && memcmp(literal, name, name_length + 1) == 0)
+				return SPUD_SUCCESS;
+		}
+		i += count;
+	}
+	return SPUDRESULT_GPU_SHADER_ENTRY_POINT_NOT_FOUND;
+}
+
 #if __cplusplus
 extern "C" {
 
@@ -152,30 +217,29 @@ SPUDRESULT spudgpu_create_shader_module(
 		return base_sr;
 	if (!out_module)
 		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
-	if (!desc->spirv_code || desc->spirv_size == 0)
-		return SPUDRESULT_GPU_NULL_SPIRV;
-	if (desc->spirv_size % 4 != 0)
-		return SPUDRESULT_GPU_INVALID_SPIRV_ALIGNMENT; // SPIR-V must be 4-byte
-		                                               // aligned
-	// A mesh or task module's SPIR-V declares MeshShadingEXT, which a device
-	// without VK_EXT_mesh_shader can't take even as a module.
-	if ((desc->stage == SPUDGPU_SHADER_STAGE_MESH || desc->stage == SPUDGPU_SHADER_STAGE_TASK) &&
-	    !(device->_features & SPUDGPU_FEATURE_MESH_SHADING))
-		return SPUDRESULT_GPU_EXT_MESH_SHADING_NOT_SUPPORTED;
+	const SPUDRESULT desc_sr = spudgpu___internal_check_shader_module_desc(desc, device->_features);
+	if (desc_sr != SPUD_SUCCESS)
+		return desc_sr;
+	const SPUDRESULT entry_sr = spudgpuvulkan___find_entry_point(
+	    (const uint32_t *)desc->code, (size_t)(desc->code_size / 4), desc->stage, desc->entry_point);
+	if (entry_sr != SPUD_SUCCESS)
+		return entry_sr;
 
 	spudgpu_shader_module_vulkan result = {0};
 	result.head.allocator               = device->head.allocator;
 	SPUD_BIRTH(&result);
 	result._device                      = *((spudgpu_device_vulkan *)device);
 	result._stage_vk = spudgpuvulkan___shader_stage_flag_internal(desc->stage);
+	result._entry_point = spud_string_copy(&result.head.allocator, desc->entry_point);
+	if (!result._entry_point)
+		return SPUDRESULT_OUT_OF_MEMORY;
 
-	if (result._stage_vk == 0)
-		return SPUDRESULT_GPU_INVALID_SHADER_STAGE; // Unknown shader stage
-
+	// vkCreateShaderModule copies the words.
 	if (spudgpuvulkan___create_shader_module_internal(
 	        result._device._logical_device_vk,
-	        (const uint32_t *)desc->spirv_code, desc->spirv_size,
+	        (const uint32_t *)desc->code, desc->code_size,
 	        &result._shader_module_vk) != VK_SUCCESS) {
+		spud_string_free(&result.head.allocator, result._entry_point);
 		return SPUDRESULT_API_SPECIFIC_FAILURE;
 	}
 
@@ -183,6 +247,7 @@ SPUDRESULT spudgpu_create_shader_module(
 	    SPUD_NEW(&result.head.allocator, spudgpu_shader_module_vulkan);
 	if (!pResult) {
 		vkDestroyShaderModule(result._device._logical_device_vk, result._shader_module_vk, NULL);
+		spud_string_free(&result.head.allocator, result._entry_point);
 		return SPUDRESULT_OUT_OF_MEMORY;
 	}
 	memcpy(pResult, &result, sizeof(spudgpu_shader_module_vulkan));
@@ -209,6 +274,7 @@ void spudgpu_destroy_shader_module(spudgpu_shader_module shader_module) {
 	SPUDGPU___LIVE_REMOVE(&shader_module->_device._shared->live, SPUDGPU___OBJECT_SHADER_MODULE);
 	SPUD_KILL(shader_module);
 	const SPUD_ALLOCATOR allocator = shader_module->head.allocator;
+	spud_string_free(&allocator, shader_module->_entry_point);
 	spud_string_free(&allocator, shader_module->head.debug_name);
 	SPUD_DELETE(&allocator, spudgpu_shader_module_vulkan, shader_module);
 }
@@ -266,7 +332,7 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 		shader_stages[stage_count].stage  = VK_SHADER_STAGE_VERTEX_BIT;
 		shader_stages[stage_count].module = vert->_shader_module_vk;
 		shader_stages[stage_count].pName =
-		    desc->vertex_entry_point ? desc->vertex_entry_point : "main";
+		    vert->_entry_point;
 		stage_count++;
 	}
 
@@ -279,7 +345,7 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 		shader_stages[stage_count].stage  = VK_SHADER_STAGE_TASK_BIT_EXT;
 		shader_stages[stage_count].module = task->_shader_module_vk;
 		shader_stages[stage_count].pName =
-		    desc->task_entry_point ? desc->task_entry_point : "main";
+		    task->_entry_point;
 		stage_count++;
 	}
 
@@ -292,7 +358,7 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 		shader_stages[stage_count].stage  = VK_SHADER_STAGE_MESH_BIT_EXT;
 		shader_stages[stage_count].module = mesh->_shader_module_vk;
 		shader_stages[stage_count].pName =
-		    desc->mesh_entry_point ? desc->mesh_entry_point : "main";
+		    mesh->_entry_point;
 		stage_count++;
 	}
 
@@ -305,7 +371,7 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 		shader_stages[stage_count].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
 		shader_stages[stage_count].module = frag->_shader_module_vk;
 		shader_stages[stage_count].pName =
-		    desc->fragment_entry_point ? desc->fragment_entry_point : "main";
+		    frag->_entry_point;
 		stage_count++;
 	}
 
@@ -318,7 +384,7 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 		shader_stages[stage_count].stage  = VK_SHADER_STAGE_GEOMETRY_BIT;
 		shader_stages[stage_count].module = geom->_shader_module_vk;
 		shader_stages[stage_count].pName =
-		    desc->geometry_entry_point ? desc->geometry_entry_point : "main";
+		    geom->_entry_point;
 		stage_count++;
 	}
 
@@ -331,9 +397,7 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 		shader_stages[stage_count].stage =
 		    VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
 		shader_stages[stage_count].module = tc->_shader_module_vk;
-		shader_stages[stage_count].pName  = desc->tess_control_entry_point
-		                                        ? desc->tess_control_entry_point
-		                                        : "main";
+		shader_stages[stage_count].pName  = tc->_entry_point;
 		stage_count++;
 	}
 
@@ -347,7 +411,7 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 		    VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
 		shader_stages[stage_count].module = te->_shader_module_vk;
 		shader_stages[stage_count].pName =
-		    desc->tess_eval_entry_point ? desc->tess_eval_entry_point : "main";
+		    te->_entry_point;
 		stage_count++;
 	}
 
@@ -716,7 +780,7 @@ SPUDRESULT spudgpu_create_compute_pipeline(
 	pipelineInfo.stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
 	pipelineInfo.stage.module = comp->_shader_module_vk;
 	pipelineInfo.stage.pName =
-	    desc->compute_entry_point ? desc->compute_entry_point : "main";
+	    comp->_entry_point;
 	pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
 	pipelineInfo.basePipelineIndex  = -1;
 

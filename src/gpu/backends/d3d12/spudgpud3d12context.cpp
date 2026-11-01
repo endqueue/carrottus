@@ -162,11 +162,12 @@ static bool spudgpu_d3d12___read_adapter_facts(spudgpu_adapter_d3d12 *adapter) {
 		features |= SPUDGPU_FEATURE_LAYERED_RENDERING;
 	// DepthBiasClamp, IndependentBlendEnable, any ExecuteIndirect count and
 	// StartInstanceLocation, TEXTURECUBEARRAY views, a direct queue's
-	// timestamps, heaps of every kind and presenting: on every device of the
-	// minimum level.
+	// timestamps, heaps of every kind, presenting, and geometry and
+	// tessellation shaders: on every device of the minimum level.
 	features |= SPUDGPU_FEATURE_DEPTH_BIAS_CLAMP | SPUDGPU_FEATURE_INDEPENDENT_BLEND | SPUDGPU_FEATURE_MULTI_DRAW_INDIRECT |
 	            SPUDGPU_FEATURE_CUBE_ARRAY_VIEWS | SPUDGPU_FEATURE_PASS_TIMESTAMPS | SPUDGPU_FEATURE_MAPPABLE_HEAPS |
-	            SPUDGPU_FEATURE_PRESENT | SPUDGPU_FEATURE_DRAW_INDIRECT_FIRST_INSTANCE;
+	            SPUDGPU_FEATURE_PRESENT | SPUDGPU_FEATURE_DRAW_INDIRECT_FIRST_INSTANCE |
+	            SPUDGPU_FEATURE_GEOMETRY_SHADER | SPUDGPU_FEATURE_TESSELLATION;
 	// SPUDGPU_MEMORY_KIND_DEVICE_MAPPABLE is a custom heap in pool L0 that
 	// the CPU can map, which holds a resource in any state only on a UMA
 	// adapter.
@@ -195,6 +196,20 @@ static bool spudgpu_d3d12___read_adapter_facts(spudgpu_adapter_d3d12 *adapter) {
 	if (SUCCEEDED(probe->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS2, &options2, sizeof(options2))) &&
 	    options2.DepthBoundsTestSupported)
 		features |= SPUDGPU_FEATURE_DEPTH_BOUNDS_TEST;
+	// Ray queries are DXR 1.1's inline tracing: raytracing tier 1.1. The
+	// limits are D3D12's constants, which it has no query for.
+	D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5 = {};
+	if (SUCCEEDED(probe->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5))) &&
+	    options5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1) {
+		features |= SPUDGPU_FEATURE_RAY_QUERY;
+		facts->ray_query_max_geometries           = D3D12_RAYTRACING_MAX_GEOMETRIES_PER_BOTTOM_LEVEL_ACCELERATION_STRUCTURE;
+		facts->ray_query_max_instances            = D3D12_RAYTRACING_MAX_INSTANCES_PER_TOP_LEVEL_ACCELERATION_STRUCTURE;
+		facts->ray_query_max_primitives           = D3D12_RAYTRACING_MAX_PRIMITIVES_PER_BOTTOM_LEVEL_ACCELERATION_STRUCTURE;
+		facts->ray_query_scratch_offset_alignment = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT;
+		// A placed structure is a placed buffer, which D3D12 places at
+		// 64 KiB and covers in multiples of it.
+		facts->ray_query_placement_alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
+	}
 	properties->supported_features = features;
 	// The probe is released here, as the ComPtr goes.
 	return true;

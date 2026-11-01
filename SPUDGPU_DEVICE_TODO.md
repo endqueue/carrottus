@@ -1195,15 +1195,37 @@ this reason: a change of their signatures, not made.
     SPIR-V) comes from the caller with the module, or from the native
     format's own reflection.
   - Every caller changes in the same change, before 1.0. Not started; the
-    source language is Slang (card A29, decided 2026-10-31; ApricotFields
-    `APREND_TODO.md` item 22).
+    source language is Slang (card A29, decided 2026-10-31, in the
+    workspace's `DECISIONS.md`).
+  - **Decided 2026-10-31 with the user:** `spudgpu_shaderformat_draft.h`
+    as written (F1-F7), with cards S17, S19 and S20, each option a. A
+    module desc names its format (one per backend, reported in
+    `SPUDGPU_ADAPTER_PROPERTIES::shader_formats`), its entry point
+    (required, checked on every backend) and, for compute, mesh and task,
+    its workgroup size; the pipelines' entry point fields go. Each
+    backend's binding layout is stated in the header and kept by the
+    caller's compiler (S17). Clip space is +Y up on every backend, Vulkan
+    by a negative viewport height (S19). A storage view of a cube is a 2D
+    array view (F6). The Metal fallback's cross-compiler is a build-time
+    tool in this repository's `tools/`, never part of the library (S20).
+    Building found F4's sentence on Slang's own Metal output wrong: card
+    S21.
+  - **Decided 2026-10-31 with the user (cards S21, S22):** every shader's
+    .metallib comes from `tools/spudgpu_msl`'s source for now, Slang's own
+    Metal output kept beside it, and a shader moves to Slang's route
+    (`METAL_ROUTE SLANG`, with its reason) once Slang can write the layout
+    from the sources the other formats take. `shaderDrawParameters` is in
+    the Vulkan backend's base set (an adapter without it isn't listed), and
+    a vertex shader's vertex and instance index are defined only for draws
+    starting at vertex 0 and instance 0 (`spudgpu.h`).
 - **Specialization constants. Decided 2026-10-28 with the user (card
   A9):** a pipeline desc takes (constant id, value) pairs for its shader
   modules: Vulkan's `VkSpecializationInfo`; Metal's function constants;
   D3D12 has none, so with native formats a variant is a DXIL the caller
   compiled for it (as Unreal's permutations are), and the EXT is reported
-  unsupported there. To be settled with the native formats. A
-  translation; not started.
+  unsupported there. **Settled 2026-10-31 with the user (card S18):**
+  `SPUDGPU_EXT_SPECIALIZATION_CONSTANTS`, 0 on D3D12 (a gap in a backend,
+  not a GPU). A translation; not started.
 - **Pipeline caches, later (card A9):** `VkPipelineCache`, D3D12's
   `ID3D12PipelineLibrary`, Metal's `MTLBinaryArchive`, as bytes the caller
   is handed to keep and gives back; SpudGPU writes no file.
@@ -1215,6 +1237,69 @@ this reason: a change of their signatures, not made.
      to SPIR-V to SPIRV-Cross (`intersection_query`), each run on a
      device. The route that passes on Metal is the one these shaders take;
      if neither does, that is settled before anything else.
+     **Compiled and validated on Windows, 2026-10-31** (ThinkPad P1 Gen
+     5, Windows 11; Slang 2026.17-25-gc7954ebd1, DXC 1.9.0.5512, SPIRV-Tools
+     v2026.4, SPIRV-Cross from Vulkan SDK 1.4.363.0, all the SDK's; not yet
+     run on a device, which needs step 1). Two shaders in
+     `tests/shaders/`, built on every build by `cmake/spud_slang.cmake`:
+     `rq_trace.slang`, a compute shader tracing one ray per pixel with
+     its flags and cull mask given at run time, committing triangle
+     candidates by hand (`CommitNonOpaqueTriangleHit`) and a procedural
+     candidate (a sphere in an AABB) with
+     `CommitProceduralPrimitiveHit`, and writing the committed hit's t,
+     instance index, instance id, geometry index, primitive index and
+     barycentrics; and `rq_shadow.slang`, a fragment shader tracing a
+     shadow ray with `RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH |
+     RAY_FLAG_FORCE_OPAQUE` on the query's type and a cull mask.
+     - **SPIR-V** (1.5, `SPV_KHR_ray_query`): both compile, `spirv-val`
+       (Vulkan 1.2 rules) clean. Every query maps to its own
+       `OpRayQuery*KHR`; the type's flags reach `OpRayQueryInitializeKHR`
+       (5 for the shadow ray); `CommittedInstanceIndex` is
+       `...InstanceIdKHR` and `CommittedInstanceID` `...CustomIndexKHR`, as
+       they should be.
+     - **DXIL** (`cs_6_5`, `ps_6_5`; Slang's HLSL compiled by DXC, whose
+       validator signed both): both compile, flagged "Raytracing tier
+       1.1"; `AllocateRayQuery` carries the type's flags (5); both commits,
+       `Proceed` and `TraceRayInline` present. Bindings where SpudGPU's
+       D3D12 backend puts them (set 0 binding n at register n of space 0,
+       the push constants at b0 of space 4), from `register()` written
+       beside each `[[vk::binding]]`.
+     - **Metal, Slang's own source:** generated, not compiled (no Metal
+       compiler on Windows). Two faults found by reading it. Its ray flag
+       translation **drops `RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH`**
+       (0x4 has no case; SPIRV-Cross makes it `accept_any_intersection`),
+       so a query asking for any hit gets the closest one: right for a
+       shadow ray's yes or no, wrong for a caller that reads which hit.
+       And with no Metal binding written in the source, it puts the push
+       constants and the top level both at `[[buffer(0)]]`. Its entry
+       point `main` is renamed `main_0` (Metal reserves `main`). Candidate
+       kinds and committed status map correctly, as do the committed
+       getters.
+     - **Metal, SPIRV-Cross's source** (from the SPIR-V above): generated,
+       not compiled. Every query maps, flags included. Its binding indices
+       come from SpudGPU's remaps (each set's argument buffer at
+       `SPUDGPU_METAL_DESCRIPTOR_SET_BUFFER_INDEX_BASE` + set, push
+       constants at 30, combined samplers at +1024), which only SPIRV-Cross's
+       C API can set, not its command line; how that reaches a build step
+       is card S17 (the native-format draft).
+     Whether the faults are those of Slang issues 13408, 13609 or 13688
+     wasn't looked up. On the Mac: both sources compiled with `metal`,
+     and both run on the M5 Pro by step 1's test.
+     **Run on a device, 2026-10-31** (step 1 built; Windows 11, ThinkPad
+     P1 Gen 5, `windows-d3d12` and `windows-vulkan`, Debug and Release):
+     `rq_trace` (compute) and `rq_shadow` (fragment) ran true from both
+     targets on the NVIDIA RTX A2000, and from DXIL on WARP, checked by
+     `spudgpu_objects_test` against hits and shadows worked out on the CPU:
+     a 16 x 8 grid of rays over a triangle and a sphere in an AABB, every
+     ray's t, instance index and id, geometry and primitive index, kind and
+     barycentrics within 1e-3, through cull masks 0xFF, 0x01 and 0x02, after
+     a refit, through a clone, over a compacted bottom level and over
+     GPU-written instances (128 rays, 0 wrong each time); `rq_shadow` over
+     a 32 x 16 plane, the triangle's 28 shadowed pixels and every lit one
+     right. `rq_trace`'s hit records became a byte-address buffer first
+     (SpudGPU's D3D12 storage buffers are raw views). The procedural sphere
+     casts no shadow in `rq_shadow`, as written: its query loop commits no
+     procedural candidate, forced opaque or not. Metal: not run (the Mac).
   1. **`SPUDGPU_EXT_RAY_QUERY`**, paired with a device feature bit (card
      S3's), the narrow island `CLAUDE.md` expects: acceleration structures
      (bottom level per mesh, top level of instances) created, built,
@@ -1245,6 +1330,73 @@ this reason: a change of their signatures, not made.
      Not a portable layout the Metal backend converts on the GPU (hidden
      work and memory, against S2), nor a layout of SpudGPU's converted on
      the CPU (no GPU-written instances).
+     **The API, approved 2026-10-31 by the user:** `spudgpu_raytracing_draft.h`
+     as written (R1-R8). Built in Phase 5 of `prompts/ray_tracing.md`.
+     **Settled while building, 2026-10-31 with the user (cards S23-S26):**
+     the heap class and descriptor type refused with
+     `SPUDRESULT_GPU_EXT_RAY_QUERY_NOT_SUPPORTED` without the feature (the
+     build-input usage kept as a binding fact); `placement_alignment` 256 on
+     Vulkan, 64 KiB on D3D12 and on Metal until the Mac reads it; a SCRATCH
+     to SCRATCH barrier orders builds sharing a scratch range; a build,
+     copy or size write refused in a list of the wrong queue type or inside
+     a rendering pass, each with its own code.
+     **Built 2026-10-31:** `spudgpu.h`'s ray query section and
+     `spudcore.h`'s results (328, 360-369), Vulkan and D3D12 run, Metal
+     written, not compiled (`spudgpu{vulkan,d3d12,metal}raytracing.*`, the
+     shared checks in `spudgpushared.c`), with the review's fixes and cards
+     S23-S26 built the same day: D3D12 records a UAV barrier between any
+     two states that are both its `UNORDERED_ACCESS`; an update is compared
+     with its source's last layout value by value (kind, flags, counts and
+     index format of each geometry; a top level's instance count), not a
+     hash; every check of a build comes before the recording, which can't
+     fail; a placed structure the API would make larger than its size
+     rounded to `placement_alignment` is refused
+     (`SPUDRESULT_GPU_PLACEMENT_OUT_OF_RANGE`, the header's own code for a
+     range past its bounds); a build, copy or size write is refused on a
+     copy list or bundle (368) and inside a rendering pass (369); the
+     compute bindings are undefined after one until bound again. Run on
+     Windows 11 (ThinkPad P1 Gen 5), `windows-d3d12` and `windows-vulkan`,
+     Debug, Release and `-asan`: `spudgpu_objects_test` on the RTX A2000 and
+     WARP (D3D12 debug layer and GPU-based validation; Vulkan validation,
+     synchronization and GPU-assisted validation; all silent), including
+     three builds sharing one scratch range between two dispatches writing
+     the same buffer, updates of exactly a bottom level's last layout by it
+     and its clone, and the copy-list and inside-a-pass refusals; the Iris
+     Xe's refusals (no ray queries on either API), `spud_noalloc_tests`'
+     refit-and-trace frame (none of ours), the misuse harness ten times.
+     **For the Mac** (Metal is written to Apple's documentation, not yet
+     compiled): build and run all of the above on the M5 Pro; read
+     `heapAccelerationStructureSizeAndAlignWithSize:` and set Metal's
+     `placement_alignment` from it (card S24); confirm the alignment Metal
+     asks of `vertexBufferOffset`, `indexBufferOffset` and
+     `boundingBoxBufferOffset` (its documentation gives none; SpudGPU checks
+     the rule Vulkan and D3D12 share: 4 bytes for vertices, 8 for boxes, an
+     index's own size);
+     check the feature bit's `supportsRaytracingFromRender` gate, the
+     in-place refit (nil destination), the label made without an
+     autorelease pool, and an array of acceleration structure descriptors
+     written element by element.
+     **Measured** (Release, RTX A2000, `tests/spudgpu_rq_measure.c`: GPU
+     work timed on the CPU, best of 20 submissions less an empty list's,
+     50.4 us on Vulkan and 4.6 us on D3D12; so the small numbers are mostly
+     submission, not GPU, time), Vulkan / D3D12:
+     - a bottom level of a 12-triangle cube: built 115 / 183 us, 3,840
+       bytes, 1,152 compacted (30%), scratch 2,688;
+     - the Dragon of SpudGPUMeshShaders (201,972 triangles, 101,166
+       vertices): built 7.85 / 7.24 ms (25.7 / 27.9 Mtri/s), 14,150,784
+       bytes, 5,932,928 compacted (42%), scratch 4,275,712; the compacting
+       copy 662 / 188 us;
+     - a top level of 1 instance: built 60 / 87 us, refitted 29 / 57 us;
+       of 1,000: built 186 / 186 us, refitted 30 / 77 us, 349,184 bytes;
+       of 100,000: built 2.09 / 2.13 ms, refitted 1.05 / 1.11 ms,
+       34,683,008 bytes;
+     - instances written on the CPU (the write call into a mapped buffer):
+       2.5 / 2.3 us for 1,000, 307 / 309 us for 100,000 (3.1 ns each); on
+       the GPU (`rq_instances_row64.slang`): 7 / 58 us for 1,000, 244 /
+       229 us for 100,000;
+     - `rq_trace`, one ray per pixel at 1920 x 1080 over the Dragon:
+       824 / 909 us (2,518 / 2,282 Mrays/s).
+     The Mac repeats them on the M5 Pro.
   - **Ray tracing pipelines are not part of it** (asked 2026-10-28). Vulkan's
     and D3D12's map nearly one to one (the same stages - ray generation,
     miss, closest-hit, any-hit, intersection, callable - shader tables of
@@ -1287,6 +1439,23 @@ this reason: a change of their signatures, not made.
     other two than older Metal, not close enough for one pipeline EXT on
     all three; the two-EXT shape stands, its Apple half built on Metal 4's
     buffers where available.
+- **Geometry and tessellation behind EXTs. Approved 2026-10-31 with the
+  user** (`spudgpu_geometry_tessellation_draft.h`): `SPUDGPU_EXT_GEOMETRY_SHADER`
+  and `SPUDGPU_EXT_TESSELLATION`, 1 on Vulkan and D3D12 and 0 on Metal, with
+  `SPUDGPU_FEATURE_GEOMETRY_SHADER` and `SPUDGPU_FEATURE_TESSELLATION`
+  (Vulkan's optional features; D3D12 always; Metal never) and their
+  `_NOT_SUPPORTED` results; a module or pipeline of either stage on a device
+  created without the bit is refused, as mesh shading's are. **Built
+  2026-10-31** (Phase 4 of `prompts/ray_tracing.md`): the refusals in the
+  shared checks (`spudgpushared.c`), Vulkan's bits from `geometryShader` and
+  `tessellationShader` (enabled only for a device created with them),
+  D3D12's on every adapter, Metal's old refusal (`INVALID_SHADER_STAGE`)
+  gone. `spudgpu_objects_test` refuses a module of each stage and a pipeline
+  naming one on a device created without the bits, and checks the bits
+  per adapter (D3D12 both, Metal neither). Run on Windows 11, Iris Xe and
+  RTX A2000, `windows-d3d12` and `windows-vulkan`; both GPUs have both bits
+  on both APIs. Metal written, not compiled; Linux not built. A pipeline
+  drawing with either stage is not tested: no caller uses one.
 - **Tile shading and framebuffer fetch: not now (card S16, decided
   2026-10-31 with the user).** Metal's tile shaders and imageblocks and its
   programmable blending (Vulkan has a partial counterpart in

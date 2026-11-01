@@ -22,6 +22,7 @@ static VkDescriptorType spudgpuvulkan___descriptor_type_internal(
         case SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE: return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
         case SPUDGPU_DESCRIPTOR_TYPE_SAMPLER: return VK_DESCRIPTOR_TYPE_SAMPLER;
         case SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE: return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        case SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE: return VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
         default: return VK_DESCRIPTOR_TYPE_MAX_ENUM;
     }
 }
@@ -131,8 +132,12 @@ SPUDRESULT spudgpu_create_descriptor_set_layout(
     for (uint32_t i = 0; i < desc->binding_count; i++) {
         const spudgpu_descriptor_binding_desc *b = &desc->bindings[i];
 
+        // An unknown type, or one the device has no feature for (an
+        // acceleration structure needs the extension), the same way on every
+        // backend.
+        const SPUDRESULT type_sr = spudgpu___internal_check_descriptor_type(b->descriptor_type, device->_features);
+        if (type_sr != SPUD_SUCCESS) return type_sr;
         VkDescriptorType vk_type = spudgpuvulkan___descriptor_type_internal(b->descriptor_type);
-        if (vk_type == VK_DESCRIPTOR_TYPE_MAX_ENUM) return SPUDRESULT_GPU_CANNOT_RESOLVE_API_SPECIFIC_DESCRIPTOR_TYPE; // Unknown type — bail early
 
         vk_bindings[i].binding = b->binding;
         vk_bindings[i].descriptorType = vk_type;
@@ -228,9 +233,10 @@ SPUDRESULT spudgpu_create_descriptor_pool(
 
     VkDescriptorPoolSize vk_pool_sizes[SPUDGPU_MAX_DESCRIPTOR_POOL_SIZES] = {0};
     for (uint32_t i = 0; i < desc->pool_size_count; i++) {
+        const SPUDRESULT type_sr = spudgpu___internal_check_descriptor_type(desc->pool_sizes[i].descriptor_type, device->_features);
+        if (type_sr != SPUD_SUCCESS) return type_sr;
         VkDescriptorType vk_type =
                 spudgpuvulkan___descriptor_type_internal(desc->pool_sizes[i].descriptor_type);
-        if (vk_type == VK_DESCRIPTOR_TYPE_MAX_ENUM) return SPUDRESULT_GPU_CANNOT_RESOLVE_API_SPECIFIC_DESCRIPTOR_TYPE;
 
         vk_pool_sizes[i].type = vk_type;
         vk_pool_sizes[i].descriptorCount = desc->pool_sizes[i].count;
@@ -415,6 +421,23 @@ void spudgpu_update_descriptor_sets(
     for (uint32_t writes_i = 0; writes_i < write_count; ++writes_i)
         if (spud_struct_check(&writes[writes_i].base, SPUD_STRUCT_TYPE_GPU_WRITE_DESCRIPTOR_SET) != SPUD_SUCCESS)
             return;
+    // A storage view of a cube is a 2D array view of its faces on every
+    // backend (spudgpu.h): D3D12 has no storage cube. Checked before the
+    // first write, so a refused call writes nothing.
+    for (uint32_t writes_i = 0; writes_i < write_count; ++writes_i) {
+        const spudgpu_write_descriptor_set *write = &writes[writes_i];
+        if (write->descriptor_type != SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE || !write->image_info)
+            continue;
+        for (uint32_t k = 0; k < write->descriptor_count; ++k) {
+            const spudgpu_image_view view = write->image_info[k].image_view;
+            if (view && (view->_desc.type == SPUDGPU_IMAGE_VIEW_TYPE_CUBE || view->_desc.type == SPUDGPU_IMAGE_VIEW_TYPE_CUBE_ARRAY))
+                return;
+        }
+    }
+    // Acceleration structure writes: the feature, and every element a live
+    // top level (spudgpu.h), checked the same way on every backend.
+    if (!spudgpu___internal_check_acceleration_structure_writes(device->_features, writes, write_count))
+        return;
 
     // We translate each SpudGPU write into a VkWriteDescriptorSet on the stack.
     // For larger write counts a heap allocation would be safer, but the per-frame
@@ -435,6 +458,8 @@ void spudgpu_update_descriptor_sets(
         VkDescriptorType vk_type =
                 spudgpuvulkan___descriptor_type_internal(w->descriptor_type);
         if (vk_type == VK_DESCRIPTOR_TYPE_MAX_ENUM) continue;
+        // Written below, on their own: each needs its handles in an array.
+        if (w->descriptor_type == SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE) continue;
 
         vk_writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         vk_writes[i].dstSet = vkSet->_set_vk;
@@ -474,7 +499,47 @@ void spudgpu_update_descriptor_sets(
         }
     }
 
-    vkUpdateDescriptorSets(device->_logical_device_vk, clamped, vk_writes, 0, NULL);
+    // The writes skipped above stay zeroed and are left out: Vulkan takes a
+    // packed array, so the written ones are moved together first.
+    uint32_t packed = 0;
+    for (uint32_t i = 0; i < clamped; i++) {
+        if (vk_writes[i].sType != VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET) continue;
+        if (packed != i) {
+            vk_writes[packed] = vk_writes[i];
+            // The info pointers point into the per-write arrays at index i,
+            // which stay where they are.
+        }
+        packed++;
+    }
+    if (packed > 0)
+        vkUpdateDescriptorSets(device->_logical_device_vk, packed, vk_writes, 0, NULL);
+
+    // Each acceleration structure write, its handles from a fixed array in
+    // pieces of as many as it holds: no allocation.
+    for (uint32_t i = 0; i < write_count; i++) {
+        const spudgpu_write_descriptor_set *w = &writes[i];
+        if (w->descriptor_type != SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE || !w->dst_set) continue;
+        const spudgpu_descriptor_set_vulkan *vkSet = (const spudgpu_descriptor_set_vulkan *) w->dst_set;
+        VkAccelerationStructureKHR handles[64];
+        for (uint32_t first = 0; first < w->descriptor_count; first += 64) {
+            const uint32_t n = (w->descriptor_count - first < 64) ? w->descriptor_count - first : 64;
+            for (uint32_t k = 0; k < n; k++)
+                handles[k] = w->acceleration_structures[first + k]->_structure_vk;
+            VkWriteDescriptorSetAccelerationStructureKHR structures = {0};
+            structures.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
+            structures.accelerationStructureCount = n;
+            structures.pAccelerationStructures = handles;
+            VkWriteDescriptorSet write = {0};
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.pNext = &structures;
+            write.dstSet = vkSet->_set_vk;
+            write.dstBinding = w->dst_binding;
+            write.dstArrayElement = w->dst_array_element + first;
+            write.descriptorCount = n;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+            vkUpdateDescriptorSets(device->_logical_device_vk, 1, &write, 0, NULL);
+        }
+    }
 }
 
 void spudgpu_cmd_bind_descriptor_sets(

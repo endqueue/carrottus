@@ -40,12 +40,10 @@
 // buffers and everything else bound via -setVertexBuffer:/-setFragmentBuffer:
 // - unlike Vulkan/D3D12, which keep vertex bindings and descriptor sets in
 // separate namespaces. Descriptor sets are pinned to the SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS
-// indices directly below the push-constant buffer (see
-// spudgpumetal___internal_cross_compile_spirv_to_msl in spudgpumetalshader.m,
-// which pins SPIR-V descriptor set N's whole argument buffer to MSL
-// buffer(SPUDGPU_METAL_DESCRIPTOR_SET_BUFFER_INDEX_BASE + N) via
-// SPVC_MSL_ARGUMENT_BUFFER_BINDING), leaving indices below this free for
-// vertex attribute buffers.
+// indices directly below the push-constant buffer: set N's whole argument
+// buffer at buffer(SPUDGPU_METAL_DESCRIPTOR_SET_BUFFER_INDEX_BASE + N), as
+// the binding layout spudgpu.h states on spudgpu_shader_module_desc, which
+// a caller's library follows; indices below are left for vertex buffers.
 #define SPUDGPU_METAL_DESCRIPTOR_SET_BUFFER_INDEX_BASE \
 	(SPUDGPU_METAL_PUSH_CONSTANTS_BUFFER_INDEX - SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS)
 
@@ -433,30 +431,17 @@ typedef struct spudgpu_shader_module_t {
 	spud_object_head head;
 	spudgpu_device_metal *_parent_device;
 	spudgpu_shader_module_desc _desc;
-	// SPIRV-Cross-generated MSL source is compiled into this once at module
-	// creation. _function_mtl is looked up eagerly too, always under the
-	// name "main0" - SPIRV-Cross's MSL backend always renames a SPIR-V
-	// module's entry point to this when the module has exactly one (the
-	// expected shape for this project's per-stage-compiled shaders), since
-	// MSL reserves the literal name "main". This means
-	// spudgpu_shader_pipeline_desc's *_entry_point strings are accepted for
-	// cross-backend API symmetry but not consulted on this backend - see
-	// spudgpu_create_shader_module.
+	// The caller's .metallib, as a library, and its entry point's function,
+	// looked up by the desc's name when the module is made.
 	id<MTLLibrary> _library_mtl;
 	id<MTLFunction> _function_mtl;
-	// SPUDGPU_SHADER_STAGE_COMPUTE and _MESH only: the GLSL shader's declared
-	// local_size_x/y/z (SPIR-V's LocalSize execution mode), reflected out of
-	// the SPIR-V at cross-compile time - see
-	// spudgpumetal___internal_cross_compile_spirv_to_msl in
-	// spudgpumetalshader.m. Unlike Vulkan/D3D12, where the driver reads this
-	// straight out of the bound pipeline at dispatch time, Metal's
-	// -dispatchThreadgroups:threadsPerThreadgroup:/-drawMeshThreadgroups:
-	// threadsPerObjectThreadgroup:threadsPerMeshThreadgroup: require the caller to
-	// supply it explicitly every call - spudgpu_create_compute_pipeline
-	// copies these onto spudgpu_compute_pipeline_metal below so
-	// spudgpu_cmd_dispatch (spudgpumetalcommand.m) never needs the module
-	// directly. Zero (never set) for vertex/fragment modules.
-	uint32_t _local_size_x, _local_size_y, _local_size_z;
+	// SPUDGPU_SHADER_STAGE_COMPUTE, _MESH and _TASK only: the desc's
+	// workgroup size. Metal's -dispatchThreadgroups:threadsPerThreadgroup:
+	// and -drawMeshThreadgroups:... take it at every call and no library
+	// records it; spudgpu_create_compute_pipeline and the mesh pipeline copy
+	// it onto the pipeline, so a dispatch never needs the module. 0 for the
+	// other stages.
+	uint32_t _workgroup_size_x, _workgroup_size_y, _workgroup_size_z;
 } spudgpu_shader_module_metal;
 
 typedef struct spudgpu_shader_pipeline_t {
@@ -480,7 +465,7 @@ typedef struct spudgpu_shader_pipeline_t {
 	// callers need to know which shape is bound.
 	bool _is_mesh_pipeline;
 	// Copied from mesh_module at pipeline-creation time when _is_mesh_pipeline
-	// - see spudgpu_shader_module_metal::_local_size_x/y/z above.
+	// - see spudgpu_shader_module_metal::_workgroup_size_x/y/z above.
 	uint32_t _mesh_local_size_x, _mesh_local_size_y, _mesh_local_size_z;
 	// The descriptor sets each stage's function reads, bit n for set n, from
 	// Metal's reflection of this pipeline: the vertex (or mesh and object)
@@ -501,7 +486,7 @@ typedef struct spudgpu_compute_pipeline_t {
 	spudgpu_device_metal *_parent_device;
 	spudgpu_compute_pipeline_desc _desc;
 	// Copied from the compute module at creation time - see
-	// spudgpu_shader_module_metal::_local_size_x/y/z above.
+	// spudgpu_shader_module_metal::_workgroup_size_x/y/z above.
 	uint32_t _local_size_x, _local_size_y, _local_size_z;
 } spudgpu_compute_pipeline_metal;
 
@@ -597,8 +582,34 @@ typedef struct spudgpu_descriptor_set_t {
 	uint32_t _tracked_argument_indices[SPUDGPU_METAL_MAX_TRACKED_RESOURCES_PER_SET];
 	id<MTLResource> _tracked_resources_mtl[SPUDGPU_METAL_MAX_TRACKED_RESOURCES_PER_SET];
 	MTLResourceUsage _tracked_resource_usages_mtl[SPUDGPU_METAL_MAX_TRACKED_RESOURCES_PER_SET];
+	// The top level acceleration structure at each tracked entry, NULL for
+	// any other resource: a bind also makes resident every bottom level its
+	// last build named (spudgpu.h, R5 of the ray query draft), which nothing
+	// in the instance bytes could tell the backend.
+	struct spudgpu_acceleration_structure_t *_tracked_structures[SPUDGPU_METAL_MAX_TRACKED_RESOURCES_PER_SET];
 	uint32_t _tracked_resource_count;
 } spudgpu_descriptor_set_metal;
+
+// An acceleration structure (spudgpumetalraytracing.m): an
+// MTLAccelerationStructure from the device or a heap. Its first two members
+// are spudgpu___acceleration_structure_common's (spudgpushared.h), which
+// the shared checks read.
+typedef struct spudgpu_acceleration_structure_t {
+	spud_object_head head;
+	spudgpu___acceleration_structure_state _state;
+	id<MTLAccelerationStructure> _structure_mtl;
+	// gpuResourceID: what an instance names a bottom level by.
+	uint64_t _resource_id;
+	spudgpu_device_metal *_parent_device;
+	// NULL for one made on the device; its heap otherwise.
+	spudgpu_heap _heap;
+} spudgpu_acceleration_structure_metal;
+
+// Defined in spudgpumetalraytracing.m: marks resident on [encoder] every
+// bottom level [top]'s last build named, for [stages] of a render encoder
+// (a compute encoder when [render] is NO).
+void spudgpumetal___use_bottom_levels(id<MTLCommandEncoder> encoder, bool render, MTLRenderStages stages,
+                                      const struct spudgpu_acceleration_structure_t *top);
 
 typedef struct spudgpu_surface_t {
 	spud_object_head head;

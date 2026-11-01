@@ -126,6 +126,16 @@ typedef struct spudgpu_device_t {
     // (spudgpu_cmd_begin_debug_label records nothing then).
     PFN_vkCmdBeginDebugUtilsLabelEXT _vkCmdBeginDebugUtilsLabelEXT;
     PFN_vkCmdEndDebugUtilsLabelEXT _vkCmdEndDebugUtilsLabelEXT;
+    // VK_KHR_acceleration_structure's, loaded through vkGetDeviceProcAddr
+    // with the device; all NULL without SPUDGPU_FEATURE_RAY_QUERY, and no
+    // call reaches them then (spudgpuvulkanraytracing.c refuses first).
+    PFN_vkCreateAccelerationStructureKHR _vkCreateAccelerationStructureKHR;
+    PFN_vkDestroyAccelerationStructureKHR _vkDestroyAccelerationStructureKHR;
+    PFN_vkGetAccelerationStructureBuildSizesKHR _vkGetAccelerationStructureBuildSizesKHR;
+    PFN_vkGetAccelerationStructureDeviceAddressKHR _vkGetAccelerationStructureDeviceAddressKHR;
+    PFN_vkCmdBuildAccelerationStructuresKHR _vkCmdBuildAccelerationStructuresKHR;
+    PFN_vkCmdCopyAccelerationStructureKHR _vkCmdCopyAccelerationStructureKHR;
+    PFN_vkCmdWriteAccelerationStructuresPropertiesKHR _vkCmdWriteAccelerationStructuresPropertiesKHR;
 
     // Made with the device when SPUDGPU_FEATURE_BINDLESS is asked for, before
     // it is first copied (every struct below embeds spudgpu_device_vulkan by
@@ -413,6 +423,9 @@ typedef struct spudgpu_shader_module_t {
     spud_object_head head;
     VkShaderModule _shader_module_vk;
     VkShaderStageFlagBits _stage_vk;
+    // The desc's entry point, copied through head.allocator: what a
+    // pipeline names as pName.
+    const char *_entry_point;
     spudgpu_device_vulkan _device;
 } spudgpu_shader_module_vulkan;
 
@@ -461,6 +474,34 @@ typedef struct spudgpu_descriptor_pool_t {
     struct spudgpu_descriptor_set_t *_sets;
 } spudgpu_descriptor_pool_vulkan;
 
+// An acceleration structure (spudgpuvulkanraytracing.c): the VkBuffer that
+// holds it, bound to memory of its own or to its heap's, and the
+// VkAccelerationStructureKHR over the whole buffer. Its first two members
+// are spudgpu___acceleration_structure_common's (spudgpushared.h), which the
+// shared checks read. Hot on a build or a bind: _state (the first two cache
+// lines, with the head), then _structure_vk and _address_vk on the third.
+typedef struct spudgpu_acceleration_structure_t {
+    spud_object_head head;
+    spudgpu___acceleration_structure_state _state;
+    VkAccelerationStructureKHR _structure_vk;
+    // vkGetAccelerationStructureDeviceAddressKHR, read once at creation:
+    // what an instance names a bottom level by.
+    VkDeviceAddress _address_vk;
+    VkBuffer _buffer_vk;
+    // Its own allocation; VK_NULL_HANDLE for a placed structure, whose
+    // memory is _heap's.
+    VkDeviceMemory _memory_vk;
+    spudgpu_heap _heap;
+    // The one query that holds its compacted size, made with it when the
+    // desc allows compaction (VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR);
+    // VK_NULL_HANDLE otherwise.
+    VkQueryPool _compacted_size_query_vk;
+    // The device a committed structure was made on, or for a placed one
+    // the heap's copy of it (spudgpu_heap_t::_device): each outlives
+    // the structure, which is destroyed before its device and its heap.
+    const spudgpu_device_vulkan *_device;
+} spudgpu_acceleration_structure_vulkan;
+
 typedef struct spudgpu_descriptor_set_t {
     spud_object_head head;
     VkDescriptorSet _set_vk;
@@ -488,8 +529,11 @@ VkShaderStageFlags spudgpuvulkan___shader_stages(SPUDGPU_SHADER_STAGE stages);
 SPUDRESULT spudgpuvulkan___check_buffer_desc(
     SPUDGPU_FEATURES features,
     const spudgpu_buffer_desc *desc);
-// The VkBufferCreateInfo of a buffer of [desc].
+// The VkBufferCreateInfo of a buffer of [desc] on a device of [features]:
+// SPUDGPU_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT is Vulkan's usage
+// bit only with SPUDGPU_FEATURE_RAY_QUERY, whose extension the bit needs.
 void spudgpuvulkan___buffer_create_info(
+    SPUDGPU_FEATURES features,
     const spudgpu_buffer_desc *desc,
     VkBufferCreateInfo *out_info);
 // The first memory type in [typeFilter] with the properties [kind]
@@ -506,6 +550,16 @@ SPUDRESULT spudgpuvulkan___check_image_desc(const spudgpu_image_desc *desc);
 void spudgpuvulkan___image_create_info(
     const spudgpu_image_desc *desc,
     VkImageCreateInfo *out_info);
+
+// Defined in spudgpuvulkanraytracing.c: the memory types an acceleration
+// structure's buffer of [size] bytes can be bound to, and, where
+// [out_requirements] is not NULL, its whole VkMemoryRequirements. Makes a
+// probe buffer and destroys it. [device] has SPUDGPU_FEATURE_RAY_QUERY.
+SPUDRESULT spudgpuvulkan___acceleration_structure_memory_bits(
+    const spudgpu_device_vulkan *device,
+    uint64_t size,
+    uint32_t *out_bits,
+    VkMemoryRequirements *out_requirements);
 
 // Defined in spudgpuvulkandescriptors.c. Called by spudgpu_create_device when
 // SPUDGPU_FEATURE_BINDLESS is asked for, before the device's first by-value

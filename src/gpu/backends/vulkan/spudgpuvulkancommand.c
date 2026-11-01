@@ -307,11 +307,15 @@ void spudgpu_cmd_set_viewports(
 
     VkViewport *vk_viewports = (VkViewport *) spudgpuvulkan___scratch_take(&cmd->_scratch, sizeof(VkViewport) * viewport_count);
     if (!vk_viewports) return;
+    // SpudGPU's clip space is +Y up on every backend (spudgpu.h,
+    // spudgpu_shader_module_desc), Vulkan's +Y down: a negative height
+    // (core since Vulkan 1.1) from the viewport's bottom edge flips it, and
+    // keeps winding as D3D12 and Metal decide it.
     for (uint32_t i = 0; i < viewport_count; i++) {
         vk_viewports[i].x = viewports[i].x;
-        vk_viewports[i].y = viewports[i].y;
+        vk_viewports[i].y = viewports[i].y + viewports[i].height;
         vk_viewports[i].width = viewports[i].width;
-        vk_viewports[i].height = viewports[i].height;
+        vk_viewports[i].height = -viewports[i].height;
         vk_viewports[i].minDepth = viewports[i].minDepth;
         vk_viewports[i].maxDepth = viewports[i].maxDepth;
     }
@@ -796,6 +800,15 @@ static VkAccessFlags spudgpu_vk___resource_state_to_access(SPUDGPU_RESOURCE_STAT
         return VK_ACCESS_TRANSFER_READ_BIT;
     case SPUDGPU_RESOURCE_STATE_COPY_DEST:
         return VK_ACCESS_TRANSFER_WRITE_BIT;
+    // A build reads its vertices, indices, AABBs and instances as shader
+    // reads, and its scratch as acceleration structure reads and writes;
+    // a compacted size is copied out of its query by a transfer.
+    case SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_BUILD_INPUT:
+        return VK_ACCESS_SHADER_READ_BIT;
+    case SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_SCRATCH:
+        return VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+    case SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_SIZE_DEST:
+        return VK_ACCESS_TRANSFER_WRITE_BIT;
     case SPUDGPU_RESOURCE_STATE_PRESENT:
     case SPUDGPU_RESOURCE_STATE_COMMON:
     default:
@@ -821,7 +834,11 @@ static VkPipelineStageFlags spudgpu_vk___resource_state_to_stage(SPUDGPU_RESOURC
         return VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
     case SPUDGPU_RESOURCE_STATE_COPY_SOURCE:
     case SPUDGPU_RESOURCE_STATE_COPY_DEST:
+    case SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_SIZE_DEST:
         return VK_PIPELINE_STAGE_TRANSFER_BIT;
+    case SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_BUILD_INPUT:
+    case SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_SCRATCH:
+        return VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
     case SPUDGPU_RESOURCE_STATE_PRESENT:
         return VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
     case SPUDGPU_RESOURCE_STATE_COMMON:
