@@ -1316,6 +1316,17 @@ this reason: a change of their signatures, not made.
       failure; the generator found no new call); `spud_noalloc_tests` none
       of ours; `iossimulator-metal` built. `abi.txt`: one addition (331),
       no break. Windows and Linux not built.
+  - **Decided 2026-11-01 with the user (card S30, b):** the draft's
+    sentence on padding stays out of `spudgpu.h`, as built. The header
+    states the contract (what a module declares, what Metal refuses); how
+    a build keeps it is the build's, and `cmake/spud_shaders.cmake` says
+    so. No header change.
+  - **Reviewed 2026-11-01 with the user** (`../claude_made_decisions.md`):
+    the padding by text in `spudgpu_msl` is card S31 (pad the SPIR-V
+    instead, so SPIRV-Cross writes every member); a structural refusal's
+    message is card S32. `cmake/spud_shaders.cmake`'s clearing of an
+    INTERNAL `SPUDGPU_MSL_EXECUTABLE` (lines 44-51) goes once the ThinkPad
+    and Fedora have each configured.
 - **Specialization constants. Decided 2026-10-28 with the user (card
   A9):** a pipeline desc takes (constant id, value) pairs for its shader
   modules: Vulkan's `VkSpecializationInfo`; Metal's function constants;
