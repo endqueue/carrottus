@@ -1268,6 +1268,16 @@ it, with the struct's ABI break listed then. Not built.
     2026-11-01 by the user, as written. Slang's `-preserve-params`
     is reported to Slang either way (`../claude_made_decisions.md`,
     2026-11-01).
+  - **Run on Windows 2026-11-02** (the ThinkPad, D3D12 and Vulkan, the
+    Iris Xe, in trellislib's Debug builds): `spudgpu_objects_test`'s set
+    bindings case expected D3D12 and Vulkan to make every pipeline,
+    including the modules that break "Every binding of a set"; D3D12's
+    runtime refused two (a binding past the set, a count of 2; "Root
+    Signature doesn't match ... not fully bound"), with its debug layer's
+    errors. S27 says Vulkan and D3D12 don't check, so such a module is the
+    caller's error there: the test now makes the breaching modules on
+    Metal only, and passes on D3D12 and Vulkan with no layer message. Not
+    rerun on the Mac.
   - **Built 2026-11-01 on the Mac (X1c, X18's first step, S27; Apple M5
     Pro, macOS 27.0.1, Xcode 27.2, Slang 2026.18.3-2):**
     - `cmake/spud_shaders.cmake`, `spud_add_shader()`, in place of

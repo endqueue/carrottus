@@ -1535,9 +1535,13 @@ static SPUDRESULT set_bindings_compute(spudgpu_device device, spudgpu_shader_mod
 
 static void test_set_bindings(spudgpu_device device, spudgpu_command_queue queue, spudgpu_command_allocator allocator, spudgpu_command_list cmd) {
 	// Metal sees a module's bindings and refuses one that isn't its set's
-	// layout; Vulkan and D3D12 create every pipeline here.
+	// layout. Vulkan and D3D12 don't check (card S27): there a module that
+	// breaks the rule is the caller's error, which their runtimes may refuse
+	// or accept, and their validation reports - so only the modules that keep
+	// the rule are made there (D3D12's runtime refused two that don't on
+	// 2026-11-02, the ThinkPad).
 	const bool checked        = test_shader_format == SPUDGPU_SHADER_FORMAT_METALLIB;
-	const SPUDRESULT refused  = checked ? SPUDRESULT_GPU_SHADER_LAYOUT_MISMATCH : SPUD_SUCCESS;
+	const SPUDRESULT refused  = SPUDRESULT_GPU_SHADER_LAYOUT_MISMATCH;
 	set_bindings_run r;
 	memset(&r, 0, sizeof(r));
 
@@ -1573,13 +1577,15 @@ static void test_set_bindings(spudgpu_device device, spudgpu_command_queue queue
 	spudgpu_shader_module fragment_modules[5] = {NULL, NULL, NULL, NULL, NULL};
 	if (vertex && layout && result_layout) {
 		for (int i = 0; i < 5; ++i) {
+			if (i != 0 && !checked)
+				continue;
 			fragment_modules[i]              = make_module(device, fragments[i], fragments[i]->entry_point);
 			spudgpu_shader_pipeline pipeline = NULL;
 			if (fragment_modules[i]) {
 				const SPUDRESULT sr = set_bindings_pipeline(device, vertex, fragment_modules[i], layout, &pipeline);
 				// The whole set made; part of it, a binding past it, one of
-				// another type and one of another count refused on Metal,
-				// leaving no pipeline.
+				// another type and one of another count refused (on Metal,
+				// the one backend that makes them), leaving no pipeline.
 				CHECK(sr == (i == 0 ? SPUD_SUCCESS : refused));
 				CHECK((sr == SPUD_SUCCESS) == (pipeline != NULL));
 				if (i == 0)
@@ -1589,12 +1595,14 @@ static void test_set_bindings(spudgpu_device device, spudgpu_command_queue queue
 			}
 		}
 		for (int i = 0; i < 5; ++i) {
+			if (i >= 2 && !checked)
+				continue;
 			spudgpu_shader_module module      = make_module(device, computes[i], computes[i]->entry_point);
 			spudgpu_compute_pipeline pipeline = NULL;
 			if (module) {
 				const SPUDRESULT sr = set_bindings_compute(device, module, layout, result_layout, &pipeline);
 				// The whole set, and none of set 0, made; the rest refused
-				// on Metal.
+				// (made on Metal only).
 				CHECK(sr == (i < 2 ? SPUD_SUCCESS : refused));
 				CHECK((sr == SPUD_SUCCESS) == (pipeline != NULL));
 			}
