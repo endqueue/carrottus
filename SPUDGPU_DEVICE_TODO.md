@@ -1002,6 +1002,16 @@ runs check the build and that nothing else changed. The present and the
 acquire (`void`, and a `UINT32_MAX` index) still can't say they failed for
 this reason: a change of their signatures, not made.
 
+## The largest 2D texture (card S33, decided 2026-11-02 with you: a)
+
+`SPUDGPU_ADAPTER_PROPERTIES` gains the largest width or height of a 2D
+texture the adapter creates, in texels: Vulkan's
+`VkPhysicalDeviceLimits::maxImageDimension2D`, D3D12's 16384 (feature level
+11_0 and up, `D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION`), Metal's from the
+GPU's family (Apple's feature set tables). A translation, no policy: a
+caller compares its own sizes against it. Built when a caller first needs
+it, with the struct's ABI break listed then. Not built.
+
 ## Later, not in this change
 
 - **A polled "the adapters changed" call.** Recovery by a new instance is
