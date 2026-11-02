@@ -1057,7 +1057,10 @@ this reason: a change of their signatures, not made.
   - **One callback for every message.** `spudgpu_instance_desc` takes a
     message callback and its context. A message carries a severity, a
     source (SpudGPU's own check, the native layer, GPU-based validation),
-    an id, the text and the object's debug name. D3D12's info queue,
+    an id, the text and the object's debug name (card S10, 2026-11-01,
+    adds platform failures to it, the call's name and the platform's code,
+    and accepts the callback with validation off;
+    `spud_platform_error_draft.h`, approved). D3D12's info queue,
     Vulkan's debug messenger (none is registered today, so its layer
     prints on its own) and Metal's reports all go to it, and the `printf`
     in `spudgpu_d3d12_debug_message` goes. Logging, breaking or asserting
@@ -1218,6 +1221,43 @@ this reason: a change of their signatures, not made.
     the Vulkan backend's base set (an adapter without it isn't listed), and
     a vertex shader's vertex and instance index are defined only for draws
     starting at vertex 0 and instance 0 (`spudgpu.h`).
+  - **Decided 2026-11-01 with the user (card X1c, its first entry):**
+    `tools/spudgpu_msl` is built, and the shader steps run it, only where a
+    .metallib is made: an Apple target, or a build cross-compiling for one
+    from a Mac. Windows and Linux builds neither build it nor write Metal
+    source, unless configured with `-DSPUD_SHADERS_CHECK_METAL=ON` (off by
+    default), which builds the tool and translates every shader to Metal
+    source as a check, with no .metallib; the Linux CI runner turns it on,
+    so a shader SPIRV-Cross can't translate fails there before a Mac sees
+    it. `cmake/spud_slang.cmake` here; a caller's own step that runs the
+    tool follows the same switch. Not built.
+  - **Decided 2026-11-01 with the user (card X18, b; its build half, a,
+    with S27):** one shader step for every caller,
+    `cmake/spud_shaders.cmake` with `spud_add_shader()` (Slang to SPIR-V
+    checked by `spirv-val`, DXIL and its validator on Windows,
+    `-reflection-json`, and Metal per X1c's switch above, padded per S27),
+    replacing `cmake/spud_slang.cmake`; a caller's own step wraps it rather
+    than copying it. `tools/spudgpu_msl` is always built as a program of
+    its own for the build machine (`tools/spudgpu_msl/CMakeLists.txt`
+    through ExternalProject, native and cross-compiling alike), or taken
+    from `SPUDGPU_MSL_EXECUTABLE` where the caller names one, so its
+    SPIRV-Cross is never a target in the caller's build. Not built.
+  - **Decided 2026-11-01 with the user (card S27, a):** a module declares
+    every binding of each set it reads, with the layout's type and count,
+    and no other, stated for every backend in `spudgpu_shader_module_desc`;
+    Metal's pipeline creation reflects each set's argument buffer and
+    refuses a module that differs (`SPUDRESULT_GPU_SHADER_LAYOUT_MISMATCH`,
+    331); Vulkan and D3D12 don't check it. The build keeps the rule:
+    `cmake/spud_slang.cmake` reads Slang's reflection (`-reflection-json`
+    lists every declared binding with its kind and a "used" flag, though
+    the SPIR-V drops the unread ones; checked 2026-11-01) and passes it to
+    `tools/spudgpu_msl`, which moves to SPIRV-Cross's C++ API and pads each
+    set (`pad_argument_buffer_resources` needs each binding's base type,
+    which the C API's `spvc_msl_resource_binding_2` lacks); the step's
+    arguments don't change. `spudgpu_shaderbindings_draft.h` approved
+    2026-11-01 by the user, as written. Not built. Slang's `-preserve-params`
+    is reported to Slang either way (`../claude_made_decisions.md`,
+    2026-11-01).
 - **Specialization constants. Decided 2026-10-28 with the user (card
   A9):** a pipeline desc takes (constant id, value) pairs for its shader
   modules: Vulkan's `VkSpecializationInfo`; Metal's function constants;
@@ -1514,6 +1554,50 @@ this reason: a change of their signatures, not made.
   `DECISIONS.md`): every deferred SpudGPU item with the
   way it would be added after 1.0, and the ones whose shape needs a field
   taken before the freeze. Card S11 started it for video.
+- **Room before 1.0 (card S11, decided 2026-11-01 with you: all seven, as
+  revised when presented).** What would otherwise break to add hardware
+  decode and encode, HDR output, presentation timing or shared resources
+  after 1.0:
+  - Changed before 1.0, in `spudgpu_room_before_1_0_draft.h` (approved
+    2026-11-01, not built):
+    - (a) `SPUDGPU_ADAPTER_PROPERTIES::queue_pools` becomes a pointer to
+      the adapter's own array, of any length, same names (a fixed `[8]`
+      would still guess at drivers' families);
+    - (c) `spudgpu_swap_chain_desc::color_space`, required
+      (`SPUDGPU_COLOR_SPACE`, Vulkan's names: `SRGB_NONLINEAR`,
+      `EXTENDED_SRGB_LINEAR`, `HDR10_ST2084`; what the display reads, where
+      the format is what the GPU writes), with `spudgpu_get_surface_formats()`
+      reporting a surface's format and colour space pairs; none existed, and
+      a caller chose a format blind. Fixed with it: Vulkan's silent fallback
+      to `B8G8R8A8_SRGB`, D3D12 failing every `_SRGB` swap chain (buffers
+      UNORM, views `_SRGB`), and Metal's untagged layer (no colour matching,
+      over-saturated on a P3 display);
+    - (d) `spudgpu_swap_chain_present()` takes a based
+      `spudgpu_present_desc` (timing and per-frame HDR metadata chain onto
+      it later) and returns a result (out of date, surface lost, device
+      lost); it was `void` with no struct, and Vulkan and D3D12 drop their
+      present results today;
+    - (f) one sync object: a submission waits on fence values, and
+      `spudgpu_semaphore`, its calls and the swap chain's two semaphore
+      getters go (one caller in the workspace used them). On Metal the
+      waits go in a command buffer of their own ahead of the lists' (or at
+      the start of each list's, if Metal doesn't hold later buffers behind
+      it; the draft's test settles it): today's semaphore waits are encoded
+      after the first list's recorded work, and likely wait for none of
+      it.
+  - Written, not changed, since none breaks anything later:
+    - (b) plane views of NV12 and P010 are `SPUDGPU_IMAGE_ASPECT_PLANE_0..2`
+      bits appended. Metal has no two-plane pixel format (NV12 maps to
+      nothing there today), so its backend holds one texture per plane;
+      built with a caller;
+    - (e) the import and export `EXT` group takes Vulkan external memory
+      (DMA-BUF, Win32 handles), D3D12 shared handles and IOSurface on Metal;
+    - (g) decode and encode sessions (Vulkan Video, D3D12 Video; Metal has
+      no GPU-API counterpart to VideoToolbox) and their queue kind bits wait
+      for a caller.
+  - Seen, not taken: `spudgpu_swap_chain_acquire_next_image()` returns an
+    index and no result, so Vulkan's OUT_OF_DATE from acquire is lost too;
+    for whoever next changes acquire.
 
 ## Breaks
 

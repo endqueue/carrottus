@@ -1002,9 +1002,11 @@ has no Metal 3 family. Changed:
   `getentropy`); `spud_noalloc_tests` links as C++ for its demangler.
 `spud_noalloc_tests`: none of ours, the refit-and-trace frame included (41
 a frame of Metal's own there). Not changed and recorded as a known gap
-since 2026-10-17, now a card (S27): Slang keeps only the bindings an entry
+since 2026-10-17, then card S27: Slang keeps only the bindings an entry
 point reads, and the argument buffer the backend writes from a set's
-layout doesn't match a module's that leaves bindings out.
+layout doesn't match a module's that leaves bindings out. Decided
+2026-11-01 (a): the build pads, Metal refuses a mismatch; draft
+`spudgpu_shaderbindings_draft.h`, approved the same day, not built.
 
 - **Vulkan** — reference backend, plain C23, complete. Build against this first;
   D3D12 and Metal follow its shape.
@@ -1227,10 +1229,16 @@ layout doesn't match a module's that leaves bindings out.
     declares (every declared one since 2026-10-17, used or not). A shader
     that declares only some of a set layout's bindings, and reads one past
     a binding it leaves out, reads the wrong argument. Every shader that
-    reads a set declares the set's whole layout (a shared include does it);
-    the fix is SPIRV-Cross's `pad_argument_buffer_resources`, which its C
-    API doesn't expose, with the layout's bindings given at pipeline
-    creation.
+    reads a set declares the set's whole layout (a shared include does it).
+    Since Slang (2026-10-31) a module keeps only the bindings its entry
+    point reads, so the rule broke four of a caller's shaders. **Decided
+    2026-11-01 with the user (card S27, a):** the rule goes into
+    `spudgpu.h` for every backend, the shader step pads each set from
+    Slang's reflection (`spudgpu_msl` on SPIRV-Cross's C++ API,
+    `pad_argument_buffer_resources`), and Metal's pipeline creation refuses
+    a module that differs (`SPUDRESULT_GPU_SHADER_LAYOUT_MISMATCH`). Draft
+    `spudgpu_shaderbindings_draft.h`, approved 2026-11-01; not built
+    (`SPUDGPU_DEVICE_TODO.md`).
   - D3D12's `spudgpu_cmd_begin_rendering` returned early without a colour
     attachment until 2026-10-17, so a depth-only pass rendered on Vulkan
     and Metal only. It now begins a pass of a depth attachment alone;

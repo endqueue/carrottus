@@ -192,6 +192,57 @@ Long-lived C APIs have these and spudlib does not:
   exceptions carry a `Thread:` line; Debug builds detect overlapping calls
   on one object. SpudLib creates no threads but what a platform imposes (an
   audio callback; the network stacks' own). Root `CLAUDE.md`, "Threading".
+- **The platform's own error behind `SPUDRESULT_API_SPECIFIC_FAILURE`.
+  Decided 2026-11-01 with the user (card S10), revised the same day:**
+  card S2's message channel, not a record per object. Every module with an
+  instance takes one `SPUD_MESSAGE_CALLBACK` and its user data in its
+  instance desc (NULL for none; required with SpudGPU's validation on);
+  every failure a platform call reports is a message, whatever
+  `SPUDRESULT` it maps to (ENOENT and ENOTDIR both behind `NOT_FOUND` are
+  told apart; the caller filters on the result, SpudLib judges nothing too
+  routine; not would-block, a wait's timeout, an orderly close or a time
+  limit SpudLib keeps), at every validation level, sent
+  inside the failing call on the caller's thread before it returns, with
+  the call's name, the object and its debug name, the `SPUDRESULT`, the
+  platform's numbering (`SPUD_PLATFORM_ERROR_SOURCE`, SpudNet's enum moved
+  to `spudcore.h`, `VKRESULT` added) and code, and the platform's own
+  wording whole where it has some. The callback may be called from several
+  of the caller's threads at once, never from SpudLib's, must not call the
+  module whose call is reporting back, and reads the message only during
+  the call; nothing is allocated. An object whose platform reports on its
+  own thread (a SpudAudio stream) keeps one lock-free pending slot (a 64-bit and a 32-bit atomic, never a
+  16-byte one), holding
+  the first failure, sent by the next call on it with a count of the rest.
+  Severities are every platform layer's (VERBOSE to D3D12's CORRUPTION),
+  none merged. The callback is SpudLib's only output: its ~30 prints go
+  (platform failures to messages, the D3D12 debug layer's printer and the
+  live-object report to S2's), all but `SPUD_STALE`'s Debug line, which
+  has no instance to reach. A create's message
+  also names the object it was making. Messages go to the instance's
+  creator only; a caller handed just an object reports the SpudLib call
+  and its code, the detail being the message before it in the creator's
+  log (accepted). SpudMemory's four calls and `spudrandom_fill`, with no
+  instance, take `SPUD_PLATFORM_ERROR *out_error` (result, source, code).
+  SpudNet keeps its per-object records and also sends its failures. S2's
+  text changes in one detail: the callback is accepted with validation off.
+  Rejected on the way: a record and a `_get_error` on every object that can
+  fail (the first answer), and one generic getter over `void *`. Draft
+  `spud_platform_error_draft.h`, approved 2026-11-01. Then a message at
+  every platform failure (the ~190 behind `API_SPECIFIC_FAILURE` and those
+  mapped to codes of their own), SpudLib's prints removed, the tests it
+  lists, and runs
+  on macOS, Windows and Linux. Not built.
+- **`void` recording calls that silently record nothing** (found reading
+  card S10's draft, 2026-11-01). Each prints why and returns: out of memory
+  building barriers (D3D12's `spudgpu_cmd_pipeline_barrier`,
+  `_image_barrier`, `_image_barrier_subresource` twice,
+  `_acceleration_structure_barrier`), a scaling blit
+  (`spudgpu_cmd_blit_image`, Metal and D3D12), an unrecognized
+  `SPUDGPU_IMAGE_LAYOUT` (Metal's three image barriers). Each is made
+  unable to fail (room made beforehand, as the acceleration structure
+  build's checks do; an enum checked where the caller can be refused) or
+  refused with a code; the print goes. A change to public calls: a draft
+  first. Not started.
 - **Before any shared build of spudlib** (not needed while it is static
   only): an export macro, default-hidden symbols, a `SOVERSION`, and symbol
   versioning or a `.def` file.
