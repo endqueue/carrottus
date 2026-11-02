@@ -526,57 +526,14 @@ if(NOT TARGET spudlib)
 
     target_include_directories(spudlib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-    # The Metal fallback route's cross-compiler (card S20): SPIR-V to Metal
-    # source in the Metal backend's binding layout, a tool a caller's shader
-    # build runs, never linked into spudlib. It runs on the build machine:
-    # a native build makes it as a target here; a cross-compiling build (an
-    # iOS build) makes it for the build machine through ExternalProject
-    # (tools/spudgpu_msl/CMakeLists.txt), as a target of the same name. Either
-    # way a shader step runs ${SPUDGPU_MSL_EXECUTABLE} and depends on the
-    # spudgpu_msl target.
-    if(CMAKE_CROSSCOMPILING AND CMAKE_HOST_APPLE AND NOT TARGET spudgpu_msl)
-        include(ExternalProject)
-        set(_spud_msl_spirv_cross "")
-        foreach(_cand SPIRV-Cross SPIRV-Cross-src)
-            if(NOT _spud_msl_spirv_cross AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../.deps/${_cand}/CMakeLists.txt")
-                set(_spud_msl_spirv_cross "${CMAKE_CURRENT_SOURCE_DIR}/../.deps/${_cand}")
-            endif()
-        endforeach()
-        set(_spud_msl_dir ${CMAKE_CURRENT_BINARY_DIR}/spudgpu_msl_host)
-        # Nothing of this build's toolchain is passed on: the tool is built
-        # with the build machine's compiler for the build machine.
-        ExternalProject_Add(spudgpu_msl
-            SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/tools/spudgpu_msl
-            BINARY_DIR ${_spud_msl_dir}
-            CMAKE_ARGS -DSPUDGPU_MSL_SPIRV_CROSS_DIR=${_spud_msl_spirv_cross} -DCMAKE_BUILD_TYPE=Release
-            INSTALL_COMMAND ""
-            # Its own build is asked every time, so an edit to the tool is
-            # built; nothing is remade when nothing changed.
-            BUILD_ALWAYS ON
-            BUILD_BYPRODUCTS ${_spud_msl_dir}/bin/spudgpu_msl)
-        set(SPUDGPU_MSL_EXECUTABLE ${_spud_msl_dir}/bin/spudgpu_msl CACHE INTERNAL "spudgpu_msl, built for the build machine")
-    elseif(NOT CMAKE_CROSSCOMPILING AND NOT TARGET spudgpu_msl)
-        include(FetchContent)
-        set(SPIRV_CROSS_CLI OFF CACHE BOOL "" FORCE)
-        set(SPIRV_CROSS_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
-        set(SPIRV_CROSS_ENABLE_GLSL ON CACHE BOOL "" FORCE)
-        set(SPIRV_CROSS_ENABLE_MSL ON CACHE BOOL "" FORCE)
-        set(SPIRV_CROSS_ENABLE_HLSL OFF CACHE BOOL "" FORCE)
-        set(SPIRV_CROSS_ENABLE_CPP OFF CACHE BOOL "" FORCE)
-        set(SPIRV_CROSS_ENABLE_REFLECT OFF CACHE BOOL "" FORCE)
-        set(SPIRV_CROSS_ENABLE_C_API ON CACHE BOOL "" FORCE)
-        set(SPIRV_CROSS_ENABLE_UTIL OFF CACHE BOOL "" FORCE)
-        set(SPIRV_CROSS_SKIP_INSTALL ON CACHE BOOL "" FORCE)
-        spud_declare_vendored_or_fetch(spirv_cross SPIRV-Cross
-            https://github.com/KhronosGroup/SPIRV-Cross.git vulkan-sdk-1.4.363.0)
-        set(CMAKE_POLICY_VERSION_MINIMUM 3.10)
-        FetchContent_MakeAvailable(spirv_cross)
-        add_executable(spudgpu_msl tools/spudgpu_msl/spudgpu_msl.c)
-        target_link_libraries(spudgpu_msl PRIVATE spirv-cross-c)
-        # SPIRV-Cross is C++: link as C++ for its runtime.
-        set_target_properties(spudgpu_msl PROPERTIES LINKER_LANGUAGE CXX)
-        set(SPUDGPU_MSL_EXECUTABLE $<TARGET_FILE:spudgpu_msl> CACHE INTERNAL "spudgpu_msl, built for the build machine")
-    endif()
+    # The shader step (cmake/spud_shaders.cmake, spud_add_shader()) is
+    # written once for this repository's tests and for any caller's build.
+    # Its Metal route's cross-compiler, tools/spudgpu_msl (card S20), is a
+    # program of its own built for the build machine (card X18), never linked
+    # into spudlib and never a target here. A caller includes the file named
+    # by SPUD_SHADERS_CMAKE.
+    set(SPUD_SHADERS_CMAKE ${CMAKE_CURRENT_SOURCE_DIR}/cmake/spud_shaders.cmake CACHE INTERNAL
+        "spudlib's shader step, for a caller's build to include")
 
     # Hardware tests: each needs a real device (and spudaudio_sine a
     # listener), so they're built but not registered with ctest.
@@ -645,32 +602,56 @@ if(NOT TARGET spudlib)
         target_link_libraries(spudgpu_objects_test PRIVATE spudlib eqstd)
 
         # The tests' shaders, Slang compiled to each API's own format at
-        # build time (cmake/spud_slang.cmake), for spudgpu_objects_test,
+        # build time (cmake/spud_shaders.cmake), for spudgpu_objects_test,
         # spud_noalloc_tests and spud_misuse_tests. The ray query pair is
         # card S12's step 0: compiled and validated on every build, run on a
         # device by spudgpu_objects_test once SPUDGPU_EXT_RAY_QUERY exists.
-        include(cmake/spud_slang.cmake)
-        spud_add_slang_shader(spudgpu_test_rq_trace SOURCE tests/shaders/rq_trace.slang
-            DXIL_PROFILE cs_6_5 SPIRV_CAPABILITIES spvRayQueryKHR)
-        spud_add_slang_shader(spudgpu_test_rq_shadow SOURCE tests/shaders/rq_shadow.slang
-            DXIL_PROFILE ps_6_5 SPIRV_CAPABILITIES spvRayQueryKHR)
-        # The vertex shader under rq_shadow, and the caller's GPU writers of
-        # instances, one per layout kind (card S14).
-        spud_add_slang_shader(spudgpu_test_rq_shadow_vert SOURCE tests/shaders/rq_shadow_vert.slang
-            DXIL_PROFILE vs_6_0)
-        spud_add_slang_shader(spudgpu_test_rq_instances_row64 SOURCE tests/shaders/rq_instances_row64.slang
-            DXIL_PROFILE cs_6_0)
-        spud_add_slang_shader(spudgpu_test_rq_instances_col72 SOURCE tests/shaders/rq_instances_col72.slang
-            DXIL_PROFILE cs_6_0)
-        spud_add_slang_shader(spudgpu_test_objects_draw_vert SOURCE tests/shaders/objects_draw_vert.slang
-            DXIL_PROFILE vs_6_0)
-        spud_add_slang_shader(spudgpu_test_objects_draw_frag SOURCE tests/shaders/objects_draw_frag.slang
-            DXIL_PROFILE ps_6_0)
-        spud_add_slang_shader(spudgpu_test_objects_draw_mesh SOURCE tests/shaders/objects_draw_mesh.slang
-            DXIL_PROFILE ms_6_5 SPIRV_CAPABILITIES spvMeshShadingEXT)
-        spud_add_slang_shader(spudgpu_test_objects_double_comp SOURCE tests/shaders/objects_double_comp.slang
-            DXIL_PROFILE cs_6_0)
-        add_custom_target(spudlib_test_shaders DEPENDS ${SPUD_SLANG_OUTPUTS})
+        include(${SPUD_SHADERS_CMAKE})
+        set(SPUD_TEST_SHADER_DIR ${CMAKE_CURRENT_BINARY_DIR}/spud_test_shaders)
+        set(SPUD_TEST_SHADERS
+            # name                               source                          DXIL profile  SPIR-V capability
+            "spudgpu_test_rq_trace|rq_trace|cs_6_5|spvRayQueryKHR"
+            "spudgpu_test_rq_shadow|rq_shadow|ps_6_5|spvRayQueryKHR"
+            # The vertex shader under rq_shadow, and the caller's GPU
+            # writers of instances, one per layout kind (card S14).
+            "spudgpu_test_rq_shadow_vert|rq_shadow_vert|vs_6_0|"
+            "spudgpu_test_rq_instances_row64|rq_instances_row64|cs_6_0|"
+            "spudgpu_test_rq_instances_col72|rq_instances_col72|cs_6_0|"
+            "spudgpu_test_objects_draw_vert|objects_draw_vert|vs_6_0|"
+            "spudgpu_test_objects_draw_frag|objects_draw_frag|ps_6_0|"
+            "spudgpu_test_objects_draw_mesh|objects_draw_mesh|ms_6_5|spvMeshShadingEXT"
+            "spudgpu_test_objects_double_comp|objects_double_comp|cs_6_0|"
+            # Every binding of a set (card S27): a set of a uniform buffer at
+            # 0, a sampled image at 5 and a sampler at 8, declared whole and
+            # read at 5 and 8 (the build pads 0); and on Metal the modules
+            # refused, declaring the set in part, with a binding it lacks,
+            # with one of another type, and with one of another count.
+            "spudgpu_test_bindings_vert|bindings_vert|vs_6_0|"
+            "spudgpu_test_bindings_whole_frag|bindings_whole_frag|ps_6_0|"
+            "spudgpu_test_bindings_part_frag|bindings_part_frag|ps_6_0|"
+            "spudgpu_test_bindings_extra_frag|bindings_extra_frag|ps_6_0|"
+            "spudgpu_test_bindings_type_frag|bindings_type_frag|ps_6_0|"
+            "spudgpu_test_bindings_count_frag|bindings_count_frag|ps_6_0|"
+            "spudgpu_test_bindings_whole_comp|bindings_whole_comp|cs_6_0|"
+            "spudgpu_test_bindings_part_comp|bindings_part_comp|cs_6_0|"
+            "spudgpu_test_bindings_extra_comp|bindings_extra_comp|cs_6_0|"
+            "spudgpu_test_bindings_type_comp|bindings_type_comp|cs_6_0|"
+            "spudgpu_test_bindings_none_comp|bindings_none_comp|cs_6_0|")
+        set(SPUD_TEST_SHADER_OUTPUTS "")
+        foreach(_shader IN LISTS SPUD_TEST_SHADERS)
+            string(REPLACE "|" ";" _shader "${_shader}")
+            list(GET _shader 0 _name)
+            list(GET _shader 1 _source)
+            list(GET _shader 2 _profile)
+            list(GET _shader 3 _cap)
+            set(_caps "")
+            if(_cap)
+                set(_caps SPIRV_CAPABILITIES ${_cap})
+            endif()
+            spud_add_shader(${_name} SOURCE tests/shaders/${_source}.slang OUT_DIR ${SPUD_TEST_SHADER_DIR}
+                DXIL_PROFILE ${_profile} ${_caps} OUTPUTS SPUD_TEST_SHADER_OUTPUTS)
+        endforeach()
+        add_custom_target(spudlib_test_shaders DEPENDS ${SPUD_TEST_SHADER_OUTPUTS})
         # What SPUDGPU_EXT_RAY_QUERY costs on one adapter (tests/spudgpu_rq_measure.c):
         # a bottom level's build and compaction, top levels of 1 to 100,000
         # instances, a ray per pixel at 1920 x 1080. It measures and checks
@@ -679,7 +660,7 @@ if(NOT TARGET spudlib)
         target_link_libraries(spudgpu_rq_measure PRIVATE spudlib)
         foreach(_shader_test spudgpu_objects_test spud_noalloc_tests spud_misuse_tests spudgpu_rq_measure)
             add_dependencies(${_shader_test} spudlib_test_shaders)
-            target_include_directories(${_shader_test} PRIVATE ${SPUD_SLANG_OUT_DIR})
+            target_include_directories(${_shader_test} PRIVATE ${SPUD_TEST_SHADER_DIR})
             if(WIN32)
                 target_compile_definitions(${_shader_test} PRIVATE SPUDLIB_TEST_SHADERS_DXIL=1)
             endif()

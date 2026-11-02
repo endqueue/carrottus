@@ -415,6 +415,13 @@ typedef enum SPUDRESULT {
 	SPUDRESULT_GPU_EXT_TESSELLATION_NOT_SUPPORTED      = 330, /**< SPUDGPU_EXT_TESSELLATION: the device has no SPUDGPU_FEATURE_TESSELLATION. */
 	/** @} */
 
+	/** A module's bindings for a set it reads aren't its descriptor set
+	 * layout's: it leaves out a binding of the layout, declares one the
+	 * layout doesn't hold, or declares one of another type or count
+	 * (spudgpu_shader_module_desc, "Every binding of a set"). Returned only
+	 * where the backend can see the module's bindings: Metal. */
+	SPUDRESULT_GPU_SHADER_LAYOUT_MISMATCH                      = 331,
+
 	/** Reserved: no call returns it. */
 	SPUDRESULT_GPU_INVALID_RESOURCE_STATE                      = 350,
 	/** Reserved: no call returns it. */

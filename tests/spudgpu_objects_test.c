@@ -1437,6 +1437,288 @@ static void test_compute(spudgpu_device device, spudgpu_command_queue queue, spu
 	spudgpu_destroy_shader_module(module);
 }
 
+// ---- Every binding of a set (card S27) ----------------------------------------
+
+// Set 0 is a uniform buffer at 0, a sampled image at 5 and a sampler at 8;
+// set 1, for the compute modules, a storage buffer at 0. The whole module
+// declares set 0 whole and reads 5 and 8; the others are what Metal
+// refuses (spudgpu_shader_module_desc, "Every binding of a set").
+#define SET_BINDINGS_SIZE 4u
+
+typedef struct set_bindings_run {
+	spudgpu_shader_pipeline pipeline;
+	spudgpu_descriptor_set set;
+	spudgpu_image texture, target;
+	spudgpu_image_view target_view;
+	spudgpu_buffer texel_upload, readback;
+	uint64_t texel_row_pitch, row_pitch;
+} set_bindings_run;
+
+static void record_set_bindings(spudgpu_command_list cmd, void *context) {
+	set_bindings_run *r = (set_bindings_run *)context;
+	spudgpu_cmd_image_barrier(cmd, r->texture, SPUDGPU_IMAGE_LAYOUT_UNDEFINED, SPUDGPU_IMAGE_LAYOUT_TRANSFER_DST);
+	spudgpu_image_buffer_copy_desc copy;
+	memset(&copy, 0, sizeof(copy));
+	copy.buffer_row_length = (uint32_t)(r->texel_row_pitch / 4);
+	copy.array_layer_count = 1;
+	copy.width             = 1;
+	copy.height            = 1;
+	copy.depth             = 1;
+	spudgpu_cmd_copy_buffer_to_image(cmd, r->texel_upload, r->texture, &copy);
+	spudgpu_cmd_image_barrier(cmd, r->texture, SPUDGPU_IMAGE_LAYOUT_TRANSFER_DST, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY);
+	spudgpu_cmd_image_barrier_view(cmd, r->target_view, SPUDGPU_IMAGE_LAYOUT_UNDEFINED, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+	spudgpu_rendering_begin_desc pass;
+	memset(&pass, 0, sizeof(pass));
+	pass.base.type                       = SPUD_STRUCT_TYPE_GPU_RENDERING_BEGIN_DESC;
+	pass.color_attachments[0].image_view = r->target_view;
+	pass.color_attachments[0].load_op    = SPUDGPU_LOAD_OP_CLEAR;
+	pass.color_attachments[0].store_op   = SPUDGPU_STORE_OP_STORE;
+	pass.color_attachment_count          = 1;
+	pass.width                           = SET_BINDINGS_SIZE;
+	pass.height                          = SET_BINDINGS_SIZE;
+	spudgpu_cmd_begin_rendering(cmd, &pass);
+	SPUDGPU_VIEWPORT viewport = {0.0f, 0.0f, (float)SET_BINDINGS_SIZE, (float)SET_BINDINGS_SIZE, 0.0f, 1.0f};
+	spudgpu_cmd_set_viewports(cmd, 0, 1, &viewport);
+	SPUDGPU_SCISSOR_RECT scissor = {0.0f, 0.0f, (float)SET_BINDINGS_SIZE, (float)SET_BINDINGS_SIZE};
+	spudgpu_cmd_set_scissor_rects(cmd, 0, 1, &scissor);
+	spudgpu_cmd_bind_pipeline(cmd, r->pipeline);
+	spudgpu_cmd_bind_descriptor_sets(cmd, r->pipeline, 0, &r->set, 1);
+	spudgpu_cmd_draw(cmd, 3, 0);
+	spudgpu_cmd_end_rendering(cmd);
+
+	spudgpu_cmd_image_barrier_view(cmd, r->target_view, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC);
+	memset(&copy, 0, sizeof(copy));
+	copy.buffer_row_length = (uint32_t)(r->row_pitch / 4);
+	copy.array_layer_count = 1;
+	copy.width             = SET_BINDINGS_SIZE;
+	copy.height            = SET_BINDINGS_SIZE;
+	copy.depth             = 1;
+	spudgpu_cmd_copy_image_to_buffer(cmd, r->target, r->readback, &copy);
+}
+
+// A graphics pipeline of [fragment] over the vertex module with the set's
+// layout, no vertex input and no depth. Returns what the create returned.
+static SPUDRESULT set_bindings_pipeline(spudgpu_device device, spudgpu_shader_module vertex, spudgpu_shader_module fragment,
+                                        spudgpu_descriptor_set_layout layout, spudgpu_shader_pipeline *out_pipeline) {
+	spudgpu_shader_pipeline_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type                   = SPUD_STRUCT_TYPE_GPU_SHADER_PIPELINE_DESC;
+	desc.vertex_module               = vertex;
+	desc.fragment_module             = fragment;
+	desc.primitive_topology          = SPUDGPU_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	desc.cull_mode                   = SPUDGPU_CULL_MODE_NONE;
+	desc.color_attachment_formats[0] = SPUDGPU_FORMAT_R8G8B8A8_UNORM;
+	desc.color_attachment_count      = 1;
+	desc.descriptor_set_layouts[0]   = layout;
+	desc.descriptor_set_layout_count = 1;
+	desc.debug_name                  = "set bindings";
+	*out_pipeline                    = NULL;
+	return spudgpu_create_shader_pipeline(device, &desc, out_pipeline);
+}
+
+// A compute pipeline of [module] with both layouts. Returns what the create
+// returned.
+static SPUDRESULT set_bindings_compute(spudgpu_device device, spudgpu_shader_module module, spudgpu_descriptor_set_layout layout,
+                                       spudgpu_descriptor_set_layout result_layout, spudgpu_compute_pipeline *out_pipeline) {
+	spudgpu_compute_pipeline_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type                   = SPUD_STRUCT_TYPE_GPU_COMPUTE_PIPELINE_DESC;
+	desc.compute_module              = module;
+	desc.descriptor_set_layouts[0]   = layout;
+	desc.descriptor_set_layouts[1]   = result_layout;
+	desc.descriptor_set_layout_count = 2;
+	desc.debug_name                  = "set bindings compute";
+	*out_pipeline                    = NULL;
+	return spudgpu_create_compute_pipeline(device, &desc, out_pipeline);
+}
+
+static void test_set_bindings(spudgpu_device device, spudgpu_command_queue queue, spudgpu_command_allocator allocator, spudgpu_command_list cmd) {
+	// Metal sees a module's bindings and refuses one that isn't its set's
+	// layout; Vulkan and D3D12 create every pipeline here.
+	const bool checked        = test_shader_format == SPUDGPU_SHADER_FORMAT_METALLIB;
+	const SPUDRESULT refused  = checked ? SPUDRESULT_GPU_SHADER_LAYOUT_MISMATCH : SPUD_SUCCESS;
+	set_bindings_run r;
+	memset(&r, 0, sizeof(r));
+
+	spudgpu_descriptor_set_layout_desc layout_desc;
+	memset(&layout_desc, 0, sizeof(layout_desc));
+	layout_desc.base.type = SPUD_STRUCT_TYPE_GPU_DESCRIPTOR_SET_LAYOUT_DESC;
+	const uint32_t bindings[3]              = {0, 5, 8};
+	const SPUDGPU_DESCRIPTOR_TYPE types[3] = {SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER, SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+	                                          SPUDGPU_DESCRIPTOR_TYPE_SAMPLER};
+	for (uint32_t i = 0; i < 3; ++i) {
+		layout_desc.bindings[i].binding         = bindings[i];
+		layout_desc.bindings[i].descriptor_type = types[i];
+		layout_desc.bindings[i].count           = 1;
+		layout_desc.bindings[i].stage_flags     = SPUDGPU_SHADER_STAGE_FRAGMENT | SPUDGPU_SHADER_STAGE_COMPUTE;
+	}
+	layout_desc.binding_count            = 3;
+	spudgpu_descriptor_set_layout layout = NULL;
+	CHECK(spudgpu_create_descriptor_set_layout(device, &layout_desc, &layout) == SPUD_SUCCESS);
+	memset(&layout_desc, 0, sizeof(layout_desc));
+	layout_desc.base.type                   = SPUD_STRUCT_TYPE_GPU_DESCRIPTOR_SET_LAYOUT_DESC;
+	layout_desc.bindings[0].descriptor_type = SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	layout_desc.bindings[0].count           = 1;
+	layout_desc.bindings[0].stage_flags     = SPUDGPU_SHADER_STAGE_COMPUTE;
+	layout_desc.binding_count               = 1;
+	spudgpu_descriptor_set_layout result_layout = NULL;
+	CHECK(spudgpu_create_descriptor_set_layout(device, &layout_desc, &result_layout) == SPUD_SUCCESS);
+
+	spudgpu_shader_module vertex = make_module(device, &spudgpu_test_bindings_vert, "bindings vertex");
+	const spudgpu_test_shader *fragments[5] = {&spudgpu_test_bindings_whole_frag, &spudgpu_test_bindings_part_frag, &spudgpu_test_bindings_extra_frag,
+	                                           &spudgpu_test_bindings_type_frag, &spudgpu_test_bindings_count_frag};
+	const spudgpu_test_shader *computes[5]  = {&spudgpu_test_bindings_whole_comp, &spudgpu_test_bindings_none_comp, &spudgpu_test_bindings_part_comp,
+                                              &spudgpu_test_bindings_extra_comp, &spudgpu_test_bindings_type_comp};
+	spudgpu_shader_module fragment_modules[5] = {NULL, NULL, NULL, NULL, NULL};
+	if (vertex && layout && result_layout) {
+		for (int i = 0; i < 5; ++i) {
+			fragment_modules[i]              = make_module(device, fragments[i], fragments[i]->entry_point);
+			spudgpu_shader_pipeline pipeline = NULL;
+			if (fragment_modules[i]) {
+				const SPUDRESULT sr = set_bindings_pipeline(device, vertex, fragment_modules[i], layout, &pipeline);
+				// The whole set made; part of it, a binding past it, one of
+				// another type and one of another count refused on Metal,
+				// leaving no pipeline.
+				CHECK(sr == (i == 0 ? SPUD_SUCCESS : refused));
+				CHECK((sr == SPUD_SUCCESS) == (pipeline != NULL));
+				if (i == 0)
+					r.pipeline = pipeline;
+				else
+					spudgpu_destroy_shader_pipeline(pipeline);
+			}
+		}
+		for (int i = 0; i < 5; ++i) {
+			spudgpu_shader_module module      = make_module(device, computes[i], computes[i]->entry_point);
+			spudgpu_compute_pipeline pipeline = NULL;
+			if (module) {
+				const SPUDRESULT sr = set_bindings_compute(device, module, layout, result_layout, &pipeline);
+				// The whole set, and none of set 0, made; the rest refused
+				// on Metal.
+				CHECK(sr == (i < 2 ? SPUD_SUCCESS : refused));
+				CHECK((sr == SPUD_SUCCESS) == (pipeline != NULL));
+			}
+			spudgpu_destroy_compute_pipeline(pipeline);
+			spudgpu_destroy_shader_module(module);
+		}
+	}
+
+	// The whole module's draw reads the image's texel, not another member
+	// of the argument buffer (the case that read wrong on Metal before).
+	spudgpu_descriptor_pool_desc pool_desc;
+	memset(&pool_desc, 0, sizeof(pool_desc));
+	pool_desc.base.type = SPUD_STRUCT_TYPE_GPU_DESCRIPTOR_POOL_DESC;
+	pool_desc.max_sets  = 1;
+	for (uint32_t i = 0; i < 3; ++i) {
+		pool_desc.pool_sizes[i].descriptor_type = types[i];
+		pool_desc.pool_sizes[i].count           = 1;
+	}
+	pool_desc.pool_size_count    = 3;
+	spudgpu_descriptor_pool pool = NULL;
+	CHECK(spudgpu_create_descriptor_pool(device, &pool_desc, &pool) == SPUD_SUCCESS);
+	if (pool && layout) {
+		spudgpu_descriptor_set_desc set_desc;
+		memset(&set_desc, 0, sizeof(set_desc));
+		set_desc.base.type      = SPUD_STRUCT_TYPE_GPU_DESCRIPTOR_SET_DESC;
+		set_desc.pool           = pool;
+		set_desc.set_layouts[0] = layout;
+		set_desc.set_count      = 1;
+		CHECK(spudgpu_create_descriptor_sets(device, &set_desc, &r.set) == SPUD_SUCCESS);
+	}
+	r.texture = make_image(device, NULL, SPUDGPU_IMAGE_USAGE_SAMPLED | SPUDGPU_IMAGE_USAGE_TRANSFER_DST, SPUDGPU_FORMAT_R8G8B8A8_UNORM, 1, 1,
+	                       "set bindings texture");
+	r.target  = make_image(device, NULL, SPUDGPU_IMAGE_USAGE_COLOR_ATTACHMENT | SPUDGPU_IMAGE_USAGE_TRANSFER_SRC, SPUDGPU_FORMAT_R8G8B8A8_UNORM,
+	                       SET_BINDINGS_SIZE, SET_BINDINGS_SIZE, "set bindings target");
+	spudgpu_image_view texture_view = make_image_view(r.texture, SPUDGPU_IMAGE_ASPECT_COLOR);
+	r.target_view                   = make_image_view(r.target, SPUDGPU_IMAGE_ASPECT_COLOR);
+	// The uniform buffer the module doesn't read, filled with what reading
+	// it in the image's place would show.
+	const float unread[4]  = {1.0f, 0.0f, 1.0f, 1.0f};
+	spudgpu_buffer uniform = make_buffer(device, SPUDGPU_MEMORY_KIND_UPLOAD, SPUDGPU_BUFFER_USAGE_UNIFORM, 256, NULL);
+	if (uniform) {
+		void *mapped = NULL;
+		CHECK(spudgpu_map_buffer(uniform, 0, 256, &mapped) == SPUD_SUCCESS);
+		if (mapped) {
+			memcpy(mapped, unread, sizeof(unread));
+			CHECK(spudgpu_flush_buffer(uniform, 0, sizeof(unread)) == SPUD_SUCCESS);
+			spudgpu_unmap_buffer(uniform);
+		}
+	}
+	spudgpu_sampler_desc sampler_desc;
+	memset(&sampler_desc, 0, sizeof(sampler_desc));
+	sampler_desc.base.type      = SPUD_STRUCT_TYPE_GPU_SAMPLER_DESC;
+	sampler_desc.mag_filter     = SPUDGPU_FILTER_NEAREST;
+	sampler_desc.min_filter     = SPUDGPU_FILTER_NEAREST;
+	sampler_desc.mipmap_filter  = SPUDGPU_FILTER_NEAREST;
+	sampler_desc.address_mode_u = SPUDGPU_ADDRESS_MODE_CLAMP_TO_EDGE;
+	sampler_desc.address_mode_v = SPUDGPU_ADDRESS_MODE_CLAMP_TO_EDGE;
+	sampler_desc.address_mode_w = SPUDGPU_ADDRESS_MODE_CLAMP_TO_EDGE;
+	sampler_desc.max_anisotropy = 1.0f;
+	sampler_desc.debug_name     = "set bindings sampler";
+	spudgpu_sampler sampler     = NULL;
+	CHECK(spudgpu_create_sampler(device, &sampler_desc, &sampler) == SPUD_SUCCESS);
+	uint64_t texel_total = 0;
+	spudgpu_get_image_buffer_copy_size(r.texture, 0, &r.texel_row_pitch, &texel_total);
+	uint8_t texels[512];
+	memset(texels, 0, sizeof(texels));
+	const uint8_t texel[4] = {64, 128, 192, 255};
+	memcpy(texels, texel, sizeof(texel));
+	if (texel_total >= sizeof(texel) && texel_total <= sizeof(texels))
+		r.texel_upload = make_buffer(device, SPUDGPU_MEMORY_KIND_UPLOAD, SPUDGPU_BUFFER_USAGE_TRANSFER_SRC, texel_total, texels);
+	uint64_t total = 0;
+	spudgpu_get_image_buffer_copy_size(r.target, 0, &r.row_pitch, &total);
+	r.readback = make_buffer(device, SPUDGPU_MEMORY_KIND_READBACK, SPUDGPU_BUFFER_USAGE_TRANSFER_DST, total, NULL);
+
+	if (r.set && uniform && texture_view && sampler) {
+		spudgpu_descriptor_buffer_info uniform_info = {uniform, 0, 256};
+		spudgpu_descriptor_image_info texture_info  = {texture_view, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY};
+		spudgpu_write_descriptor_set writes[3];
+		memset(writes, 0, sizeof(writes));
+		for (int i = 0; i < 3; ++i) {
+			writes[i].base.type        = SPUD_STRUCT_TYPE_GPU_WRITE_DESCRIPTOR_SET;
+			writes[i].dst_set          = r.set;
+			writes[i].dst_binding      = bindings[i];
+			writes[i].descriptor_count = 1;
+			writes[i].descriptor_type  = types[i];
+		}
+		writes[0].buffer_info = &uniform_info;
+		writes[1].image_info  = &texture_info;
+		writes[2].sampler     = sampler;
+		spudgpu_update_descriptor_sets(device, writes, 3);
+	}
+	const bool ready = r.pipeline && r.set && r.texel_upload && r.target_view && r.readback;
+	CHECK(ready);
+	if (ready) {
+		run_once(queue, allocator, cmd, record_set_bindings, &r);
+		void *mapped = NULL;
+		CHECK(spudgpu_map_buffer(r.readback, 0, total, &mapped) == SPUD_SUCCESS);
+		if (mapped) {
+			CHECK(spudgpu_invalidate_buffer(r.readback, 0, total) == SPUD_SUCCESS);
+			const uint8_t *pixels = (const uint8_t *)mapped;
+			CHECK(pixel_is(pixels, (uint32_t)r.row_pitch, 0, 0, 64, 128, 192, 255));
+			CHECK(pixel_is(pixels, (uint32_t)r.row_pitch, SET_BINDINGS_SIZE - 1, SET_BINDINGS_SIZE - 1, 64, 128, 192, 255));
+			printf("spudgpu_objects_test: the set's padded module read its image's texel\n");
+			spudgpu_unmap_buffer(r.readback);
+		}
+	}
+
+	spudgpu_destroy_buffer(r.readback);
+	spudgpu_destroy_buffer(r.texel_upload);
+	spudgpu_destroy_sampler(sampler);
+	spudgpu_destroy_buffer(uniform);
+	spudgpu_destroy_image_view(r.target_view);
+	spudgpu_destroy_image_view(texture_view);
+	spudgpu_destroy_image(r.target);
+	spudgpu_destroy_image(r.texture);
+	spudgpu_destroy_descriptor_pool(pool);
+	spudgpu_destroy_shader_pipeline(r.pipeline);
+	for (int i = 0; i < 5; ++i)
+		spudgpu_destroy_shader_module(fragment_modules[i]);
+	spudgpu_destroy_shader_module(vertex);
+	spudgpu_destroy_descriptor_set_layout(result_layout);
+	spudgpu_destroy_descriptor_set_layout(layout);
+}
+
 // A device with the features the frame can use that [adapter] has, and the
 // frame and the compute shader on it.
 static void test_drawing(spudgpu_adapter adapter, SPUDGPU_FEATURES supported) {
@@ -1468,6 +1750,7 @@ static void test_drawing(spudgpu_adapter adapter, SPUDGPU_FEATURES supported) {
 	if (queue && cmd) {
 		test_draw_frame(device, queue, allocator, cmd);
 		test_compute(device, queue, allocator, cmd);
+		test_set_bindings(device, queue, allocator, cmd);
 	}
 	spudgpu_destroy_command_list(cmd);
 	spudgpu_destroy_command_allocator(allocator);

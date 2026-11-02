@@ -1,4 +1,4 @@
-// The tests' shaders, as cmake/spud_slang.cmake builds them from
+// The tests' shaders, as cmake/spud_shaders.cmake builds them from
 // tests/shaders/*.slang: SPIR-V on every platform, DXIL where the build
 // made it (SPUDLIB_TEST_SHADERS_DXIL), a .metallib where it made one
 // (SPUDLIB_TEST_SHADERS_METALLIB). A test hands a module the format its
@@ -19,6 +19,17 @@
 #include "spudgpu_test_rq_shadow_vert.spv.inc"
 #include "spudgpu_test_rq_instances_row64.spv.inc"
 #include "spudgpu_test_rq_instances_col72.spv.inc"
+#include "spudgpu_test_bindings_vert.spv.inc"
+#include "spudgpu_test_bindings_whole_frag.spv.inc"
+#include "spudgpu_test_bindings_part_frag.spv.inc"
+#include "spudgpu_test_bindings_extra_frag.spv.inc"
+#include "spudgpu_test_bindings_type_frag.spv.inc"
+#include "spudgpu_test_bindings_count_frag.spv.inc"
+#include "spudgpu_test_bindings_whole_comp.spv.inc"
+#include "spudgpu_test_bindings_part_comp.spv.inc"
+#include "spudgpu_test_bindings_extra_comp.spv.inc"
+#include "spudgpu_test_bindings_type_comp.spv.inc"
+#include "spudgpu_test_bindings_none_comp.spv.inc"
 #if SPUDLIB_TEST_SHADERS_DXIL
 #include "spudgpu_test_objects_draw_vert.dxil.inc"
 #include "spudgpu_test_objects_draw_frag.dxil.inc"
@@ -29,6 +40,17 @@
 #include "spudgpu_test_rq_shadow_vert.dxil.inc"
 #include "spudgpu_test_rq_instances_row64.dxil.inc"
 #include "spudgpu_test_rq_instances_col72.dxil.inc"
+#include "spudgpu_test_bindings_vert.dxil.inc"
+#include "spudgpu_test_bindings_whole_frag.dxil.inc"
+#include "spudgpu_test_bindings_part_frag.dxil.inc"
+#include "spudgpu_test_bindings_extra_frag.dxil.inc"
+#include "spudgpu_test_bindings_type_frag.dxil.inc"
+#include "spudgpu_test_bindings_count_frag.dxil.inc"
+#include "spudgpu_test_bindings_whole_comp.dxil.inc"
+#include "spudgpu_test_bindings_part_comp.dxil.inc"
+#include "spudgpu_test_bindings_extra_comp.dxil.inc"
+#include "spudgpu_test_bindings_type_comp.dxil.inc"
+#include "spudgpu_test_bindings_none_comp.dxil.inc"
 #define SPUDGPU_TEST_DXIL(name) name##_dxil, name##_dxil_size
 #else
 #define SPUDGPU_TEST_DXIL(name) NULL, 0
@@ -43,6 +65,17 @@
 #include "spudgpu_test_rq_shadow_vert.metallib.inc"
 #include "spudgpu_test_rq_instances_row64.metallib.inc"
 #include "spudgpu_test_rq_instances_col72.metallib.inc"
+#include "spudgpu_test_bindings_vert.metallib.inc"
+#include "spudgpu_test_bindings_whole_frag.metallib.inc"
+#include "spudgpu_test_bindings_part_frag.metallib.inc"
+#include "spudgpu_test_bindings_extra_frag.metallib.inc"
+#include "spudgpu_test_bindings_type_frag.metallib.inc"
+#include "spudgpu_test_bindings_count_frag.metallib.inc"
+#include "spudgpu_test_bindings_whole_comp.metallib.inc"
+#include "spudgpu_test_bindings_part_comp.metallib.inc"
+#include "spudgpu_test_bindings_extra_comp.metallib.inc"
+#include "spudgpu_test_bindings_type_comp.metallib.inc"
+#include "spudgpu_test_bindings_none_comp.metallib.inc"
 #define SPUDGPU_TEST_METALLIB(name) name##_metallib, name##_metallib_size
 #else
 #define SPUDGPU_TEST_METALLIB(name) NULL, 0
@@ -83,6 +116,29 @@ static const spudgpu_test_shader spudgpu_test_rq_instances_row64 =
     SPUDGPU_TEST_SHADER(spudgpu_test_rq_instances_row64, "rq_instances_row64", SPUDGPU_SHADER_STAGE_COMPUTE, 64, 1, 1);
 static const spudgpu_test_shader spudgpu_test_rq_instances_col72 =
     SPUDGPU_TEST_SHADER(spudgpu_test_rq_instances_col72, "rq_instances_col72", SPUDGPU_SHADER_STAGE_COMPUTE, 64, 1, 1);
+// Every binding of a set (card S27): spudgpu_objects_test's test_set_bindings.
+static const spudgpu_test_shader spudgpu_test_bindings_vert =
+    SPUDGPU_TEST_SHADER(spudgpu_test_bindings_vert, "bindings_vert", SPUDGPU_SHADER_STAGE_VERTEX, 0, 0, 0);
+static const spudgpu_test_shader spudgpu_test_bindings_whole_frag =
+    SPUDGPU_TEST_SHADER(spudgpu_test_bindings_whole_frag, "bindings_whole_frag", SPUDGPU_SHADER_STAGE_FRAGMENT, 0, 0, 0);
+static const spudgpu_test_shader spudgpu_test_bindings_part_frag =
+    SPUDGPU_TEST_SHADER(spudgpu_test_bindings_part_frag, "bindings_part_frag", SPUDGPU_SHADER_STAGE_FRAGMENT, 0, 0, 0);
+static const spudgpu_test_shader spudgpu_test_bindings_extra_frag =
+    SPUDGPU_TEST_SHADER(spudgpu_test_bindings_extra_frag, "bindings_extra_frag", SPUDGPU_SHADER_STAGE_FRAGMENT, 0, 0, 0);
+static const spudgpu_test_shader spudgpu_test_bindings_type_frag =
+    SPUDGPU_TEST_SHADER(spudgpu_test_bindings_type_frag, "bindings_type_frag", SPUDGPU_SHADER_STAGE_FRAGMENT, 0, 0, 0);
+static const spudgpu_test_shader spudgpu_test_bindings_count_frag =
+    SPUDGPU_TEST_SHADER(spudgpu_test_bindings_count_frag, "bindings_count_frag", SPUDGPU_SHADER_STAGE_FRAGMENT, 0, 0, 0);
+static const spudgpu_test_shader spudgpu_test_bindings_whole_comp =
+    SPUDGPU_TEST_SHADER(spudgpu_test_bindings_whole_comp, "bindings_whole_comp", SPUDGPU_SHADER_STAGE_COMPUTE, 1, 1, 1);
+static const spudgpu_test_shader spudgpu_test_bindings_part_comp =
+    SPUDGPU_TEST_SHADER(spudgpu_test_bindings_part_comp, "bindings_part_comp", SPUDGPU_SHADER_STAGE_COMPUTE, 1, 1, 1);
+static const spudgpu_test_shader spudgpu_test_bindings_extra_comp =
+    SPUDGPU_TEST_SHADER(spudgpu_test_bindings_extra_comp, "bindings_extra_comp", SPUDGPU_SHADER_STAGE_COMPUTE, 1, 1, 1);
+static const spudgpu_test_shader spudgpu_test_bindings_type_comp =
+    SPUDGPU_TEST_SHADER(spudgpu_test_bindings_type_comp, "bindings_type_comp", SPUDGPU_SHADER_STAGE_COMPUTE, 1, 1, 1);
+static const spudgpu_test_shader spudgpu_test_bindings_none_comp =
+    SPUDGPU_TEST_SHADER(spudgpu_test_bindings_none_comp, "bindings_none_comp", SPUDGPU_SHADER_STAGE_COMPUTE, 1, 1, 1);
 
 // [shader]'s module desc in [format] (one of the adapter's shader_formats),
 // with [debug_name]. code is NULL when the build made no code in [format].

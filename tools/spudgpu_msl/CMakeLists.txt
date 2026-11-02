@@ -1,7 +1,7 @@
-# spudgpu_msl on its own, for the build machine: what spudlib's CMakeLists.txt
-# builds through ExternalProject when it is cross-compiling (an iOS build),
-# where its own targets are the target platform's and can't run here. A
-# native build makes the same tool as a target of spudlib's instead.
+# spudgpu_msl on its own, for the build machine: what cmake/spud_shaders.cmake
+# builds through ExternalProject wherever a shader step runs it, in a native
+# and a cross-compiling build alike (card X18), so its SPIRV-Cross is never a
+# target of the build that runs it.
 #
 # SPUDGPU_MSL_SPIRV_CROSS_DIR names a SPIRV-Cross checkout (the workspace's
 # vendored one); without it, SPIRV-Cross is fetched at SPUDGPU_MSL_SPIRV_CROSS_TAG.

@@ -1006,7 +1006,8 @@ since 2026-10-17, then card S27: Slang keeps only the bindings an entry
 point reads, and the argument buffer the backend writes from a set's
 layout doesn't match a module's that leaves bindings out. Decided
 2026-11-01 (a): the build pads, Metal refuses a mismatch; draft
-`spudgpu_shaderbindings_draft.h`, approved the same day, not built.
+`spudgpu_shaderbindings_draft.h`, approved the same day, built the same
+evening on the Mac (Known gaps below, `SPUDGPU_DEVICE_TODO.md`).
 
 - **Vulkan** — reference backend, plain C23, complete. Build against this first;
   D3D12 and Metal follow its shape.
@@ -1048,6 +1049,16 @@ layout doesn't match a module's that leaves bindings out. Decided
   branch), so a clone of spudlib alone still builds. eqstd's own tests are
   built only when it is the top-level project. Moving the pin: change the
   hash in the call, with the code that needs the newer eqstd.
+- **The shader step is `cmake/spud_shaders.cmake`, written once for every
+  caller** (card X18, built 2026-11-01): `spud_add_shader()` makes SPIR-V,
+  Slang's reflection, DXIL on Windows, and Metal source and a .metallib
+  where a .metallib is made (elsewhere Metal source only under
+  `SPUD_SHADERS_CHECK_METAL`). `SPUD_SHADERS_CMAKE` names it for a
+  caller's build, which wraps it and never copies it. `tools/spudgpu_msl` is a program of its own for the
+  build machine (ExternalProject, or `SPUDGPU_MSL_EXECUTABLE`), never a
+  target here and never in the library. Anything the file decides is read
+  inside the function, not from a variable it set: it is read once, in the
+  first directory that includes it.
 - `GRAPHICS_BACKEND` is a single-choice CMake cache variable (`Vulkan` / `D3D12` /
   `Metal`) — there is no multi-backend build. The source list is assembled per-platform
   and per-backend *before* `add_library`, so only one backend's translation units ever
@@ -1237,8 +1248,12 @@ layout doesn't match a module's that leaves bindings out. Decided
     Slang's reflection (`spudgpu_msl` on SPIRV-Cross's C++ API,
     `pad_argument_buffer_resources`), and Metal's pipeline creation refuses
     a module that differs (`SPUDRESULT_GPU_SHADER_LAYOUT_MISMATCH`). Draft
-    `spudgpu_shaderbindings_draft.h`, approved 2026-11-01; not built
-    (`SPUDGPU_DEVICE_TODO.md`).
+    `spudgpu_shaderbindings_draft.h`, approved 2026-11-01; built the same
+    day on the Mac, with the one shader step (`cmake/spud_shaders.cmake`,
+    card X18), the padding `tools/spudgpu_msl`'s own from Slang's
+    reflection (SPIRV-Cross's can't make this layout), Metal's check of
+    what it can see (each set's ids and their Metal kinds and counts);
+    Windows and Linux not built (`SPUDGPU_DEVICE_TODO.md`).
   - D3D12's `spudgpu_cmd_begin_rendering` returned early without a colour
     attachment until 2026-10-17, so a depth-only pass rendered on Vulkan
     and Metal only. It now begins a pass of a depth attachment alone;

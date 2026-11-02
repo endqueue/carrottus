@@ -553,10 +553,36 @@ typedef struct spudgpu_sampler_t {
 	spudgpu_device_metal *_parent_device;
 } spudgpu_sampler_metal;
 
+// A run of a set's argument buffer: the [[id]]s first_id to first_id +
+// count - 1, each a member of Metal's kind data_type (an MTLDataType: a
+// texture, a sampler, a pointer for a buffer, an acceleration structure).
+// A set layout keeps its own (_ranges) and a pipeline reads a module's from
+// Metal's reflection; the two are compared to refuse a module whose
+// argument buffer isn't its layout's (spudgpu_shader_module_desc, "Every
+// binding of a set").
+typedef struct spudgpumetal_set_range {
+	uint32_t first_id;
+	uint32_t count;
+	uint32_t data_type;
+} spudgpumetal_set_range;
+
+// The most runs a set holds: each binding one, a combined image sampler's
+// samplers another.
+#define SPUDGPU_METAL_MAX_SET_RANGES (2 * SPUDGPU_MAX_DESCRIPTOR_BINDINGS_PER_SET)
+
+// Sorts [ranges] by first id and joins each run to the one after it where
+// that one starts at its end with the same kind: one array member of n and
+// n members of one are the same argument buffer. Returns the count left.
+uint32_t spudgpumetal___set_ranges_normalize(spudgpumetal_set_range *ranges, uint32_t count);
+
 typedef struct spudgpu_descriptor_set_layout_t {
 	spud_object_head head;
 	spudgpu_device_metal *_parent_device;
 	spudgpu_descriptor_set_layout_desc _desc;
+	// The argument buffer _argument_encoder_mtl writes, as runs of ids,
+	// normalized (spudgpumetal___set_ranges_normalize).
+	spudgpumetal_set_range _ranges[SPUDGPU_METAL_MAX_SET_RANGES];
+	uint32_t _range_count;
 	// Metal has no VkDescriptorSetLayout-equivalent schema object independent
 	// of a concrete backing buffer - the schema lives entirely in this
 	// MTLArgumentEncoder, built once here from the binding list and reused

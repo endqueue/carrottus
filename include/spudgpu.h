@@ -4824,6 +4824,17 @@ typedef struct spudgpu_blend_attachment_desc {
  * `[[vk::binding(b, s)]]` with `register(<class><b>, space<s>)`); SPIR-V
  * cross-compiled with SPIRV-Cross under these remaps gives the third.
  *
+ * **Every binding of a set.** A module that reads any binding of set @c s
+ * declares every binding of set @c s's layout, each with the layout's
+ * descriptor type and count, and no other binding in that set, whether or
+ * not its entry point reads them. Metal needs it: a set's argument buffer
+ * is written from the whole layout, and a module's argument buffer struct
+ * is laid out from what the module declares, so a module that leaves one
+ * out reads the wrong members. Vulkan and D3D12 don't need it, and their
+ * backends don't check it; a module kept to it runs on all three. Metal's
+ * backend checks it when a pipeline is created
+ * (SPUDRESULT_GPU_SHADER_LAYOUT_MISMATCH).
+ *
  * **Clip space** is +Y up on every backend: a vertex or mesh shader's
  * position (x, y) = (-1, +1) is the viewport's top left. The Vulkan backend
  * keeps it by viewport (spudgpu_cmd_set_viewports()); no backend changes a
@@ -5226,6 +5237,12 @@ typedef struct spudgpu_shader_pipeline_desc {
  * @retval SPUDRESULT_GPU_INDEPENDENT_BLEND_NOT_SUPPORTED Two of the first
  *         `desc->color_attachment_count` blend attachments differ and the
  *         device wasn't created with SPUDGPU_FEATURE_INDEPENDENT_BLEND.
+ * @retval SPUDRESULT_GPU_SHADER_LAYOUT_MISMATCH On Metal, a module's
+ *         argument buffer for a set it reads isn't that set's layout
+ *         (spudgpu_shader_module_desc, "Every binding of a set"): a binding
+ *         of the layout left out, one it doesn't hold, or one of another
+ *         type or count. Checked for each stage's module and each of its
+ *         sets. Not returned by Vulkan or D3D12.
  * @return Another SPUDRESULT if the backend fails, such as
  *         SPUDRESULT_OUT_OF_MEMORY or SPUDRESULT_API_SPECIFIC_FAILURE.
  *
@@ -6716,6 +6733,12 @@ typedef struct spudgpu_compute_pipeline_desc {
  * @retval SPUDRESULT_NULL_OUTPUT_PARAMETER `out_pipeline` is NULL.
  * @retval SPUDRESULT_GPU_INVALID_COMPUTE_MODULE `desc->compute_module` is
  *         NULL.
+ * @retval SPUDRESULT_GPU_SHADER_LAYOUT_MISMATCH On Metal, the module's
+ *         argument buffer for a set it reads isn't that set's layout
+ *         (spudgpu_shader_module_desc, "Every binding of a set"): a binding
+ *         of the layout left out, one it doesn't hold, or one of another
+ *         type or count. Checked for each of its sets. Not returned by
+ *         Vulkan or D3D12.
  * @return Another SPUDRESULT if the backend fails, such as
  *         SPUDRESULT_OUT_OF_MEMORY or SPUDRESULT_API_SPECIFIC_FAILURE.
  *

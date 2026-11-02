@@ -1255,9 +1255,67 @@ this reason: a change of their signatures, not made.
     set (`pad_argument_buffer_resources` needs each binding's base type,
     which the C API's `spvc_msl_resource_binding_2` lacks); the step's
     arguments don't change. `spudgpu_shaderbindings_draft.h` approved
-    2026-11-01 by the user, as written. Not built. Slang's `-preserve-params`
+    2026-11-01 by the user, as written. Slang's `-preserve-params`
     is reported to Slang either way (`../claude_made_decisions.md`,
     2026-11-01).
+  - **Built 2026-11-01 on the Mac (X1c, X18's first step, S27; Apple M5
+    Pro, macOS 27.0.1, Xcode 27.2, Slang 2026.18.3-2):**
+    - `cmake/spud_shaders.cmake`, `spud_add_shader()`, in place of
+      `cmake/spud_slang.cmake`: SPIR-V 1.5 checked by `spirv-val`, Slang's
+      `-reflection-json` beside it, DXIL with DXC's validator on Windows,
+      Metal source (both routes) only where a .metallib is made or under
+      `SPUD_SHADERS_CHECK_METAL` (off by default), the .metallib for the
+      build's SDK and deployment target on Apple platforms. It sets
+      `<name>_FORMATS` for a caller's wrapper. spudlib names it in `SPUD_SHADERS_CMAKE` for a caller's
+      build. Its switches are read inside the function (APPLE, the cached
+      option): the file is read once, in whichever directory includes it
+      first, and a plain variable set there isn't seen from the others
+      (found when a caller's Metal sources weren't made).
+    - `tools/spudgpu_msl` is always its own program, built for the build
+      machine through ExternalProject (`spudgpu_msl_build`, Release), an
+      imported executable `spudgpu_msl` the steps run, or the one
+      `SPUDGPU_MSL_EXECUTABLE` names. The two copies of SPIRV-Cross's
+      options in `CMakeLists.txt` are gone; no SPIRV-Cross target is in a
+      caller's build.
+    - The padding is the tool's own, not SPIRV-Cross's
+      `pad_argument_buffer_resources`, which can't make this layout: it
+      walks argument buffer ids from 0 up and throws at a gap (a combined
+      image sampler's sampler at 1024 + b, any sparse layout such as the
+      test's 0, 5, 8), and adds nothing past the last member a module
+      declares. `spudgpu_msl` reads the reflection (`--reflection`, a
+      bounded JSON reader of its own) and writes, into each set's argument
+      buffer struct SPIRV-Cross wrote, a member at each binding's id that
+      SPIRV-Cross left out, of the binding's Metal kind and count; a set
+      the module reads none of stays out. It stays on SPIRV-Cross's C API,
+      which is all this needs (`../claude_made_decisions.md`). The
+      header's sentence naming `pad_argument_buffer_resources` was left
+      out of `spudgpu.h` and carded (S30), the draft unedited.
+    - `SPUDRESULT_GPU_SHADER_LAYOUT_MISMATCH` (331) and the module desc's
+      "Every binding of a set" in `spudgpu.h`, the two creates' result
+      lines. Metal's pipeline creation asks for buffer type information
+      and compares each stage's argument buffer struct, for each set it
+      reads, with the set's layout as runs of ids of one Metal kind
+      (texture, sampler, buffer, acceleration structure; one array member
+      of n and n members are the same buffer), kept on the layout when it
+      is made (`_ranges`). Metal can't tell a uniform from a storage
+      buffer or a sampled from a storage image in a struct, nor a texture's
+      type: the check is of what it can see. A mismatch is the code
+      alone, with no message: SpudLib writes none (`CLAUDE.md`,
+      "Errors"; card S10's callback carries the platform's errors, not
+      this).
+    - Tests: `spudgpu_objects_test`'s `test_set_bindings`, a set of a
+      uniform buffer at 0, a sampled image at 5 and a sampler at 8 (and a
+      storage buffer set for compute): the whole module made and its draw
+      reading the image's texel; on Metal the set declared in part, a
+      binding at 9 it lacks, 5 a buffer, and 5 an array of 2 refused, and
+      the compute pipeline's three refusals; a compute module reading only
+      set 1 made. Vulkan and D3D12 make every one (written, not run).
+    - Ran: 15 ctests on `macos-metal` in Debug and Release under Metal API
+      and shader validation with warnings fatal, `-asan` and `-tsan`;
+      `spud_misuse_tests` ten times (217 calls with a destroyed handle, no
+      failure; the generator found no new call); `spud_noalloc_tests` none
+      of ours; `iossimulator-metal` built. `abi.txt`: one addition (331),
+      no break. Windows and Linux not built.
 - **Specialization constants. Decided 2026-10-28 with the user (card
   A9):** a pipeline desc takes (constant id, value) pairs for its shader
   modules: Vulkan's `VkSpecializationInfo`; Metal's function constants;

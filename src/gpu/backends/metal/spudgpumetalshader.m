@@ -57,6 +57,74 @@ static uint32_t spudgpumetal___internal_set_mask(NSArray<id<MTLBinding>> *bindin
 	return mask;
 }
 
+// The runs of a function's argument buffer for one set, [type] from a
+// pipeline's reflection, into [ranges] (SPUDGPU_METAL_MAX_SET_RANGES of
+// them), normalized. Returns the count, or UINT32_MAX for one with more
+// members than a set holds or a member no layout makes (a struct, a
+// scalar), which no layout matches.
+static uint32_t spudgpumetal___internal_module_ranges(MTLStructType *type, spudgpumetal_set_range *ranges) {
+	uint32_t count = 0;
+	for (MTLStructMember *member in type.members) {
+		if (count == SPUDGPU_METAL_MAX_SET_RANGES)
+			return UINT32_MAX;
+		MTLDataType data_type = member.dataType;
+		uint64_t length       = 1;
+		if (data_type == MTLDataTypeArray) {
+			data_type = member.arrayType.elementType;
+			length    = member.arrayType.arrayLength;
+		}
+		switch (data_type) {
+		case MTLDataTypeTexture:
+		case MTLDataTypeSampler:
+		case MTLDataTypePointer:
+		case MTLDataTypeInstanceAccelerationStructure:
+			break;
+		default:
+			return UINT32_MAX;
+		}
+		if (length == 0 || length > UINT32_MAX || member.argumentIndex > UINT32_MAX)
+			return UINT32_MAX;
+		ranges[count].first_id  = (uint32_t)member.argumentIndex;
+		ranges[count].count     = (uint32_t)length;
+		ranges[count].data_type = (uint32_t)data_type;
+		++count;
+	}
+	return spudgpumetal___set_ranges_normalize(ranges, count);
+}
+
+// Whether every set a function reads - [bindings], its bindings in a
+// pipeline's reflection - has the argument buffer of the pipeline's layout
+// at that set ([layouts], [layout_count] of them): every binding of the
+// layout, of its kind and count, and no other (spudgpu_shader_module_desc,
+// "Every binding of a set"). A set the function reads with no layout there
+// matches nothing.
+static bool spudgpumetal___internal_sets_match(NSArray<id<MTLBinding>> *bindings, void *const *layouts, uint32_t layout_count) {
+	for (id<MTLBinding> binding in bindings) {
+		if (binding.type != MTLBindingTypeBuffer || !binding.used)
+			continue;
+		const NSUInteger index = binding.index;
+		if (index < SPUDGPU_METAL_DESCRIPTOR_SET_BUFFER_INDEX_BASE ||
+		    index >= SPUDGPU_METAL_DESCRIPTOR_SET_BUFFER_INDEX_BASE + SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS)
+			continue;
+		const uint32_t set                                 = (uint32_t)(index - SPUDGPU_METAL_DESCRIPTOR_SET_BUFFER_INDEX_BASE);
+		const spudgpu_descriptor_set_layout_metal *layout = set < layout_count ? (const spudgpu_descriptor_set_layout_metal *)layouts[set] : NULL;
+		if (!layout)
+			return false;
+		id<MTLBufferBinding> buffer = (id<MTLBufferBinding>)binding;
+		if (buffer.bufferDataType != MTLDataTypeStruct || !buffer.bufferStructType)
+			return false;
+		spudgpumetal_set_range ranges[SPUDGPU_METAL_MAX_SET_RANGES];
+		const uint32_t count = spudgpumetal___internal_module_ranges(buffer.bufferStructType, ranges);
+		if (count != layout->_range_count)
+			return false;
+		for (uint32_t i = 0; i < count; ++i)
+			if (ranges[i].first_id != layout->_ranges[i].first_id || ranges[i].count != layout->_ranges[i].count ||
+			    ranges[i].data_type != layout->_ranges[i].data_type)
+				return false;
+	}
+	return true;
+}
+
 // -----------------------------------------------------------------------
 // Shader modules
 // -----------------------------------------------------------------------
@@ -338,7 +406,7 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 		MTLRenderPipelineReflection *reflection = nil;
 		pipeline_metal->_render_pipeline_state_mtl = [device_metal->_device_mtl
 		    newRenderPipelineStateWithMeshDescriptor:pipeline_desc
-		                                      options:MTLPipelineOptionBindingInfo
+		                                      options:MTLPipelineOptionBindingInfo | MTLPipelineOptionBufferTypeInfo
 		                                   reflection:&reflection
 		                                        error:&pipeline_error];
 		// Autoreleased: read now, before anything can release it.
@@ -354,19 +422,27 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 			sr = SPUDRESULT_GPU_INVALID_SHADER_CODE;
 			goto failedattempt;
 		}
+		if (!reflection) {
+			sr = SPUDRESULT_API_SPECIFIC_FAILURE;
+			goto failedattempt;
+		}
+		if (!spudgpumetal___internal_sets_match(reflection.objectBindings, desc->descriptor_set_layouts, desc->descriptor_set_layout_count) ||
+		    !spudgpumetal___internal_sets_match(reflection.meshBindings, desc->descriptor_set_layouts, desc->descriptor_set_layout_count) ||
+		    !spudgpumetal___internal_sets_match(reflection.fragmentBindings, desc->descriptor_set_layouts, desc->descriptor_set_layout_count)) {
+			sr = SPUDRESULT_GPU_SHADER_LAYOUT_MISMATCH;
+			goto failedattempt;
+		}
 
 		pipeline_metal->_is_mesh_pipeline    = true;
 		pipeline_metal->_mesh_local_size_x   = mesh_module_metal->_workgroup_size_x;
 		pipeline_metal->_mesh_local_size_y   = mesh_module_metal->_workgroup_size_y;
 		pipeline_metal->_mesh_local_size_z   = mesh_module_metal->_workgroup_size_z;
 	} else {
-		// descriptor_set_layouts is intentionally unconsumed here: unlike
-		// Vulkan's VkPipelineLayout or D3D12's ID3D12RootSignature, building
-		// an MTLRenderPipelineState needs no resource-layout object at all -
-		// the (set, binding) -> flat-argument-index scheme lives entirely in
-		// the already-cross-compiled MSL source (SPIRV-Cross's own default
-		// assignment, for now - see spudgpumetaldescriptors.m, which will
-		// need to agree with whatever scheme is used once it's implemented).
+		// Unlike Vulkan's VkPipelineLayout or D3D12's ID3D12RootSignature,
+		// an MTLRenderPipelineState needs no resource-layout object: each
+		// set's argument buffer layout is the module's, in the binding layout
+		// spudgpu.h states. descriptor_set_layouts are read only to check
+		// the modules' argument buffers against them, once the state exists.
 		MTLVertexDescriptor *vertex_desc = [MTLVertexDescriptor vertexDescriptor];
 		for (uint32_t i = 0; i < desc->vertex_attribute_count; i++) {
 			const spudgpu_vertex_attribute_desc *a = &desc->vertex_attributes[i];
@@ -406,7 +482,7 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 		MTLRenderPipelineReflection *reflection     = nil;
 		pipeline_metal->_render_pipeline_state_mtl  = [device_metal->_device_mtl
 		    newRenderPipelineStateWithDescriptor:pipeline_desc
-		                                 options:MTLPipelineOptionBindingInfo
+		                                 options:MTLPipelineOptionBindingInfo | MTLPipelineOptionBufferTypeInfo
 		                              reflection:&reflection
 		                                    error:&pipeline_error];
 		pipeline_metal->_non_fragment_set_mask = reflection ? spudgpumetal___internal_set_mask(reflection.vertexBindings) : 0xffffffffu;
@@ -417,6 +493,15 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 			    "spudgpu: MTLRenderPipelineState creation failed: %s\n",
 			    pipeline_error ? pipeline_error.localizedDescription.UTF8String : "(unknown)");
 			sr = SPUDRESULT_GPU_INVALID_SHADER_CODE;
+			goto failedattempt;
+		}
+		if (!reflection) {
+			sr = SPUDRESULT_API_SPECIFIC_FAILURE;
+			goto failedattempt;
+		}
+		if (!spudgpumetal___internal_sets_match(reflection.vertexBindings, desc->descriptor_set_layouts, desc->descriptor_set_layout_count) ||
+		    !spudgpumetal___internal_sets_match(reflection.fragmentBindings, desc->descriptor_set_layouts, desc->descriptor_set_layout_count)) {
+			sr = SPUDRESULT_GPU_SHADER_LAYOUT_MISMATCH;
 			goto failedattempt;
 		}
 	}
@@ -525,18 +610,30 @@ SPUDRESULT spudgpu_create_compute_pipeline(
 	pipeline_metal->_local_size_z  = compute_module_metal->_workgroup_size_z;
 
 	{
-		// Same reasoning as spudgpu_create_shader_pipeline above -
-		// descriptor_set_layouts needs no consumption here either; a
-		// MTLComputePipelineState needs no resource-layout object.
-		NSError *pipeline_error = nil;
+		// Same reasoning as spudgpu_create_shader_pipeline above - a
+		// MTLComputePipelineState needs no resource-layout object; the
+		// descriptor_set_layouts are read only to check the module's
+		// argument buffers against them.
+		NSError *pipeline_error                  = nil;
+		MTLComputePipelineReflection *reflection = nil;
 		pipeline_metal->_compute_pipeline_state_mtl =
 		    [device_metal->_device_mtl newComputePipelineStateWithFunction:compute_module_metal->_function_mtl
+		                                                            options:MTLPipelineOptionBindingInfo | MTLPipelineOptionBufferTypeInfo
+		                                                         reflection:&reflection
 		                                                              error:&pipeline_error];
 		if (!pipeline_metal->_compute_pipeline_state_mtl) {
 			printf(
 			    "spudgpu: MTLComputePipelineState creation failed: %s\n",
 			    pipeline_error ? pipeline_error.localizedDescription.UTF8String : "(unknown)");
 			sr = SPUDRESULT_GPU_INVALID_SHADER_CODE;
+			goto failedattempt;
+		}
+		if (!reflection) {
+			sr = SPUDRESULT_API_SPECIFIC_FAILURE;
+			goto failedattempt;
+		}
+		if (!spudgpumetal___internal_sets_match(reflection.bindings, desc->descriptor_set_layouts, desc->descriptor_set_layout_count)) {
+			sr = SPUDRESULT_GPU_SHADER_LAYOUT_MISMATCH;
 			goto failedattempt;
 		}
 	}

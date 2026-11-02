@@ -144,6 +144,24 @@ static MTLBindingAccess spudgpumetal___internal_descriptor_argument_access(SPUDG
 	}
 }
 
+uint32_t spudgpumetal___set_ranges_normalize(spudgpumetal_set_range *ranges, uint32_t count) {
+	for (uint32_t i = 1; i < count; ++i)
+		for (uint32_t j = i; j > 0 && ranges[j - 1].first_id > ranges[j].first_id; --j) {
+			const spudgpumetal_set_range swap = ranges[j];
+			ranges[j]                         = ranges[j - 1];
+			ranges[j - 1]                     = swap;
+		}
+	uint32_t joined = 0;
+	for (uint32_t i = 0; i < count; ++i) {
+		spudgpumetal_set_range *last = joined ? &ranges[joined - 1] : NULL;
+		if (last && last->data_type == ranges[i].data_type && (uint64_t)last->first_id + last->count == ranges[i].first_id)
+			last->count += ranges[i].count;
+		else
+			ranges[joined++] = ranges[i];
+	}
+	return joined;
+}
+
 SPUDRESULT spudgpu_create_descriptor_set_layout(
     spudgpu_device device,
     const spudgpu_descriptor_set_layout_desc *desc,
@@ -207,6 +225,11 @@ SPUDRESULT spudgpu_create_descriptor_set_layout(
 				goto failedattempt;
 			}
 
+			spudgpumetal_set_range *range = &layout_metal->_ranges[layout_metal->_range_count++];
+			range->first_id               = b->binding;
+			range->count                  = b->count > 1 ? b->count : 1;
+			range->data_type              = (uint32_t)data_type;
+
 			MTLArgumentDescriptor *argument_desc = [MTLArgumentDescriptor argumentDescriptor];
 			argument_desc.index                  = b->binding;
 			// 0 means "not an array" to MTLArgumentDescriptor; b->count == 1
@@ -230,6 +253,11 @@ SPUDRESULT spudgpu_create_descriptor_set_layout(
 			const spudgpu_descriptor_binding_desc *b = &desc->bindings[i];
 			if (b->descriptor_type != SPUDGPU_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
 				continue;
+			spudgpumetal_set_range *range = &layout_metal->_ranges[layout_metal->_range_count++];
+			range->first_id               = SPUDGPU_METAL_COMBINED_SAMPLER_INDEX_BASE + b->binding;
+			range->count                  = b->count > 1 ? b->count : 1;
+			range->data_type              = (uint32_t)MTLDataTypeSampler;
+
 			MTLArgumentDescriptor *sampler_desc = [MTLArgumentDescriptor argumentDescriptor];
 			sampler_desc.index                  = SPUDGPU_METAL_COMBINED_SAMPLER_INDEX_BASE + b->binding;
 			sampler_desc.arrayLength            = (b->count > 1) ? b->count : 0;
@@ -237,6 +265,8 @@ SPUDRESULT spudgpu_create_descriptor_set_layout(
 			sampler_desc.access                 = MTLBindingAccessReadOnly;
 			[argument_descs addObject:sampler_desc];
 		}
+
+		layout_metal->_range_count = spudgpumetal___set_ranges_normalize(layout_metal->_ranges, layout_metal->_range_count);
 
 		layout_metal->_argument_encoder_mtl =
 		    [layout_metal->_parent_device->_device_mtl newArgumentEncoderWithArguments:argument_descs];
