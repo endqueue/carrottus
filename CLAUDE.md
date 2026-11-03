@@ -45,7 +45,7 @@ Every module returns the shared `SPUDRESULT` enum (`spudcore.h`, 165 values with
 | SpudFiles | `spudfiles.h` | `spudfile_` | Windows, Linux, macOS |
 | SpudMemory | `spudmemory.h` | `spudmem_` | Windows, POSIX (Linux + Apple, one file) |
 | SpudNet | `spudnet.h` | `spudnet_` | TCP sockets: Winsock2, BSD sockets (Linux + Apple, one file). HTTP + WebSocket: WinHTTP, libcurl, NSURLSession |
-| SpudAudio | `spudaudio.h` | `spudaudio_` / `SPUDRESULT_SAUD_*` | WASAPI (Windows), ALSA (Linux), CoreAudio (macOS); an argument-checking stub where no API is compiled in (iOS, watchOS) |
+| SpudAudio | `spudaudio.h` | `spudaudio_` / `SPUDRESULT_SAUD_*` | WASAPI (Windows), ALSA (Linux), CoreAudio (macOS), RemoteIO (iOS and iPadOS: `spudaudioremoteio.c` and the session half `spudaudiosession.m`, since 2026-11-02); an argument-checking stub where no API is compiled in (watchOS) |
 | SpudInput | `spudinput.h` | `spudinput_` / `SPUDRESULT_SPUDINPUT_*` | GameController (macOS, iOS, iPadOS), evdev (Linux), GameInput (Windows). Not written: XInput (Windows); with no API built in, no instance can be made |
 | SpudCore | `spudcore.h` | `spud_` / `SPUDRESULT` | platform-agnostic |
 | SpudPerf | `spudperf.h` | `spudperf_` | Windows, Linux, Apple |

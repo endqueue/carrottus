@@ -145,7 +145,7 @@ uint32_t spud_get_version(void);
  * The values are grouped by module: 1-16 are general, 199-369 are SpudGPU
  * (`SPUDRESULT_GPU_*`), 1001-1013 SpudFiles (`SPUDRESULT_SPUDFILE_*`), 2027-2028
  * SpudMemory (`SPUDRESULT_SPUDMEM_*`), 3001-3033 SpudNet (`SPUDRESULT_SPUDNET_*`),
- * 4001-4012 SpudAudio (`SPUDRESULT_SAUD_*`) and 5001-5005 SpudInput
+ * 4001-4015 SpudAudio (`SPUDRESULT_SAUD_*`) and 5001-5005 SpudInput
  * (`SPUDRESULT_SPUDINPUT_*`). A value is never reused for
  * a different meaning.
  */
@@ -534,6 +534,9 @@ typedef enum SPUDRESULT {
 	SPUDRESULT_SAUD_THREAD_PRIORITY_DENIED      = 4010, /**< The OS refused the thread priority asked for when the stream's thread started. */
 	SPUDRESULT_SAUD_SAMPLE_RATE_NOT_SETTABLE    = 4011, /**< The platform has no device-wide sample rate to set. */
 	SPUDRESULT_SAUD_OS_CONVERSION_UNAVAILABLE   = 4012, /**< ALLOW_OS_CONVERSION was set where the platform can't convert for the request. */
+	SPUDRESULT_SAUD_ACCESS_DENIED               = 4013, /**< The platform hasn't granted this process use of the endpoint (iOS: record permission not granted). */
+	SPUDRESULT_SAUD_INTERRUPTED                 = 4014, /**< The platform's audio session took the endpoint from this process, or won't give it now: an interruption (a call, an alarm) or another app's audio that doesn't mix (iOS). */
+	SPUDRESULT_SAUD_SESSION_INACTIVE            = 4015, /**< The platform's audio session, which the caller owns, isn't active, and the platform won't run a stream on it (iOS). */
 
 	SPUDRESULT_SPUDINPUT_INVALID_INSTANCE      = 5001, /**< A SpudInput instance argument is NULL. */
 	SPUDRESULT_SPUDINPUT_GAMEPAD_NOT_CONNECTED = 5002, /**< The id names no gamepad as of the last poll. */

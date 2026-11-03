@@ -71,6 +71,22 @@
       }
     },
     {
+      "name": "ios-metal",
+      "displayName": "SpudLib iOS Metal (iPhone and iPad devices)",
+      "generator": "Ninja Multi-Config",
+      "binaryDir": "${sourceDir}/build-ios-metal",
+      "cacheVariables": {
+        "GRAPHICS_BACKEND": "Metal",
+        "CMAKE_SYSTEM_NAME": "iOS",
+        "CMAKE_OSX_SYSROOT": "iphoneos",
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "26.5",
+        "CMAKE_FIND_ROOT_PATH_MODE_PROGRAM": "NEVER",
+        "CMAKE_MACOSX_BUNDLE": "OFF",
+        "CMAKE_CONFIGURATION_TYPES": "Debug;Release;RelWithDebInfo"
+      }
+    },
+    {
       "name": "sanitize-asan",
       "hidden": true,
       "cacheVariables": {
@@ -317,6 +333,24 @@
       "name": "iossimulator-metal-relwithdebinfo",
       "displayName": "SpudLib iOS Metal (simulator) (RelWithDebInfo)",
       "configurePreset": "iossimulator-metal",
+      "configuration": "RelWithDebInfo"
+    },
+    {
+      "name": "ios-metal-debug",
+      "displayName": "SpudLib iOS Metal (iPhone and iPad devices) (Debug)",
+      "configurePreset": "ios-metal",
+      "configuration": "Debug"
+    },
+    {
+      "name": "ios-metal-release",
+      "displayName": "SpudLib iOS Metal (iPhone and iPad devices) (Release)",
+      "configurePreset": "ios-metal",
+      "configuration": "Release"
+    },
+    {
+      "name": "ios-metal-relwithdebinfo",
+      "displayName": "SpudLib iOS Metal (iPhone and iPad devices) (RelWithDebInfo)",
+      "configurePreset": "ios-metal",
       "configuration": "RelWithDebInfo"
     },
     {

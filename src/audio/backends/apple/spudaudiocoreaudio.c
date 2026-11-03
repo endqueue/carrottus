@@ -3,9 +3,10 @@
 /*
  * CoreAudio backend for macOS, on the HAL (AudioObject* / AudioDevice*).
  *
- * The HAL is macOS-only: iOS, iPadOS and watchOS have no AudioObject API
- * and get their own backend later (AVAudioSession + RemoteIO), sharing the
- * platform-neutral pieces in spudaudioapple.{h,c}. This whole file is
+ * The HAL is macOS-only: iOS, iPadOS and watchOS have no AudioObject API.
+ * iOS and iPadOS have their own backend (spudaudioremoteio.c, RemoteIO on
+ * AVAudioSession), sharing the platform-neutral pieces in
+ * spudaudioapple.{h,c}; watchOS has none yet. This whole file is
  * SPUDAUDIO_COMPILE_COREAUDIO, which spudaudio.h only allows with
  * SPUDAUDIO_PLATFORM_MACOS.
  *

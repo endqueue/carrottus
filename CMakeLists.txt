@@ -190,8 +190,9 @@ if(NOT TARGET spudlib)
         if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
             set(SPUDAUDIO_PLATFORM MACOS)
             set(SPUDAUDIO_APIS COREAUDIO)
-        elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS") # iPhone and iPad
-            set(SPUDAUDIO_PLATFORM IOS)          # no backend yet (AVAudioSession + RemoteIO)
+        elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS") # iPhone and iPad, one backend
+            set(SPUDAUDIO_PLATFORM IOS)
+            set(SPUDAUDIO_APIS REMOTEIO)
         elseif(CMAKE_SYSTEM_NAME STREQUAL "watchOS")
             set(SPUDAUDIO_PLATFORM WATCHOS)      # no backend yet
         else()
@@ -211,6 +212,15 @@ if(NOT TARGET spudlib)
     endif()
     if("COREAUDIO" IN_LIST SPUDAUDIO_APIS)
         list(APPEND SPUDLIB_SOURCES src/audio/backends/apple/spudaudiocoreaudio.c)
+    endif()
+    if("REMOTEIO" IN_LIST SPUDAUDIO_APIS)
+        # The audio unit in C; the AVAudioSession half, which reads the
+        # session and hears its notifications, in Objective-C.
+        list(APPEND SPUDLIB_SOURCES
+            src/audio/backends/apple/spudaudiosession.h
+            src/audio/backends/apple/spudaudiosession.m
+            src/audio/backends/apple/spudaudioremoteio.c
+        )
     endif()
     if(SPUDAUDIO_PLATFORM MATCHES "^(MACOS|IOS|WATCHOS)$")
         # Shared by every Apple audio backend; builds on all Apple OSes.
@@ -402,6 +412,11 @@ if(NOT TARGET spudlib)
     if("COREAUDIO" IN_LIST SPUDAUDIO_APIS)
         # The HAL, and CoreFoundation for its CFString names.
         target_link_libraries(spudlib PRIVATE "-framework CoreAudio" "-framework CoreFoundation")
+    endif()
+    if("REMOTEIO" IN_LIST SPUDAUDIO_APIS)
+        # AVAudioSession and AVAudioApplication (AVFAudio), Foundation for
+        # the notification center; the audio unit is AudioToolbox's (below).
+        target_link_libraries(spudlib PRIVATE "-framework AVFAudio" "-framework Foundation")
     endif()
     if(SPUDAUDIO_PLATFORM MATCHES "^(MACOS|IOS)$")
         # AudioToolbox expands channel-layout tags; the watchOS SDK has none.

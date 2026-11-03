@@ -1,9 +1,9 @@
 # SpudAudio
 
 Thin audio endpoint I/O: WASAPI (Windows), ALSA (Linux; PipeWire planned), CoreAudio
-(macOS); a stub on iOS and watchOS (an iOS backend, AVAudioSession and an
-audio unit, is wanted: decided 2026-10-28, card L11; every caller on iPad and
-iPhone is silent until then). The public API and its per-backend mappings are documented in
+(macOS), RemoteIO (iOS and iPadOS, one backend: the RemoteIO audio unit on the
+process's AVAudioSession, which the caller owns; card L11, decided 2026-10-28, built
+2026-11-02); a stub on watchOS. The public API and its per-backend mappings are documented in
 `include/spudaudio.h`; this file holds design notes that don't belong in the header.
 
 ## Future intent: positional (spatialized) audio

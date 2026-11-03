@@ -1,5 +1,5 @@
 // Only when no native API is compiled in (see spudaudio.h).
-#if !(SPUDAUDIO_COMPILE_WASAPI || SPUDAUDIO_COMPILE_ALSA || SPUDAUDIO_COMPILE_PIPEWIRE || SPUDAUDIO_COMPILE_COREAUDIO)
+#if !(SPUDAUDIO_COMPILE_WASAPI || SPUDAUDIO_COMPILE_ALSA || SPUDAUDIO_COMPILE_PIPEWIRE || SPUDAUDIO_COMPILE_COREAUDIO || SPUDAUDIO_COMPILE_REMOTEIO)
 
 #include "../../spudaudiointernal.h"
 #include <stddef.h>
@@ -7,7 +7,7 @@
 #include "../../../spudstructbase.h"
 
 /* Placeholder backend for platforms with no native API compiled in yet
- * (currently iOS / iPadOS / watchOS). Argument checks match
+ * (currently watchOS). Argument checks match
  * what the real backends will do, so callers get the same error for a bad
  * call either way; anything past the checks reports
  * SPUDRESULT_NOT_IMPLEMENTED_YET. Replace per-platform in CMakeLists.txt as

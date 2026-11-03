@@ -359,6 +359,8 @@ static spudaudio_instance make_audio_instance(void) {
 	const SPUDAUDIO_NATIVE_API api = SPUDAUDIO_NATIVE_API_WASAPI;
 #elif SPUDAUDIO_COMPILE_ALSA
 	const SPUDAUDIO_NATIVE_API api = SPUDAUDIO_NATIVE_API_ALSA;
+#elif SPUDAUDIO_COMPILE_REMOTEIO
+	const SPUDAUDIO_NATIVE_API api = SPUDAUDIO_NATIVE_API_REMOTEIO;
 #else
 	const SPUDAUDIO_NATIVE_API api = SPUDAUDIO_NATIVE_API_NONE;
 #endif
@@ -497,7 +499,12 @@ FACTORIES = {
 			desc.format.channel_count = 2;
 			desc.format.interleaved   = true;
 		}
+		/* The platform's own thread where it is the only mechanism. */
+#if SPUDAUDIO_COMPILE_COREAUDIO || SPUDAUDIO_COMPILE_REMOTEIO
+		desc.thread.priority = SPUDAUDIO_THREAD_PRIORITY_PLATFORM;
+#else
 		desc.thread.priority = SPUDAUDIO_THREAD_PRIORITY_NORMAL;
+#endif
 		desc.callback        = silent_callback;
 		desc.period_frames   = desc.format.sample_rate / 100;
 		/* Each rejected field takes the probe's suggestion, a few rounds. */

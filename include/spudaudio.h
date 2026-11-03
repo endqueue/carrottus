@@ -1,8 +1,8 @@
 /**
  * @file spudaudio.h
- * @brief SpudAudio: thin audio endpoint I/O over WASAPI, ALSA and CoreAudio.
- * Known problems: the PipeWire backend is planned and not built; and iOS,
- * iPadOS and watchOS have no backend yet, only an argument-checking stub.
+ * @brief SpudAudio: thin audio endpoint I/O over WASAPI, ALSA, CoreAudio and
+ * RemoteIO. Known problems: the PipeWire backend is planned and not built;
+ * and watchOS has no backend yet, only an argument-checking stub.
  *
  * The overview is under @ref spudaudio "SpudAudio". In result codes, SAUD
  * stands for SpudAudio (`SPUDRESULT_SAUD_*`, in spudcore.h).
@@ -21,11 +21,11 @@ extern "C" {
 
 /**
  * @defgroup spudaudio SpudAudio
- * @brief Thin audio endpoint I/O (WASAPI / ALSA / CoreAudio): moves PCM
- * frames between the caller and an audio endpoint. Known problems: the
- * PipeWire backend is planned and not built
+ * @brief Thin audio endpoint I/O (WASAPI / ALSA / CoreAudio / RemoteIO):
+ * moves PCM frames between the caller and an audio endpoint. Known problems:
+ * the PipeWire backend is planned and not built
  * (SPUDAUDIO_NATIVE_API_PIPEWIRE returns SPUDRESULT_NOT_IMPLEMENTED_YET);
- * and iOS, iPadOS and watchOS have no backend yet.
+ * and watchOS has no backend yet.
  *
  * A translation of the platform audio API, nothing more. No mixer, no
  * decoder, no resampler, no voice/sound objects, no 3D spatialisation, no
@@ -42,10 +42,10 @@ extern "C" {
  *   enabled when the caller
  *   explicitly sets SPUDAUDIO_STREAM_FLAG_ALLOW_OS_CONVERSION, and refused
  *   where it can't happen - see SPUDAUDIO_STREAM_FLAGS.
- * - The data path is a callback, because that's the only model all three
- *   platforms share natively (CoreAudio has no acquire/release buffer API).
- *   On WASAPI/ALSA the backend owns the event-wait thread that drives it -
- *   plumbing, not policy.
+ * - The data path is a callback, because that's the only model every
+ *   platform shares natively (CoreAudio and RemoteIO have no
+ *   acquire/release buffer API). On WASAPI/ALSA the backend owns the
+ *   event-wait thread that drives it - plumbing, not policy.
  *
  * @par Threads
  * The library rule holds (@ref spud_threads "Threads", spudcore.h): an
@@ -54,8 +54,8 @@ extern "C" {
  * functions run on threads that are not the caller's, each marked
  * `Thread:` where it is declared: the stream callback
  * (SPUDAUDIO_STREAM_CALLBACK), on a thread SpudAudio starts in
- * spudaudio_stream_start() on WASAPI and ALSA and on CoreAudio's own
- * real-time thread; and the device-event callback
+ * spudaudio_stream_start() on WASAPI and ALSA and on the platform's own
+ * real-time thread on CoreAudio and RemoteIO; and the device-event callback
  * (SPUDAUDIO_DEVICE_EVENT_CALLBACK). spudaudio_stream_get_status() is the
  * one call that may overlap the others on its stream.
  * - Spatialisation is rendering policy and so is the caller's. SpudAudio's
@@ -63,6 +63,38 @@ extern "C" {
  *   (SPUDAUDIO_FORMAT::positions, in a device's native format and in a
  *   stream's granted format), so the caller can render for the real speaker
  *   layout.
+ *
+ * @par iOS and iPadOS: the audio session is the caller's
+ * The RemoteIO backend (SPUDAUDIO_NATIVE_API_REMOTEIO) reads the process's
+ * AVAudioSession as it finds it and changes nothing in it that a caller
+ * could choose: it never sets a category, a mode or options, never
+ * activates or deactivates the session, and never asks for record
+ * permission. Before a stream, the caller:
+ * - sets a category that has the stream's direction: any category plays,
+ *   and only AVAudioSessionCategoryPlayAndRecord and
+ *   AVAudioSessionCategoryRecord have input (with any other, the route has
+ *   no input port, so spudaudio_enumerate_devices() lists no input
+ *   device);
+ * - activates the session (where it hasn't, what happens at
+ *   spudaudio_stream_start() is the platform's: iOS may activate it
+ *   itself, as it does for any audio object, or refuse with
+ *   SPUDRESULT_SAUD_SESSION_INACTIVE);
+ * - for input, has record permission granted
+ *   (AVAudioApplication.recordPermission); without it an input stream is
+ *   refused with SPUDRESULT_SAUD_ACCESS_DENIED.
+ *
+ * Two of SpudAudio's calls change the session for the whole process, every
+ * other audio object in it included (an AVAudioEngine, an AVAudioPlayer):
+ * spudaudio_set_device_sample_rate() sets its preferred sample rate, and a
+ * stream's `period_frames` its preferred IO buffer duration. Both are
+ * requests the system may grant differently; SpudAudio reports what it
+ * granted and refuses what it didn't grant exactly.
+ *
+ * An interruption (a call, an alarm, another app's audio that doesn't mix)
+ * ends a running stream in SPUDAUDIO_STREAM_STATE_ERROR with
+ * SPUDRESULT_SAUD_INTERRUPTED. Nothing is restarted: whether and when to
+ * open a stream again is the caller's, who is told when the interruption
+ * ends by the session it owns (AVAudioSessionInterruptionNotification).
  */
 
 /**
@@ -70,8 +102,8 @@ extern "C" {
  * @ingroup spudaudio
  * @brief Macros that say which platform this build is for and which native
  * audio APIs are built in. Known problem: SPUDAUDIO_COMPILE_PIPEWIRE is
- * never 1 yet, and neither SPUDAUDIO_PLATFORM_IOS nor
- * SPUDAUDIO_PLATFORM_WATCHOS has a native API to go with it.
+ * never 1 yet, and SPUDAUDIO_PLATFORM_WATCHOS has no native API to go with
+ * it.
  *
  * spudlib's CMake defines one `SPUDAUDIO_PLATFORM_*` for the target OS and
  * a `SPUDAUDIO_COMPILE_*` for each native audio API built in, as PUBLIC
@@ -85,9 +117,11 @@ extern "C" {
  * | SPUDAUDIO_PLATFORM_WINDOWS | SPUDAUDIO_COMPILE_WASAPI                              |
  * | SPUDAUDIO_PLATFORM_LINUX   | SPUDAUDIO_COMPILE_ALSA (SPUDAUDIO_COMPILE_PIPEWIRE: planned) |
  * | SPUDAUDIO_PLATFORM_MACOS   | SPUDAUDIO_COMPILE_COREAUDIO                           |
- * | SPUDAUDIO_PLATFORM_IOS     | none yet - iOS and iPadOS                             |
+ * | SPUDAUDIO_PLATFORM_IOS     | SPUDAUDIO_COMPILE_REMOTEIO - iOS and iPadOS, one build |
  * | SPUDAUDIO_PLATFORM_WATCHOS | none yet                                              |
  *
+ * iPhone and iPad software is built with one SDK, so iOS and iPadOS are one
+ * platform here and one backend: nothing in SpudAudio tells them apart.
  * SPUDAUDIO_PLATFORM_APPLE is any of the three Apple platforms. With no
  * `SPUDAUDIO_COMPILE_*` at all, spudlib builds an argument-checking stub
  * whose calls return SPUDRESULT_NOT_IMPLEMENTED_YET.
@@ -107,10 +141,7 @@ extern "C" {
 #define SPUDAUDIO_PLATFORM_MACOS 0
 #endif
 #ifndef SPUDAUDIO_PLATFORM_IOS
-/**
- * @brief 1 in a build for iOS or iPadOS, 0 otherwise. Defined by the build.
- * Known problem: no native audio API is built for it yet.
- */
+/** @brief 1 in a build for iOS or iPadOS, 0 otherwise. Defined by the build. */
 #define SPUDAUDIO_PLATFORM_IOS 0
 #endif
 #ifndef SPUDAUDIO_PLATFORM_WATCHOS
@@ -145,6 +176,14 @@ extern "C" {
  */
 #define SPUDAUDIO_COMPILE_COREAUDIO 0
 #endif
+#ifndef SPUDAUDIO_COMPILE_REMOTEIO
+/**
+ * @brief 1 when the RemoteIO backend (AVAudioSession and the RemoteIO audio
+ * unit) is built in, 0 otherwise. Defined by the build; iOS and iPadOS
+ * only.
+ */
+#define SPUDAUDIO_COMPILE_REMOTEIO 0
+#endif
 
 #if SPUDAUDIO_PLATFORM_WINDOWS + SPUDAUDIO_PLATFORM_LINUX + SPUDAUDIO_PLATFORM_MACOS + SPUDAUDIO_PLATFORM_IOS + SPUDAUDIO_PLATFORM_WATCHOS > 1
 #error "SpudAudio: more than one SPUDAUDIO_PLATFORM_* is defined"
@@ -157,6 +196,9 @@ extern "C" {
 #endif
 #if SPUDAUDIO_COMPILE_COREAUDIO && !SPUDAUDIO_PLATFORM_MACOS
 #error "SpudAudio: SPUDAUDIO_COMPILE_COREAUDIO (the HAL) needs SPUDAUDIO_PLATFORM_MACOS"
+#endif
+#if SPUDAUDIO_COMPILE_REMOTEIO && !SPUDAUDIO_PLATFORM_IOS
+#error "SpudAudio: SPUDAUDIO_COMPILE_REMOTEIO needs SPUDAUDIO_PLATFORM_IOS"
 #endif
 
 /** @} */
@@ -191,7 +233,10 @@ enum {
 	 * it. */
 	SPUDAUDIO_NATIVE_API_PIPEWIRE  = 2,
 	SPUDAUDIO_NATIVE_API_ALSA      = 3, /**< ALSA (Linux). */
-	SPUDAUDIO_NATIVE_API_COREAUDIO = 4  /**< CoreAudio, on the HAL (macOS). */
+	SPUDAUDIO_NATIVE_API_COREAUDIO = 4, /**< CoreAudio, on the HAL (macOS). */
+	/** The RemoteIO audio unit on the process's AVAudioSession (iOS and
+	 * iPadOS). */
+	SPUDAUDIO_NATIVE_API_REMOTEIO  = 5
 };
 
 /** @brief Which way frames move through a device or a stream. */
@@ -225,7 +270,9 @@ enum {
  * SPUDAUDIO_STREAM_FLAG_ALLOW_OS_CONVERSION. With it, any of these may be
  * asked for and the platform's AudioConverter decides; S24_32_LSB is the
  * one it may refuse, since it only promises non-packed integers that are
- * high-aligned.
+ * high-aligned. The RemoteIO backend presents the route's format as Float32
+ * at the session's sample rate, so there too F32 is the only sample format
+ * granted without the flag, and with it RemoteIO's own converter decides.
  */
 typedef uint32_t SPUDAUDIO_SAMPLE_FORMAT;
 /** @brief Values of SPUDAUDIO_SAMPLE_FORMAT. */
@@ -298,6 +345,9 @@ uint32_t spudaudio_sample_format_byte_size(SPUDAUDIO_SAMPLE_FORMAT fmt);
  * - ALSA: everything except LFE2.
  * - CoreAudio: its non-speaker labels (matrix Lt/Rt, ambisonic W/X/Y/Z,
  *   haptic) have no position and read back as AUX.
+ * - RemoteIO: a device's positions are its port's channel labels
+ *   (AVAudioSessionChannelDescription::channelLabel), read as CoreAudio's
+ *   are. A stream takes no layout but the port's own.
  */
 typedef uint8_t SPUDAUDIO_CHANNEL_POSITION;
 /** @brief Values of SPUDAUDIO_CHANNEL_POSITION. */
@@ -404,8 +454,8 @@ typedef struct SPUDAUDIO_INSTANCE_DESC {
 	 * watches the device list calls it at each change, at the same time as
 	 * the caller's own calls: the system's notification thread on WASAPI
 	 * (which may also make that last free), a serial dispatch queue the
-	 * backend makes on CoreAudio, a thread the backend starts on ALSA. An
-	 * allocator that can't take overlapping calls can't be used with a
+	 * backend makes on CoreAudio and on RemoteIO, a thread the backend
+	 * starts on ALSA. An allocator that can't take overlapping calls can't be used with a
 	 * device-event callback. */
 	const SPUD_ALLOCATOR *allocator;
 	/** The native API to bind to. There is no "best available" value - the
@@ -417,7 +467,10 @@ typedef struct SPUDAUDIO_INSTANCE_DESC {
  * @brief Creates a SpudAudio instance bound to one native audio API. Known
  * problem: SPUDAUDIO_NATIVE_API_PIPEWIRE is not built and returns
  * SPUDRESULT_NOT_IMPLEMENTED_YET, as does every API in a build with no
- * native audio API (iOS, iPadOS, watchOS).
+ * native audio API (watchOS).
+ *
+ * Makes no platform object: on RemoteIO, nothing of the audio session is
+ * read or changed until a call needs it.
  *
  * @param[in]  desc         What the caller decides.
  * @param[out] out_instance Receives the new instance, the caller's to
@@ -474,6 +527,17 @@ SPUDAUDIO_NATIVE_API spudaudio_get_native_api(spudaudio_instance instance);
 /**
  * @brief Enumerates the endpoints of one direction.
  *
+ * RemoteIO: iOS has no list of devices to choose from, only the session's
+ * current route, which the system and the person holding the device
+ * choose. The endpoints are the route's ports in the direction
+ * (AVAudioSessionRouteDescription::outputs or ::inputs; one port each, but
+ * for AVAudioSessionCategoryMultiRoute): the speaker, or the headphones,
+ * the Bluetooth device, the AirPlay receiver plugged in or chosen in its
+ * place. A port that leaves the route is no longer enumerated, and one that
+ * comes back gets the handle it had. Inputs are listed only when the
+ * session's category has input and an input is available
+ * (AVAudioSession::inputAvailable).
+ *
  * @param[in]  instance         The SpudAudio instance to enumerate through.
  * @param[in]  direction        Output (render) or input (capture) endpoints.
  * @param[out] out_devices      Receives an array of device handles, owned by
@@ -516,6 +580,10 @@ SPUDRESULT spudaudio_enumerate_devices(
  * - SYSTEM_SOUNDS: CoreAudio
  *   kAudioHardwarePropertyDefaultSystemOutputDevice (alerts / UI sounds;
  *   output only).
+ *
+ * RemoteIO: GENERAL is the route's port in a direction where the route has
+ * exactly one; where it has several (AVAudioSessionCategoryMultiRoute) the
+ * system plays to all of them and none holds it.
  */
 typedef uint32_t SPUDAUDIO_DEFAULT_ROLES;
 /** @brief Bits of SPUDAUDIO_DEFAULT_ROLES. */
@@ -540,11 +608,11 @@ typedef struct SPUDAUDIO_DEVICE_PROPERTIES {
 	SPUD_STRUCT_BASE_OUT base;
 	/** Human-readable, UTF-8, null-terminated, truncated to fit. WASAPI:
 	 * PKEY_Device_FriendlyName. ALSA: the PCM's DESC hint (lines joined),
-	 * else its name. */
+	 * else its name. RemoteIO: the port's portName. */
 	char name[128];
 	/** Stable across runs (IMMDevice ID / ALSA PCM name / PipeWire node
-	 * name / CoreAudio UID), null-terminated, so the caller can persist its
-	 * choice. */
+	 * name / CoreAudio UID / RemoteIO the port's UID), null-terminated, so
+	 * the caller can persist its choice. */
 	char persistent_id[256];
 	/** Whether this is an output or an input endpoint. */
 	SPUDAUDIO_DIRECTION direction;
@@ -553,10 +621,12 @@ typedef struct SPUDAUDIO_DEVICE_PROPERTIES {
 	SPUDAUDIO_DEFAULT_ROLES default_roles;
 	/** The endpoint's own shared-mode format (WASAPI GetMixFormat). Zeroed
 	 * where the backend has no single native format (ALSA). Its `positions`
-	 * say which speaker each device channel feeds. */
+	 * say which speaker each device channel feeds. RemoteIO: Float32 at the
+	 * session's sampleRate, with the port's channels, interleaved (a
+	 * stream is granted interleaved or planar). */
 	SPUDAUDIO_FORMAT native_format;
 	/** Whether the backend has an exclusive mode at all (WASAPI yes,
-	 * CoreAudio yes - hog mode, ALSA no). Whether this device currently
+	 * CoreAudio yes - hog mode, ALSA no, RemoteIO no). Whether this device currently
 	 * allows it is only known by probing:
 	 * SPUDRESULT_SAUD_EXCLUSIVE_UNAVAILABLE. */
 	bool supports_exclusive;
@@ -575,7 +645,7 @@ typedef struct SPUDAUDIO_DEVICE_PROPERTIES {
  * @retval SPUDRESULT_STRUCT_UNKNOWN_IN_CHAIN `out_properties->base.next` is not NULL.
  * @retval SPUDRESULT_SAUD_INVALID_DEVICE `device` is NULL.
  * @retval SPUDRESULT_SAUD_DEVICE_LOST The device disappeared since
- *         enumeration.
+ *         enumeration (RemoteIO: its port is not in the current route).
  * @return Another SPUDRESULT where the platform failed to report a
  *         property.
  */
@@ -584,8 +654,8 @@ SPUDRESULT spudaudio_get_device_properties(
     SPUDAUDIO_DEVICE_PROPERTIES *out_properties);
 
 /**
- * @brief Sets a device-wide sample rate, where the platform has one - which
- * is CoreAudio only; WASAPI and ALSA return
+ * @brief Sets a device-wide sample rate, where the platform has one -
+ * CoreAudio, and RemoteIO's session-wide one; WASAPI and ALSA return
  * SPUDRESULT_SAUD_SAMPLE_RATE_NOT_SETTABLE.
  *
  * This changes the device for every application using it, which is why
@@ -599,10 +669,18 @@ SPUDRESULT spudaudio_get_device_properties(
  * - WASAPI: not settable - the shared-mode rate is a user setting with no
  *   API, and exclusive streams carry their own rate.
  * - ALSA: not settable - the rate is per opened PCM (hw_params).
+ * - RemoteIO: AVAudioSession setPreferredSampleRate, a request for the
+ *   whole session, and so for every port of the route and every audio
+ *   object of the process; `device` only has to be in the route. The call
+ *   succeeds when the session's sampleRate is then the rate asked for.
+ *   Otherwise (a rate the route hasn't, an inactive session, where the
+ *   system defers it) the preferred rate the session had is put back and
+ *   the call fails.
  *
- * A running CoreAudio stream whose device rate changes - through this call
- * or any other application - ends in SPUDAUDIO_STREAM_STATE_ERROR with
- * error SPUDRESULT_SAUD_FORMAT_NOT_SUPPORTED: its granted format no longer
+ * A running CoreAudio or RemoteIO stream whose device rate changes -
+ * through this call or anything else (on iOS, a route change) - ends in
+ * SPUDAUDIO_STREAM_STATE_ERROR with error
+ * SPUDRESULT_SAUD_FORMAT_NOT_SUPPORTED: its granted format no longer
  * describes the device.
  *
  * @param[in] device      The device whose rate to set.
@@ -613,8 +691,11 @@ SPUDRESULT spudaudio_get_device_properties(
  * @retval SPUDRESULT_DESC_INVALID_PARAMETERS `sample_rate` is 0.
  * @retval SPUDRESULT_SAUD_SAMPLE_RATE_NOT_SETTABLE The platform has no
  *         device-wide rate to set (WASAPI, ALSA).
+ * @retval SPUDRESULT_SAUD_DEVICE_LOST RemoteIO: `device`'s port is not in
+ *         the current route.
  * @retval SPUDRESULT_SAUD_FORMAT_NOT_SUPPORTED CoreAudio: `sample_rate` is
- *         not in kAudioDevicePropertyAvailableNominalSampleRates.
+ *         not in kAudioDevicePropertyAvailableNominalSampleRates. RemoteIO:
+ *         the session granted another rate; its preferred rate is put back.
  * @retval SPUDRESULT_SAUD_EXCLUSIVE_UNAVAILABLE CoreAudio: another process
  *         holds the device in hog mode.
  * @retval SPUDRESULT_API_SPECIFIC_FAILURE CoreAudio: the device never
@@ -637,6 +718,8 @@ SPUDRESULT spudaudio_set_device_sample_rate(spudaudio_device device, uint32_t sa
  *
  * - EXCLUSIVE: sole use of the endpoint. See
  *   SPUDRESULT_SAUD_EXCLUSIVE_UNAVAILABLE under spudaudio_probe_stream().
+ *   RemoteIO has no exclusive mode: the session's category decides
+ *   whether other apps' audio mixes with it, and that is the caller's.
  * - ALLOW_OS_CONVERSION: lets the platform convert between the requested
  *   format and the endpoint's. Without it the format must match exactly.
  *   Where conversion can't exist for this request, the flag is refused,
@@ -666,6 +749,18 @@ SPUDRESULT spudaudio_set_device_sample_rate(spudaudio_device device, uint32_t sa
  *     spudaudio_stream_get_latency_frames() leave out the converter's own
  *     delay. A format that already is the device's is not converted, flag
  *     or no flag.
+ *   - RemoteIO: the audio unit's own converter, between the client format
+ *     set on the unit and the route's, given the two formats and nothing
+ *     else - no channel map, no quality setting. Sample format and sample
+ *     rate may differ; the channel count may not (the converter's routing
+ *     between counts is not documented, so it can't be reported), and a
+ *     different count is SPUDRESULT_SAUD_FORMAT_NOT_SUPPORTED with the
+ *     port's count suggested. A converted stream's callback is called with
+ *     as many of its own frames as the unit asks for, which varies, and
+ *     never more than max_callback_frames; host_time_ns and
+ *     spudaudio_stream_get_latency_frames() leave out the converter's own
+ *     delay. A format that already is the route's is not converted, flag
+ *     or no flag.
  *   - PipeWire (planned): the graph converts natively.
  */
 typedef uint32_t SPUDAUDIO_STREAM_FLAGS;
@@ -694,7 +789,8 @@ enum {
 	 * IAudioClient. */
 	SPUDAUDIO_PERIOD_MODE_FIXED      = 1,
 	/** Granted exactly as requested if spudaudio_probe_stream() accepts it.
-	 * WASAPI shared via IAudioClient3, WASAPI exclusive, ALSA, CoreAudio. */
+	 * WASAPI shared via IAudioClient3, WASAPI exclusive, ALSA, CoreAudio,
+	 * RemoteIO. */
 	SPUDAUDIO_PERIOD_MODE_EXACT      = 2,
 	/** A request only - a shared graph picks the actual period and may
 	 * change it while the stream runs. PipeWire (planned). */
@@ -719,6 +815,14 @@ enum {
  *   false, since a converted stream's callback always gets one period.
  * - PipeWire (planned): clock.min-quantum / clock.max-quantum /
  *   clock.quantum.
+ * - RemoteIO: the session reports no range, only the IO buffer it has now
+ *   (AVAudioSession IOBufferDuration at its sampleRate), which is given as
+ *   min, max and default: the one period known to be granted. Another is
+ *   asked for through spudaudio_probe_stream(), which asks the session and
+ *   grants it or suggests what the session gave. `variable_callback_frames`
+ *   is true: the system changes the IO buffer while a stream runs (when the
+ *   screen locks, on a route change), and a converted stream's frames vary.
+ *   No buffer separate from the period.
  */
 typedef struct SPUDAUDIO_TIMING_CAPS {
 	/** `type` is SPUD_STRUCT_TYPE_AUDIO_TIMING_CAPS; `next` is NULL (nothing is chained onto
@@ -733,13 +837,13 @@ typedef struct SPUDAUDIO_TIMING_CAPS {
 	uint32_t default_period_frames; /**< OS-reported default, 0 if none (ALSA). */
 	/** Lower end of the range for SPUDAUDIO_STREAM_DESC::buffer_frames.
 	 * Both ends are 0 when the backend has no buffer separate from the
-	 * period (CoreAudio, PipeWire). */
+	 * period (CoreAudio, RemoteIO, PipeWire). */
 	uint32_t min_buffer_frames;
 	/** Upper end of the range for SPUDAUDIO_STREAM_DESC::buffer_frames. */
 	uint32_t max_buffer_frames;
 	/** The callback's frame_count may differ from the period between
 	 * callbacks (WASAPI shared padding, CoreAudio variable-buffer devices,
-	 * PipeWire). */
+	 * RemoteIO, PipeWire). */
 	bool variable_callback_frames;
 } SPUDAUDIO_TIMING_CAPS;
 
@@ -787,7 +891,9 @@ enum {
 	SPUDAUDIO_CALLBACK_FLAG_NONE            = 0x0, /**< Nothing to report. */
 	/** Frames were lost before this buffer. WASAPI
 	 * AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY / ALSA -EPIPE xrun / PipeWire
-	 * xrun / CoreAudio overload. */
+	 * xrun / CoreAudio overload / RemoteIO a render that skipped frames, or
+	 * one asking for more than max_callback_frames (silence, the callback
+	 * not called). */
 	SPUDAUDIO_CALLBACK_FLAG_DISCONTINUITY   = 0x1,
 	/** WASAPI AUDCLNT_BUFFERFLAGS_SILENT (capture) - the OS says the packet
 	 * is silence; SpudAudio zero-fills `frames` so the data matches the
@@ -809,7 +915,7 @@ typedef struct SPUDAUDIO_CALLBACK_INFO {
 	 * Starts at 0 on each spudaudio_stream_start() and is monotonic within a
 	 * run; after a DISCONTINUITY it jumps forward by the frames lost (as
 	 * measured by WASAPI, or estimated from the xrun's timestamp on ALSA).
-	 * WASAPI u64DevicePosition / IAudioClock, CoreAudio
+	 * WASAPI u64DevicePosition / IAudioClock, CoreAudio and RemoteIO
 	 * AudioTimeStamp.mSampleTime, PipeWire pw_time.ticks, ALSA status. On a
 	 * converted CoreAudio stream it counts the stream's own frames handed
 	 * to the callback, and a jump is the lost time in those frames. */
@@ -836,7 +942,8 @@ typedef struct SPUDAUDIO_CALLBACK_INFO {
  * thread SpudAudio starts in spudaudio_stream_start() and ends in
  * spudaudio_stream_stop(), which also runs the OUTPUT prefill calls (see
  * spudaudio_stream_start()); on CoreAudio the HAL's real-time IOProc
- * thread. Calls for one stream never overlap each other. From inside it,
+ * thread; on RemoteIO the audio unit's real-time render thread. Calls for
+ * one stream never overlap each other. From inside it,
  * spudaudio_stream_get_status() is the only call on its stream allowed.
  *
  * @param[in]     stream      The stream the buffer belongs to.
@@ -892,8 +999,9 @@ enum {
 	 * dependency). */
 	SPUDAUDIO_THREAD_PRIORITY_SCHED_FIFO  = 3,
 	/** The platform's own real-time thread runs the callback and SpudAudio
-	 * has no thread to configure. CoreAudio (HAL IOProc), where it is the
-	 * only mechanism, and PipeWire (data loop) once that backend exists. */
+	 * has no thread to configure. CoreAudio (HAL IOProc) and RemoteIO (the
+	 * audio unit's render thread), where it is the only mechanism, and
+	 * PipeWire (data loop) once that backend exists. */
 	SPUDAUDIO_THREAD_PRIORITY_PLATFORM    = 4
 };
 
@@ -939,6 +1047,8 @@ typedef struct SPUDAUDIO_STREAM_DESC {
 	 *   equal period_frames (the device double-buffers internally).
 	 * - ALSA: snd_pcm_hw_params buffer_size.
 	 * - CoreAudio: no separate buffer - the I/O buffer is the period.
+	 * - RemoteIO: no separate buffer - the session's IO buffer is the
+	 *   period.
 	 * - PipeWire (planned): no client buffer - only node.latency (the
 	 *   period).
 	 *
@@ -974,6 +1084,10 @@ typedef struct SPUDAUDIO_STREAM_CONFIG {
 	 * - CoreAudio: kAudioDevicePropertyBufferFrameSize /
 	 *   kAudioUnitProperty_MaximumFramesPerSlice; period_frames for a
 	 *   stream converted under ALLOW_OS_CONVERSION.
+	 * - RemoteIO: the unit's kAudioUnitProperty_MaximumFramesPerSlice, as
+	 *   the platform sets it (SpudAudio doesn't set it), in the stream's
+	 *   frames; for a converted stream, restated at the stream's rate,
+	 *   rounded down.
 	 * - PipeWire (planned): clock.max-quantum, or node.max-latency if
 	 *   lower. */
 	uint32_t max_callback_frames;
@@ -1017,6 +1131,12 @@ typedef struct SPUDAUDIO_STREAM_CONFIG {
  *   ALLOW_OS_CONVERSION, a format that isn't the device's is put to
  *   AudioConverterNew, and the period is checked as the device frames it
  *   comes to.
+ * - RemoteIO: the route's format; with ALLOW_OS_CONVERSION, a format that
+ *   isn't the route's is set on a RemoteIO unit made for the probe. The
+ *   period is set as the session's preferred IO buffer duration and the
+ *   IOBufferDuration it then reports, at its rate, is the suggestion; the
+ *   preferred duration the session had is put back before the probe
+ *   returns, so a probe leaves the session as it found it.
  * - PipeWire (planned): clamp to clock.min/max-quantum.
  *
  * Probing briefly opens the device (exclusively, in exclusive mode).
@@ -1055,15 +1175,22 @@ typedef struct SPUDAUDIO_STREAM_CONFIG {
  *         another client (WASAPI AUDCLNT_E_DEVICE_IN_USE /
  *         EXCLUSIVE_MODE_NOT_ALLOWED, ALSA -EBUSY, CoreAudio hog mode), or
  *         the backend has no exclusive mode (ALSA - exclusivity there is
- *         the choice of a hw: device name, not a flag).
+ *         the choice of a hw: device name, not a flag; RemoteIO).
  * @retval SPUDRESULT_SAUD_OS_CONVERSION_UNAVAILABLE ALLOW_OS_CONVERSION was
  *         set where the platform can't convert for this request (WASAPI
  *         exclusive mode, an ALSA PCM with no conversion plugin). Retry
  *         without it.
+ * @retval SPUDRESULT_SAUD_ACCESS_DENIED RemoteIO: an INPUT stream, and
+ *         record permission is not granted (undetermined or denied;
+ *         AVAudioApplication.recordPermission). Asking for it is the
+ *         caller's.
  * @retval SPUDRESULT_NOT_IMPLEMENTED_YET This build has no native audio
- *         API.
+ *         API; or, RemoteIO, the route has more than one port in the
+ *         stream's direction (AVAudioSessionCategoryMultiRoute), where one
+ *         port's channels would have to be chosen by a channel map, which
+ *         is not built.
  * @retval SPUDRESULT_SAUD_DEVICE_LOST The device disappeared since
- *         enumeration.
+ *         enumeration (RemoteIO: its port is not in the current route).
  */
 SPUDRESULT spudaudio_probe_stream(
     const SPUDAUDIO_STREAM_DESC *desc,
@@ -1082,6 +1209,12 @@ SPUDRESULT spudaudio_probe_stream(
  * endpoint, an ALSA hw: PCM is busy to other processes, and an ALSA layout
  * is applied to the PCM's channel map (the previous map is restored by
  * spudaudio_destroy_stream()).
+ *
+ * RemoteIO: makes and initializes a RemoteIO audio unit for the route, and
+ * leaves the session's preferred IO buffer duration at the period it set,
+ * as CoreAudio leaves the device's I/O buffer size: destroying the stream
+ * doesn't put the old one back. Each stream is its own unit; the route
+ * plays every running one.
  *
  * @param[in]  desc       The stream to create. `desc->callback` is
  *                        required. Only read during the call;
@@ -1119,8 +1252,9 @@ void spudaudio_destroy_stream(spudaudio_stream stream);
  * its priority, and for OUTPUT prefills the device buffer by calling the
  * callback (those prefill calls run before the device clock starts, so
  * they carry no HOST_TIME_VALID) before starting the device. On
- * PLATFORM-thread backends (CoreAudio) it starts the device and the
- * platform's real-time thread pulls from the callback - no prefill.
+ * PLATFORM-thread backends (CoreAudio, RemoteIO) it starts the device (the
+ * audio unit, AudioOutputUnitStart) and the platform's real-time thread
+ * pulls from the callback - no prefill.
  *
  * Thread: on WASAPI and ALSA this starts a thread of SpudAudio's own,
  * which runs the stream callback until spudaudio_stream_stop() or
@@ -1147,6 +1281,17 @@ void spudaudio_destroy_stream(spudaudio_stream stream);
  *         callback thread its scheduling (no MMCSS task of that name, no
  *         real-time permission).
  * @retval SPUDRESULT_SAUD_DEVICE_LOST The device is gone.
+ * @retval SPUDRESULT_SAUD_INTERRUPTED RemoteIO: the session is interrupted,
+ *         or another app holds audio that doesn't mix with this session's
+ *         category (AVAudioSessionErrorCodeCannotInterruptOthers,
+ *         CannotStartPlaying, InsufficientPriority). The stream is left
+ *         STOPPED.
+ * @retval SPUDRESULT_SAUD_SESSION_INACTIVE RemoteIO: the platform won't
+ *         start a unit on the inactive session
+ *         (AVAudioSessionErrorCodeSessionNotActive). The stream is left
+ *         STOPPED.
+ * @retval SPUDRESULT_SAUD_ACCESS_DENIED RemoteIO: an INPUT stream, and
+ *         record permission was taken back since creation.
  * @return For a stream already in SPUDAUDIO_STREAM_STATE_DEVICE_LOST or
  *         SPUDAUDIO_STREAM_STATE_ERROR, the error stored in its status;
  *         otherwise another SPUDRESULT from the platform.
@@ -1197,6 +1342,11 @@ SPUDRESULT spudaudio_stream_get_config(
  * that total is restated in the stream's frames and leaves out the
  * AudioConverter's own delay.
  *
+ * RemoteIO: the session's outputLatency (OUTPUT) or inputLatency (INPUT)
+ * plus its IOBufferDuration, at the stream's rate, as the session reports
+ * them now. Known problem: on a converted stream it leaves out the unit's
+ * converter's own delay.
+ *
  * @param[in]  stream             The stream to ask.
  * @param[out] out_latency_frames Receives the latency, in the stream's
  *                                frames.
@@ -1227,6 +1377,18 @@ SPUDRESULT spudaudio_stream_get_latency_frames(
  * Thread: the backend writes a stream's status from those places while
  * the caller's calls run; spudaudio_stream_get_status() reads it without
  * a lock.
+ *
+ * RemoteIO writes it from a serial dispatch queue of the stream's, on the
+ * session's notifications, and stops the unit there:
+ * - its port leaves the route (AVAudioSessionRouteChangeNotification), or
+ *   the media services are lost or reset
+ *   (AVAudioSessionMediaServicesWereLostNotification /
+ *   ...WereResetNotification): DEVICE_LOST, SPUDRESULT_SAUD_DEVICE_LOST;
+ * - the session's sampleRate, or the port's channel count, is no longer
+ *   the granted format's: ERROR, SPUDRESULT_SAUD_FORMAT_NOT_SUPPORTED;
+ * - an interruption begins while the stream runs
+ *   (AVAudioSessionInterruptionNotification): ERROR,
+ *   SPUDRESULT_SAUD_INTERRUPTED. Its end changes nothing here.
  *
  * Nothing is lost between polls: DEVICE_LOST and ERROR are terminal and
  * stay set until the stream is destroyed, and glitches are monotonic
@@ -1295,6 +1457,7 @@ SPUDRESULT spudaudio_stream_get_status(
  * | WASAPI    | IMMNotificationClient (endpoint state, add, remove) | IMMNotificationClient::OnDefaultDeviceChanged |
  * | CoreAudio | kAudioHardwarePropertyDevices                     | kAudioHardwarePropertyDefault{Output,SystemOutput,Input}Device |
  * | ALSA      | udev "sound" events, then the PCM name hints      | never - ALSA has no default to change   |
+ * | RemoteIO  | AVAudioSessionRouteChangeNotification, and the media services' reset, then the route's ports | the same: the GENERAL port of a direction |
  *
  * What each backend can't see:
  * - CoreAudio: a device that stays but gains or loses its streams in one
@@ -1305,7 +1468,7 @@ SPUDRESULT spudaudio_stream_get_status(
  * ADDED and REMOVED are about the list spudaudio_enumerate_devices()
  * returns: ADDED is an endpoint that list now has and didn't, REMOVED one it
  * had and no longer does. Where the platform only says that something
- * changed (CoreAudio, ALSA), the backend compares the endpoints against the
+ * changed (CoreAudio, ALSA, RemoteIO), the backend compares the endpoints against the
  * ones it last saw and reports each difference. An endpoint that is both an
  * output and an input is two endpoints here, as it is when enumerated, and
  * gets an event per direction.
@@ -1341,8 +1504,9 @@ enum {
  *
  * Thread: runs on a thread that is not the caller's, at the same time as
  * the caller's own calls - the system's notification thread on WASAPI, a
- * serial dispatch queue the backend makes on CoreAudio, a thread the
- * backend starts for it on ALSA - and not necessarily the same thread
+ * serial dispatch queue the backend makes on CoreAudio and on RemoteIO, a
+ * thread the backend starts for it on ALSA - and not necessarily the same
+ * thread
  * each time. Calls for one instance never overlap each other. Don't block
  * in it.
  *
@@ -1410,7 +1574,7 @@ typedef void (*SPUDAUDIO_DEVICE_EVENT_CALLBACK)(
  * @return Another SPUDRESULT where the platform refused the registration
  *         (WASAPI RegisterEndpointNotificationCallback, a CoreAudio
  *         property listener) or the backend couldn't start listening (ALSA:
- *         the udev monitor or the watcher thread).
+ *         the udev monitor or the watcher thread; RemoteIO: its queue).
  */
 SPUDRESULT spudaudio_set_device_event_callback(
     spudaudio_instance instance,

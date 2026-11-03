@@ -1680,7 +1680,10 @@ it, with the struct's ABI break listed then. Not built.
       nothing there today), so its backend holds one texture per plane;
       built with a caller;
     - (e) the import and export `EXT` group takes Vulkan external memory
-      (DMA-BUF, Win32 handles), D3D12 shared handles and IOSurface on Metal;
+      (DMA-BUF, Win32 handles), D3D12 shared handles and IOSurface on Metal.
+      Its first caller is to be Trellis_Avalonia's viewport (card H30,
+      2026-11-02): a texture trellislib renders and Avalonia composes, once
+      a spike shows which handles Avalonia imports;
     - (g) decode and encode sessions (Vulkan Video, D3D12 Video; Metal has
       no GPU-API counterpart to VideoToolbox) and their queue kind bits wait
       for a caller.

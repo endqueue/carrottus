@@ -20,7 +20,8 @@
  *   spudgpu_submit_command_lists_synced() and presented. Windows presents to
  *   a hidden window, macOS to a CAMetalLayer with no window; Linux has no
  *   surface here without a display, so it is skipped there.
- * - SpudAudio's stream thread: an output stream on the general default
+ * - SpudAudio's stream thread (the platform's own on Core Audio and
+ *   RemoteIO): an output stream on the general default
  *   device writing silence, counted on the callback's own thread from its
  *   Nth call to its (N+100)th, everything SpudAudio does on that thread
  *   between the calls included. Skipped with no output device.
@@ -956,6 +957,8 @@ static void test_audio(void) {
 	const SPUDAUDIO_NATIVE_API api = SPUDAUDIO_NATIVE_API_WASAPI;
 #elif SPUDAUDIO_COMPILE_ALSA
 	const SPUDAUDIO_NATIVE_API api = SPUDAUDIO_NATIVE_API_ALSA;
+#elif SPUDAUDIO_COMPILE_REMOTEIO
+	const SPUDAUDIO_NATIVE_API api = SPUDAUDIO_NATIVE_API_REMOTEIO;
 #else
 	const SPUDAUDIO_NATIVE_API api = SPUDAUDIO_NATIVE_API_NONE;
 #endif
@@ -1010,9 +1013,10 @@ static void test_audio(void) {
 		desc.format.interleaved   = true;
 	}
 	desc.flags = SPUDAUDIO_STREAM_FLAG_NONE;
-	/* Core Audio's callback runs on its own thread, the only mechanism it
-	 * has; the others have a thread of SpudAudio's at the OS's default. */
-#if SPUDAUDIO_COMPILE_COREAUDIO
+	/* Core Audio's and RemoteIO's callbacks run on the platform's own
+	 * thread, the only mechanism they have; the others have a thread of
+	 * SpudAudio's at the OS's default. */
+#if SPUDAUDIO_COMPILE_COREAUDIO || SPUDAUDIO_COMPILE_REMOTEIO
 	desc.thread.priority = SPUDAUDIO_THREAD_PRIORITY_PLATFORM;
 #else
 	desc.thread.priority = SPUDAUDIO_THREAD_PRIORITY_NORMAL;
@@ -1069,7 +1073,10 @@ static void test_audio(void) {
 		s.channels     = config.format.channel_count;
 		s.sample_bytes = spudaudio_sample_format_byte_size(config.format.sample_format);
 		s.interleaved  = config.format.interleaved;
-		CHECK(spudaudio_stream_start(stream) == SPUD_SUCCESS);
+		const SPUDRESULT started = spudaudio_stream_start(stream);
+		if (started != SPUD_SUCCESS)
+			printf("spud_noalloc_tests: SpudAudio: the stream didn't start: %s\n", spudresult_str(started));
+		CHECK(started == SPUD_SUCCESS);
 		/* The counted calls are a little over a second at a 10 ms period;
 		 * ten seconds is plenty for any period a device takes. */
 		for (int waited = 0; waited < 10000 && !s.counted; waited += 10)
@@ -1079,7 +1086,7 @@ static void test_audio(void) {
 		if (s.counted) {
 			alloc_trace_attribute();
 			char what[160];
-			snprintf(what, sizeof(what), "SpudAudio's stream thread writing silence, %u-frame period, callbacks %d to %d",
+			snprintf(what, sizeof(what), "SpudAudio's stream callback writing silence, %u-frame period, callbacks %d to %d",
 			         config.period_frames, AUDIO_FIRST_COUNTED, AUDIO_FIRST_COUNTED + ITERATIONS);
 			report(what);
 		}

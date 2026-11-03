@@ -5,8 +5,8 @@
  * Apple-platform helpers shared by every Apple audio backend: only
  * CoreAudioTypes and mach, plus AudioToolbox where it exists — macOS, iOS
  * and iPadOS have it; the watchOS SDK has no AudioToolbox framework at all.
- * So the macOS HAL backend (spudaudiocoreaudio.c) and future iOS-family
- * and watchOS backends all build on it. Nothing here touches the
+ * So the macOS HAL backend (spudaudiocoreaudio.c), the iOS and iPadOS
+ * backend (spudaudioremoteio.c) and a future watchOS one all build on it. Nothing here touches the
  * macOS-only HAL (AudioObject*).
  */
 
