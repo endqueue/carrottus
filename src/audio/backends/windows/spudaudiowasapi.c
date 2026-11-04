@@ -1504,9 +1504,12 @@ static unsigned __stdcall wasapi_audio_thread(void *arg) {
 	struct spudaudio_stream_t *s = (struct spudaudio_stream_t *)arg;
 	InterlockedExchange(&s->audio_thread_id, (LONG)GetCurrentThreadId());
 
-	// --- Startup, reported back to spudaudio_stream_start.
+	// --- Startup, reported back to spudaudio_stream_start. RUNNING before
+	// the prefill: it calls the callback, and RUNNING is the state while
+	// the callback is called.
 	HANDLE avrt  = NULL;
 	SPUDRESULT r = wasapi_apply_priority(s, &avrt);
+	InterlockedExchange(&s->state, SPUDAUDIO_STREAM_STATE_RUNNING);
 	if (SPUD_SUCCESS == r && s->direction == SPUDAUDIO_DIRECTION_OUTPUT)
 		r = wasapi_render(s, false); // prefill, so Start doesn't begin on silence
 	if (SPUD_SUCCESS == r)
@@ -1514,6 +1517,8 @@ static unsigned __stdcall wasapi_audio_thread(void *arg) {
 	if (SPUDFAIL(r)) {
 		if (r == SPUDRESULT_SAUD_DEVICE_LOST)
 			wasapi_set_terminal(s, r);
+		else
+			InterlockedExchange(&s->state, SPUDAUDIO_STREAM_STATE_STOPPED);
 		IAudioClient_Reset(s->client);
 		if (avrt)
 			AvRevertMmThreadCharacteristics(avrt);
@@ -1521,7 +1526,6 @@ static unsigned __stdcall wasapi_audio_thread(void *arg) {
 		SetEvent(s->startup_event);
 		return 0;
 	}
-	InterlockedExchange(&s->state, SPUDAUDIO_STREAM_STATE_RUNNING);
 	s->startup_result = SPUD_SUCCESS;
 	SetEvent(s->startup_event);
 

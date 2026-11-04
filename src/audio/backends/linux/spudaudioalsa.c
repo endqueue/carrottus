@@ -1347,6 +1347,9 @@ static void *alsa_audio_thread(void *arg) {
 		else if (snd_pcm_poll_descriptors(s->pcm, fds + 1, (unsigned int)pcm_fds) != pcm_fds)
 			r = SPUDRESULT_API_SPECIFIC_FAILURE;
 	}
+	// RUNNING before the prefill: it calls the callback, and RUNNING is the
+	// state while the callback is called.
+	atomic_store(&s->state, SPUDAUDIO_STREAM_STATE_RUNNING);
 	if (SPUD_SUCCESS == r) {
 		fds[0].fd     = s->stop_fd;
 		fds[0].events = POLLIN;
@@ -1355,13 +1358,14 @@ static void *alsa_audio_thread(void *arg) {
 	if (SPUDFAIL(r)) {
 		if (r == SPUDRESULT_SAUD_DEVICE_LOST)
 			alsa_set_terminal(s, r);
+		else
+			atomic_store(&s->state, SPUDAUDIO_STREAM_STATE_STOPPED);
 		snd_pcm_drop(s->pcm);
 		snd_pcm_prepare(s->pcm);
 		s->startup_result = r;
 		sem_post(&s->startup);
 		return NULL;
 	}
-	atomic_store(&s->state, SPUDAUDIO_STREAM_STATE_RUNNING);
 	s->startup_result = SPUD_SUCCESS;
 	sem_post(&s->startup);
 

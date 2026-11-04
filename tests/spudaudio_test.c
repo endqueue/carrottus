@@ -22,6 +22,7 @@
  */
 
 #include <spudaudio.h>
+#include <spudperf.h>
 
 #include "spudtest_allocator.h"
 
@@ -29,7 +30,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
 static int failures = 0;
 
@@ -81,9 +81,9 @@ static void silent_callback(
 	*(int *)user_data = 1;
 }
 
+/* SpudPerf's wait on the monotonic clock: the same call on every platform. */
 static void sleep_ms(long ms) {
-	struct timespec t = {ms / 1000, (ms % 1000) * 1000000L};
-	nanosleep(&t, NULL);
+	spudperf_sleep_until_monotonic_ns(spudperf_get_monotonic_time_ns() + (uint64_t)ms * 1000000u);
 }
 
 /* What a running stream's callbacks saw, written on the callback's thread

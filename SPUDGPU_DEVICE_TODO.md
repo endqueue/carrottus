@@ -1269,7 +1269,7 @@ it, with the struct's ABI break listed then. Not built.
     is reported to Slang either way (`../claude_made_decisions.md`,
     2026-11-01).
   - **Run on Windows 2026-11-02** (the ThinkPad, D3D12 and Vulkan, the
-    Iris Xe, in trellislib's Debug builds): `spudgpu_objects_test`'s set
+    Iris Xe, in a caller's Debug builds): `spudgpu_objects_test`'s set
     bindings case expected D3D12 and Vulkan to make every pipeline,
     including the modules that break "Every binding of a set"; D3D12's
     runtime refused two (a binding past the set, a count of 2; "Root
@@ -1681,9 +1681,9 @@ it, with the struct's ABI break listed then. Not built.
       built with a caller;
     - (e) the import and export `EXT` group takes Vulkan external memory
       (DMA-BUF, Win32 handles), D3D12 shared handles and IOSurface on Metal.
-      Its first caller is to be Trellis_Avalonia's viewport (card H30,
-      2026-11-02): a texture trellislib renders and Avalonia composes, once
-      a spike shows which handles Avalonia imports;
+      Its first use is to be a caller's rendered texture composed by a UI
+      framework (card H30, 2026-11-02), once a spike shows which handles
+      that framework imports;
     - (g) decode and encode sessions (Vulkan Video, D3D12 Video; Metal has
       no GPU-API counterpart to VideoToolbox) and their queue kind bits wait
       for a caller.

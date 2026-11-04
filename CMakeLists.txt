@@ -730,6 +730,13 @@ if(NOT TARGET spudlib)
         # plays.
         add_executable(spudaudio_test tests/spudaudio_test.c)
         target_link_libraries(spudaudio_test PRIVATE spudlib)
+        # The callback's counts are <stdatomic.h>'s, which MSVC's C compiler
+        # provides only in C11 or later and behind this switch, as for the
+        # Vulkan backend above.
+        if(CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+            set_property(TARGET spudaudio_test PROPERTY C_STANDARD 11)
+            target_compile_options(spudaudio_test PRIVATE /experimental:c11atomics)
+        endif()
         add_test(NAME spudaudio_test COMMAND spudaudio_test)
         if(UNIX AND NOT APPLE)
             # Under the -asan and -tsan presets: what PipeWire and ALSA's

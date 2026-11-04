@@ -1500,7 +1500,19 @@ evening on the Mac (Known gaps below, `SPUDGPU_DEVICE_TODO.md`).
   a stream created stopped, read and destroyed, the device-event callback
   set and cleared, all through a counting allocator; passes with no device;
   added 2026-10-22, macOS plain, ASan and TSan; on Windows 11 over WASAPI,
-  Debug, Release and ASan, 2026-10-29),
+  Debug, Release and ASan, 2026-10-29; since 2026-11-02 also a silent
+  stream started, its callbacks checked from inside, stopped and started
+  again. On Windows on 2026-11-03 that version first failed to build
+  (MSVC's C compiler gives `<stdatomic.h>` only from C11 and behind
+  `/experimental:c11atomics`, now set on the test as on the Vulkan
+  backend; and `nanosleep`, now SpudPerf's monotonic wait) and then found
+  WASAPI calling the stream callback while the state was still STOPPED:
+  the prefill before the device starts ran ahead of `RUNNING`, which the
+  header defines as the state while the callback is called. WASAPI and
+  ALSA (the same prefill order) now store `RUNNING` first and put
+  STOPPED back if the start fails, as CoreAudio and RemoteIO already
+  did. WASAPI run (ThinkPad P1, Realtek speakers, `windows-d3d12` and
+  `-vulkan`, Debug and Release); ALSA written, not compiled),
   `spudinput_test`
   (above) and `spudperf_test` (the monotonic clocks,
   `spudperf_sleep_until_monotonic_ns` and `spudperf_sleep_until_monotonic_ms`,
