@@ -354,8 +354,9 @@ static void test_stream(spudaudio_device device) {
 	CHECK_RESULT(spudaudio_get_timing_caps(device, &desc.format, desc.flags, NULL), SPUDRESULT_NULL_OUTPUT_PARAMETER);
 	SPUDRESULT r = spudaudio_get_timing_caps(device, &desc.format, desc.flags, &caps);
 	if (g_api == SPUDAUDIO_NATIVE_API_REMOTEIO && r == SPUD_SUCCESS) {
-		/* The session reports no range: the IO buffer it has is min, max
-		 * and default, and the frames vary. */
+		/* The period is the session's IO buffer in force, the only one:
+		 * min, max and default, and the frames vary. */
+		CHECK(caps.period_mode == SPUDAUDIO_PERIOD_MODE_FIXED);
 		CHECK(caps.min_period_frames == caps.default_period_frames);
 		CHECK(caps.max_period_frames == caps.default_period_frames);
 		CHECK(caps.variable_callback_frames);
@@ -463,28 +464,26 @@ static void test_stream(spudaudio_device device) {
 		r         = spudaudio_probe_stream(&bad, &suggested);
 		printf("spudaudio_test: S16 through the unit's converter: %s\n", spudresult_str(r));
 		CHECK(r == SPUD_SUCCESS || r == SPUDRESULT_SAUD_FORMAT_NOT_SUPPORTED);
-		/* A probe puts back the session's preferred IO buffer duration, so
-		 * a probe of another period leaves the IO buffer the previous
-		 * probe left. (Not always the one the session had before any
-		 * probe: the system's answer to the preference put back.) */
-		SPUDAUDIO_TIMING_CAPS before, after;
-		memset(&before, 0, sizeof(before));
-		before.base.type = SPUD_STRUCT_TYPE_AUDIO_TIMING_CAPS;
-		after            = before;
-		CHECK_RESULT(spudaudio_get_timing_caps(device, &desc.format, desc.flags, &before), SPUD_SUCCESS);
+		/* Another period is refused, the session's IO buffer in force
+		 * suggested, and the session isn't changed: the caps read the same
+		 * after. */
+		SPUDAUDIO_TIMING_CAPS after;
+		memset(&after, 0, sizeof(after));
+		after.base.type   = SPUD_STRUCT_TYPE_AUDIO_TIMING_CAPS;
 		bad               = desc;
 		bad.period_frames = desc.period_frames * 2;
-		r                 = spudaudio_probe_stream(&bad, &suggested);
-		printf("spudaudio_test: a probe of a %u-frame period: %s (%u suggested)\n", (unsigned)bad.period_frames, spudresult_str(r),
-		    (unsigned)suggested.period_frames);
-		CHECK(r == SPUD_SUCCESS || r == SPUDRESULT_SAUD_PERIOD_OUT_OF_RANGE);
+		CHECK_RESULT(spudaudio_probe_stream(&bad, &suggested), SPUDRESULT_SAUD_PERIOD_OUT_OF_RANGE);
+		CHECK(suggested.period_frames == desc.period_frames);
+		CHECK(suggested.period_mode == SPUDAUDIO_PERIOD_MODE_FIXED);
 		CHECK_RESULT(spudaudio_get_timing_caps(device, &desc.format, desc.flags, &after), SPUD_SUCCESS);
-		CHECK(after.default_period_frames == before.default_period_frames);
+		CHECK(after.default_period_frames == desc.period_frames);
 	}
-	if (g_api == SPUDAUDIO_NATIVE_API_COREAUDIO || g_api == SPUDAUDIO_NATIVE_API_REMOTEIO) {
+	if (g_api == SPUDAUDIO_NATIVE_API_COREAUDIO) {
 		/* The rate the device has is granted without a change. */
 		CHECK_RESULT(spudaudio_set_device_sample_rate(device, config.format.sample_rate), SPUD_SUCCESS);
 	} else {
+		/* WASAPI and ALSA have no device-wide rate; RemoteIO's is the
+		 * session's, which is the caller's. */
 		CHECK_RESULT(spudaudio_set_device_sample_rate(device, config.format.sample_rate), SPUDRESULT_SAUD_SAMPLE_RATE_NOT_SETTABLE);
 	}
 

@@ -83,12 +83,16 @@ extern "C" {
  *   (AVAudioApplication.recordPermission); without it an input stream is
  *   refused with SPUDRESULT_SAUD_ACCESS_DENIED.
  *
- * Two of SpudAudio's calls change the session for the whole process, every
- * other audio object in it included (an AVAudioEngine, an AVAudioPlayer):
- * spudaudio_set_device_sample_rate() sets its preferred sample rate, and a
- * stream's `period_frames` its preferred IO buffer duration. Both are
- * requests the system may grant differently; SpudAudio reports what it
- * granted and refuses what it didn't grant exactly.
+ * The session's sample rate and IO buffer duration are the caller's too:
+ * they hold for every audio object of the process (an AVAudioEngine, an
+ * AVAudioPlayer), so SpudAudio sets neither. A stream is granted the
+ * session's rate and its IO buffer in force as its period
+ * (SPUDAUDIO_PERIOD_MODE_FIXED); for another, the caller sets the session's
+ * preferred sample rate or IO buffer duration
+ * (setPreferredSampleRate, setPreferredIOBufferDuration), which the system
+ * may grant differently, then reads the device's format and timing caps
+ * again. spudaudio_set_device_sample_rate() is
+ * SPUDRESULT_SAUD_SAMPLE_RATE_NOT_SETTABLE here.
  *
  * An interruption (a call, an alarm, another app's audio that doesn't mix)
  * ends a running stream in SPUDAUDIO_STREAM_STATE_ERROR with
@@ -655,7 +659,7 @@ SPUDRESULT spudaudio_get_device_properties(
 
 /**
  * @brief Sets a device-wide sample rate, where the platform has one -
- * CoreAudio, and RemoteIO's session-wide one; WASAPI and ALSA return
+ * CoreAudio only; WASAPI, ALSA and RemoteIO return
  * SPUDRESULT_SAUD_SAMPLE_RATE_NOT_SETTABLE.
  *
  * This changes the device for every application using it, which is why
@@ -669,16 +673,13 @@ SPUDRESULT spudaudio_get_device_properties(
  * - WASAPI: not settable - the shared-mode rate is a user setting with no
  *   API, and exclusive streams carry their own rate.
  * - ALSA: not settable - the rate is per opened PCM (hw_params).
- * - RemoteIO: AVAudioSession setPreferredSampleRate, a request for the
- *   whole session, and so for every port of the route and every audio
- *   object of the process; `device` only has to be in the route. The call
- *   succeeds when the session's sampleRate is then the rate asked for.
- *   Otherwise (a rate the route hasn't, an inactive session, where the
- *   system defers it) the preferred rate the session had is put back and
- *   the call fails.
+ * - RemoteIO: not settable here - the rate is the audio session's, which
+ *   is the caller's (AVAudioSession setPreferredSampleRate), and holds for
+ *   every port of the route and every audio object of the process.
  *
  * A running CoreAudio or RemoteIO stream whose device rate changes -
- * through this call or anything else (on iOS, a route change) - ends in
+ * through this call or anything else (on iOS, the caller's session or a
+ * route change) - ends in
  * SPUDAUDIO_STREAM_STATE_ERROR with error
  * SPUDRESULT_SAUD_FORMAT_NOT_SUPPORTED: its granted format no longer
  * describes the device.
@@ -690,12 +691,9 @@ SPUDRESULT spudaudio_get_device_properties(
  * @retval SPUDRESULT_SAUD_INVALID_DEVICE `device` is NULL.
  * @retval SPUDRESULT_DESC_INVALID_PARAMETERS `sample_rate` is 0.
  * @retval SPUDRESULT_SAUD_SAMPLE_RATE_NOT_SETTABLE The platform has no
- *         device-wide rate to set (WASAPI, ALSA).
- * @retval SPUDRESULT_SAUD_DEVICE_LOST RemoteIO: `device`'s port is not in
- *         the current route.
+ *         device-wide rate to set here (WASAPI, ALSA, RemoteIO).
  * @retval SPUDRESULT_SAUD_FORMAT_NOT_SUPPORTED CoreAudio: `sample_rate` is
- *         not in kAudioDevicePropertyAvailableNominalSampleRates. RemoteIO:
- *         the session granted another rate; its preferred rate is put back.
+ *         not in kAudioDevicePropertyAvailableNominalSampleRates.
  * @retval SPUDRESULT_SAUD_EXCLUSIVE_UNAVAILABLE CoreAudio: another process
  *         holds the device in hog mode.
  * @retval SPUDRESULT_API_SPECIFIC_FAILURE CoreAudio: the device never
@@ -786,11 +784,10 @@ enum {
 	 * stopped before the period was checked. */
 	SPUDAUDIO_PERIOD_MODE_UNKNOWN    = 0,
 	/** Only one period exists (min == max == default). WASAPI shared via
-	 * IAudioClient. */
+	 * IAudioClient; RemoteIO, the session's IO buffer in force. */
 	SPUDAUDIO_PERIOD_MODE_FIXED      = 1,
 	/** Granted exactly as requested if spudaudio_probe_stream() accepts it.
-	 * WASAPI shared via IAudioClient3, WASAPI exclusive, ALSA, CoreAudio,
-	 * RemoteIO. */
+	 * WASAPI shared via IAudioClient3, WASAPI exclusive, ALSA, CoreAudio. */
 	SPUDAUDIO_PERIOD_MODE_EXACT      = 2,
 	/** A request only - a shared graph picks the actual period and may
 	 * change it while the stream runs. PipeWire (planned). */
@@ -815,14 +812,14 @@ enum {
  *   false, since a converted stream's callback always gets one period.
  * - PipeWire (planned): clock.min-quantum / clock.max-quantum /
  *   clock.quantum.
- * - RemoteIO: the session reports no range, only the IO buffer it has now
- *   (AVAudioSession IOBufferDuration at its sampleRate), which is given as
- *   min, max and default: the one period known to be granted. Another is
- *   asked for through spudaudio_probe_stream(), which asks the session and
- *   grants it or suggests what the session gave. `variable_callback_frames`
- *   is true: the system changes the IO buffer while a stream runs (when the
- *   screen locks, on a route change), and a converted stream's frames vary.
- *   No buffer separate from the period.
+ * - RemoteIO: FIXED: the session's IO buffer in force (AVAudioSession
+ *   IOBufferDuration at its sampleRate, in the format's frames where
+ *   ALLOW_OS_CONVERSION gives it another rate, rounded to the nearest) is
+ *   min, max and default. Another is the caller's to ask of the session it
+ *   owns (setPreferredIOBufferDuration), then to read here again.
+ *   `variable_callback_frames` is true: the system changes the IO buffer
+ *   while a stream runs (when the screen locks, on a route change), and a
+ *   converted stream's frames vary. No buffer separate from the period.
  */
 typedef struct SPUDAUDIO_TIMING_CAPS {
 	/** `type` is SPUD_STRUCT_TYPE_AUDIO_TIMING_CAPS; `next` is NULL (nothing is chained onto
@@ -1133,10 +1130,10 @@ typedef struct SPUDAUDIO_STREAM_CONFIG {
  *   comes to.
  * - RemoteIO: the route's format; with ALLOW_OS_CONVERSION, a format that
  *   isn't the route's is set on a RemoteIO unit made for the probe. The
- *   period is set as the session's preferred IO buffer duration and the
- *   IOBufferDuration it then reports, at its rate, is the suggestion; the
- *   preferred duration the session had is put back before the probe
- *   returns, so a probe leaves the session as it found it.
+ *   period must be the session's IO buffer in force, as the timing caps
+ *   give it, which is the suggestion; where that IO buffer is longer than
+ *   the unit renders at once (its MaximumFramesPerSlice), no period is
+ *   suggested (0). Nothing of the session is changed.
  * - PipeWire (planned): clamp to clock.min/max-quantum.
  *
  * Probing briefly opens the device (exclusively, in exclusive mode).
@@ -1211,9 +1208,7 @@ SPUDRESULT spudaudio_probe_stream(
  * spudaudio_destroy_stream()).
  *
  * RemoteIO: makes and initializes a RemoteIO audio unit for the route, and
- * leaves the session's preferred IO buffer duration at the period it set,
- * as CoreAudio leaves the device's I/O buffer size: destroying the stream
- * doesn't put the old one back. Each stream is its own unit; the route
+ * changes nothing of the session. Each stream is its own unit; the route
  * plays every running one.
  *
  * @param[in]  desc       The stream to create. `desc->callback` is

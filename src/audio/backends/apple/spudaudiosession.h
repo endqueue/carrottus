@@ -7,10 +7,8 @@
  * unit's half (spudaudioremoteio.c) is plain C and its render callback
  * never sends an Objective-C message.
  *
- * Everything here reads the process's session as it is. The only things
- * written are the two preferences spudaudio.h says a call sets (the sample
- * rate, the IO buffer duration), each put back by its caller where the
- * header says so. No category, mode, option or activation is ever set.
+ * Everything here reads the process's session as it is: nothing of it is
+ * ever set, the session being the caller's.
  *
  * Every call may be made from any thread: AVAudioSession's properties are
  * readable from any thread, and each call drains its own autorelease pool,
@@ -42,8 +40,6 @@ typedef struct spudaudio_session_state {
 	double io_buffer_duration;      // IOBufferDuration, seconds
 	double output_latency;          // outputLatency, seconds
 	double input_latency;           // inputLatency, seconds
-	double preferred_sample_rate;   // preferredSampleRate (0: none set)
-	double preferred_io_duration;   // preferredIOBufferDuration (0: none set)
 } spudaudio_session_state;
 
 void spudaudio_session_read(spudaudio_session_state *out);
@@ -68,12 +64,6 @@ bool spudaudio_session_find_port(
     const char *persistent_id,
     spudaudio_session_port *out_port,
     uint32_t *out_route_port_count);
-
-// setPreferredSampleRate / setPreferredIOBufferDuration. Returns
-// SPUDRESULT_API_SPECIFIC_FAILURE where the session refuses the request
-// itself (an NSError), which is not the same as granting another value.
-SPUDRESULT spudaudio_session_set_preferred_sample_rate(double rate);
-SPUDRESULT spudaudio_session_set_preferred_io_duration(double seconds);
 
 // AVAudioApplication.recordPermission is granted.
 bool spudaudio_session_record_permission_granted(void);

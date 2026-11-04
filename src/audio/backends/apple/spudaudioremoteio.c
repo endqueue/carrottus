@@ -10,11 +10,9 @@
  *
  * Model:
  * - The session belongs to the caller. Nothing here sets its category,
- *   mode or options, activates it or asks for record permission; the
- *   session half (spudaudiosession.m) reads it as it is. The only things
- *   written are the two preferences spudaudio.h names: the sample rate
- *   (spudaudio_set_device_sample_rate) and the IO buffer duration (a
- *   stream's period).
+ *   mode, options, preferred sample rate or IO buffer duration, activates
+ *   it or asks for record permission; the session half
+ *   (spudaudiosession.m) reads it as it is.
  * - A SpudAudio device is a port of the session's current route in one
  *   direction, identified by its UID. iOS has no other list of devices;
  *   the route is chosen by the system and the person holding the device.
@@ -27,9 +25,8 @@
  *   channels. With ALLOW_OS_CONVERSION another sample format or rate is
  *   the unit's own converter's, between the client format set on the unit
  *   and the route's; the channel count must still be the port's.
- * - The period is the session's IO buffer duration, a request the system
- *   may grant differently, which is then refused with what it granted as
- *   the suggestion.
+ * - The period is the session's IO buffer in force (FIXED); another is the
+ *   caller's to ask of its session.
  * - No exclusive mode.
  * - Device-change notification is the session's route change and media
  *   services reset, heard by the session half and compared here against
@@ -46,7 +43,6 @@
 #include <stdatomic.h>
 #include <stddef.h>
 #include <string.h>
-#include <time.h>
 #include "../../../spudallocator.h"
 #include "../../../spudstructbase.h"
 
@@ -57,12 +53,6 @@ extern "C" {
 /* The two buses of a RemoteIO unit. */
 #define RIO_OUTPUT_BUS 0
 #define RIO_INPUT_BUS 1
-
-/* How long spudaudio_set_device_sample_rate() waits for the session to
- * report a rate it was asked for, in milliseconds, and how often it looks:
- * the same bound CoreAudio's backend keeps for the HAL. */
-#define RIO_RATE_WAIT_MS 2000
-#define RIO_RATE_POLL_MS 10
 
 struct spudaudio_device_t {
 	spud_object_head head; // allocator: a copy of its instance's
@@ -181,11 +171,6 @@ static uint32_t rio_scale_frames(uint32_t frames, uint32_t from, uint32_t to, in
 	if (round == 0)
 		return (uint32_t)((scaled + from / 2) / from);
 	return (uint32_t)(scaled / from);
-}
-
-static void rio_sleep_ms(long ms) {
-	struct timespec t = {ms / 1000, (ms % 1000) * 1000000L};
-	nanosleep(&t, NULL);
 }
 
 // The route's own format for a port: Float32 at the session's rate.
@@ -546,11 +531,7 @@ SPUDRESULT spudaudio_get_device_properties(
 	return SPUD_SUCCESS;
 }
 
-/*
- * Session-wide, so explicit. The session takes a preferred rate as a
- * request; this waits (bounded) for it to report the rate, and puts the
- * preference back where it doesn't.
- */
+// The rate is the audio session's, and the session is the caller's.
 SPUDRESULT spudaudio_set_device_sample_rate(spudaudio_device device, uint32_t sample_rate) {
 	if (!device)
 		return SPUDRESULT_SAUD_INVALID_DEVICE;
@@ -558,31 +539,23 @@ SPUDRESULT spudaudio_set_device_sample_rate(spudaudio_device device, uint32_t sa
 		return SPUDRESULT_SAUD_INVALID_DEVICE;
 	if (sample_rate == 0)
 		return SPUDRESULT_DESC_INVALID_PARAMETERS;
-	if (!spudaudio_session_find_port(&device->head.allocator, device->direction, device->persistent_id, NULL, NULL))
-		return SPUDRESULT_SAUD_DEVICE_LOST;
-
-	spudaudio_session_state session;
-	spudaudio_session_read(&session);
-	if (lround(session.sample_rate) == (long)sample_rate)
-		return SPUD_SUCCESS;
-	SPUDRESULT r = spudaudio_session_set_preferred_sample_rate(sample_rate);
-	if (SPUDFAIL(r))
-		return r;
-	for (int waited = 0; waited < RIO_RATE_WAIT_MS; waited += RIO_RATE_POLL_MS) {
-		spudaudio_session_state now;
-		spudaudio_session_read(&now);
-		if (lround(now.sample_rate) == (long)sample_rate)
-			return SPUD_SUCCESS;
-		rio_sleep_ms(RIO_RATE_POLL_MS);
-	}
-	// Granted otherwise: a failed call changes nothing.
-	spudaudio_session_set_preferred_sample_rate(session.preferred_sample_rate);
-	return SPUDRESULT_SAUD_FORMAT_NOT_SUPPORTED;
+	return SPUDRESULT_SAUD_SAMPLE_RATE_NOT_SETTABLE;
 }
 
 // --------------------------------------------------------------------------
 // Timing / probe
 // --------------------------------------------------------------------------
+
+// The session's IO buffer in force, in the frames of a stream of `format`:
+// at its own rate where ALLOW_OS_CONVERSION gives it another, rounded to
+// the nearest.
+static uint32_t rio_period(const spudaudio_session_state *session, const SPUDAUDIO_FORMAT *format, SPUDAUDIO_STREAM_FLAGS flags) {
+	const uint32_t rate    = (uint32_t)lround(session->sample_rate);
+	const uint32_t current = rio_frames(session->io_buffer_duration, rate);
+	if ((flags & SPUDAUDIO_STREAM_FLAG_ALLOW_OS_CONVERSION) && format->sample_rate != 0 && rate != 0 && format->sample_rate != rate)
+		return rio_scale_frames(current, rate, format->sample_rate, 0);
+	return current;
+}
 
 SPUDRESULT spudaudio_get_timing_caps(
     spudaudio_device device,
@@ -605,28 +578,18 @@ SPUDRESULT spudaudio_get_timing_caps(
 	if (!spudaudio_session_find_port(&device->head.allocator, device->direction, device->persistent_id, NULL, NULL))
 		return SPUDRESULT_SAUD_DEVICE_LOST;
 
-	// The session reports no range: the IO buffer it has now is the one
-	// period known to be granted.
+	// The one period: the session's IO buffer in force, in the stream's
+	// frames.
 	spudaudio_session_state session;
 	spudaudio_session_read(&session);
-	const uint32_t rate                 = (uint32_t)lround(session.sample_rate);
-	const uint32_t current              = rio_frames(session.io_buffer_duration, rate);
-	out_caps->period_mode               = SPUDAUDIO_PERIOD_MODE_EXACT;
-	out_caps->min_period_frames         = current;
-	out_caps->max_period_frames         = current;
-	out_caps->default_period_frames     = current;
+	const uint32_t period               = rio_period(&session, format, flags);
+	out_caps->period_mode               = SPUDAUDIO_PERIOD_MODE_FIXED;
+	out_caps->min_period_frames         = period;
+	out_caps->max_period_frames         = period;
+	out_caps->default_period_frames     = period;
 	out_caps->period_granularity_frames = 1;
 	out_caps->variable_callback_frames  = true;
 	// min/max_buffer_frames stay 0: no buffer separate from the period.
-
-	// A converted stream's period is in its own frames.
-	if ((flags & SPUDAUDIO_STREAM_FLAG_ALLOW_OS_CONVERSION) && format->sample_rate != 0 && rate != 0 && format->sample_rate != rate) {
-		out_caps->min_period_frames     = rio_scale_frames(current, rate, format->sample_rate, 1);
-		out_caps->max_period_frames     = rio_scale_frames(current, rate, format->sample_rate, -1);
-		out_caps->default_period_frames = rio_scale_frames(current, rate, format->sample_rate, 0);
-		if (out_caps->max_period_frames < out_caps->min_period_frames)
-			out_caps->max_period_frames = out_caps->min_period_frames;
-	}
 	return SPUD_SUCCESS;
 }
 
@@ -640,8 +603,6 @@ struct rio_plan {
 	SPUDAUDIO_FORMAT device_format; // the port's own format
 	bool converted;                 // the unit converts between the two
 	AudioComponentInstance unit;    // made for the stream, client format set; NULL on failure
-	double restore_io_duration;     // the session's preferred IO buffer duration before the plan set it
-	bool io_duration_set;           // the plan changed it
 };
 
 /*
@@ -650,12 +611,8 @@ struct rio_plan {
  * format, period and buffer, in that order, each against what the session
  * reports, with its own value as the suggestion; then exclusive mode,
  * which RemoteIO doesn't have. The client format is set on a RemoteIO unit
- * made here, so whether the unit takes it is the unit's answer.
- *
- * The period is set as the session's preferred IO buffer duration and read
- * back: the plan leaves it set, with the old value in `plan` for whoever
- * must put it back. On failure it is already put back, and `plan->unit`
- * disposed.
+ * made here, so whether the unit takes it is the unit's answer. Nothing of
+ * the session is changed. On failure `plan->unit` is disposed.
  */
 static SPUDRESULT rio_plan_stream(const SPUDAUDIO_STREAM_DESC *desc, SPUDAUDIO_STREAM_CONFIG *cfg, struct rio_plan *plan) {
 	const struct spudaudio_device_t *device = desc->device;
@@ -705,20 +662,13 @@ static SPUDRESULT rio_plan_stream(const SPUDAUDIO_STREAM_DESC *desc, SPUDAUDIO_S
 		return SPUDRESULT_SAUD_FORMAT_NOT_SUPPORTED;
 	}
 
-	// --- Period: asked of the session in route frames, granted or not.
+	// --- Period: the session's IO buffer in force, the only one.
 	const uint32_t rate          = desc->format.sample_rate;
-	const uint32_t device_period = plan->converted ? rio_scale_frames(desc->period_frames, rate, device_rate, 0) : desc->period_frames;
-	cfg->period_mode             = SPUDAUDIO_PERIOD_MODE_EXACT;
-	plan->restore_io_duration    = session.preferred_io_duration;
-	r                            = spudaudio_session_set_preferred_io_duration((double)device_period / (double)device_rate);
-	if (SPUDFAIL(r))
-		return r;
-	plan->io_duration_set = true;
-	spudaudio_session_state granted;
-	spudaudio_session_read(&granted);
-	const uint32_t granted_period = rio_frames(granted.io_buffer_duration, device_rate);
-	if (granted_period != device_period || device_period == 0) {
-		cfg->period_frames = plan->converted ? rio_scale_frames(granted_period, device_rate, rate, 0) : granted_period;
+	const uint32_t device_period = rio_frames(session.io_buffer_duration, device_rate);
+	const uint32_t period        = rio_period(&session, &desc->format, desc->flags);
+	cfg->period_mode             = SPUDAUDIO_PERIOD_MODE_FIXED;
+	if (desc->period_frames != period) {
+		cfg->period_frames = period;
 		return SPUDRESULT_SAUD_PERIOD_OUT_OF_RANGE;
 	}
 	// The most frames one render may ask for, as the platform has set it.
@@ -727,8 +677,10 @@ static SPUDRESULT rio_plan_stream(const SPUDAUDIO_STREAM_DESC *desc, SPUDAUDIO_S
 	r = rio_result(AudioUnitGetProperty(plan->unit, kAudioUnitProperty_MaximumFramesPerSlice, kAudioUnitScope_Global, 0, &max_frames, &size));
 	if (SPUDFAIL(r))
 		return r;
+	// An IO buffer the unit can't render in one go: no period is offered
+	// (0), as the session's IO buffer is the caller's to lower.
 	if (device_period > max_frames) {
-		cfg->period_frames = plan->converted ? rio_scale_frames(max_frames, device_rate, rate, -1) : max_frames;
+		cfg->period_frames = 0;
 		return SPUDRESULT_SAUD_PERIOD_OUT_OF_RANGE;
 	}
 	cfg->period_frames = desc->period_frames;
@@ -747,11 +699,8 @@ static SPUDRESULT rio_plan_stream(const SPUDAUDIO_STREAM_DESC *desc, SPUDAUDIO_S
 	return SPUD_SUCCESS;
 }
 
-// Puts back what a plan changed in the session and disposes of its unit.
+// Disposes of a plan's unit.
 static void rio_plan_undo(struct rio_plan *plan) {
-	if (plan->io_duration_set)
-		spudaudio_session_set_preferred_io_duration(plan->restore_io_duration);
-	plan->io_duration_set = false;
 	if (plan->unit)
 		AudioComponentInstanceDispose(plan->unit);
 	plan->unit = NULL;
@@ -783,7 +732,6 @@ SPUDRESULT spudaudio_probe_stream(
 		return r;
 	struct rio_plan plan;
 	r = rio_check_desc(desc, out_config, &plan);
-	// A probe leaves the session as it found it.
 	rio_plan_undo(&plan);
 	return r;
 }
@@ -1095,10 +1043,6 @@ SPUDRESULT spudaudio_create_stream(
 	if (SPUD_SUCCESS == r)
 		r = spudaudio_session_observe(&s->head.allocator, "spudaudio.remoteio.stream", rio_stream_event, s, &s->observer);
 	if (SPUDFAIL(r)) {
-		// A failed create changes nothing: the session's preferred IO
-		// buffer duration goes back too (the plan's own failure has put it
-		// back already).
-		rio_plan_undo(&plan);
 		rio_free_stream(s);
 		return r;
 	}

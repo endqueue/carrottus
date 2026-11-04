@@ -3,7 +3,7 @@
 /*
  * The AVAudioSession half of the RemoteIO backend: see spudaudiosession.h.
  *
- * Reads the session; sets only the two preferences spudaudio.h names. The
+ * Reads the session and sets nothing of it. The
  * notifications are heard through block observers of the default
  * notification center, each on an NSOperationQueue whose underlying queue
  * is a serial dispatch queue made here, so an observer's events reach its
@@ -59,8 +59,6 @@ void spudaudio_session_read(spudaudio_session_state *out) {
 		out->io_buffer_duration    = session.IOBufferDuration;
 		out->output_latency        = session.outputLatency;
 		out->input_latency         = session.inputLatency;
-		out->preferred_sample_rate = session.preferredSampleRate;
-		out->preferred_io_duration = session.preferredIOBufferDuration;
 	}
 }
 
@@ -164,22 +162,6 @@ bool spudaudio_session_find_port(
 		}
 	}
 	return found;
-}
-
-SPUDRESULT spudaudio_session_set_preferred_sample_rate(double rate) {
-	BOOL ok = NO;
-	@autoreleasepool {
-		ok = [[AVAudioSession sharedInstance] setPreferredSampleRate:rate error:NULL];
-	}
-	return ok ? SPUD_SUCCESS : SPUDRESULT_API_SPECIFIC_FAILURE;
-}
-
-SPUDRESULT spudaudio_session_set_preferred_io_duration(double seconds) {
-	BOOL ok = NO;
-	@autoreleasepool {
-		ok = [[AVAudioSession sharedInstance] setPreferredIOBufferDuration:seconds error:NULL];
-	}
-	return ok ? SPUD_SUCCESS : SPUDRESULT_API_SPECIFIC_FAILURE;
 }
 
 bool spudaudio_session_record_permission_granted(void) {
