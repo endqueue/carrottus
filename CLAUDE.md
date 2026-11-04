@@ -756,7 +756,14 @@ synchronization validation, after a fix here: a buffer barrier out of
 (D3D12 orders submissions and decays buffers to `COMMON`; Vulkan had waited on
 nothing), and `VERTEX_BUFFER` includes uniform reads in shaders, as
 spudgpu.h says it does. Every sample in `spudgpusamples` but mesh shaders
-ran there too. That covers the calls that caller makes. A call nothing above
+ran there too. On 2026-11-04 on the ThinkPad P1 (Fedora 44, Mesa 26.0.3:
+ANV, NVK on the RTX A2000, llvmpipe) the presets ran under `-asan` and
+`-tsan` with GCC 16.2.1 and again with clang 22.1.8, 15 ctests each and
+`spudnet_test` 341/341, `spud_misuse_tests` ten times under `-asan`, and
+callers' GPU tests and the samples under both on every adapter: no report
+in SpudLib. spudaudio_test gained a TSan suppression for ALSA's own ring
+buffer under PipeWire, and a second name for the plugin's lock entry
+(`tests/sanitizers/linux-tsan.supp`; `../DECISIONS.md` card S37). That covers the calls that caller makes. A call nothing above
 SpudLib uses is only as verified as its sample in `spudgpusamples`. Vulkan
 on Windows has run `apricottests`' `aprend_gpu_tests` (2026-10-16, Intel Iris
 Xe and NVIDIA RTX A2000, validation layer clean), which found that the

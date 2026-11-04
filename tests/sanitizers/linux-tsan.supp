@@ -9,3 +9,22 @@
 # the one thread SpudAudio calls from; nothing SpudAudio does orders them.
 # Seen 2026-10-25 on Fedora 44, PipeWire 1.6.9, alsa-lib 1.2.16.
 deadlock:loop_lock
+# The same report as named by a symbolizer that can't read the library's
+# MiniDebugInfo (clang's runtime through addr2line, 2026-11-04): loop_lock
+# reads "<null>" in libspa-support.so, so the entry names the module, whose
+# locks are all PipeWire's.
+deadlock:libspa-support.so
+
+# ALSA's ioplug ring buffer, under the pipewire PCM plugin: the buffer is
+# alsa-lib's own (malloc'd by snd_pcm_mmap inside snd_pcm_hw_params, the
+# stream being RW access, not mmap). snd_pcm_writei copies the caller's
+# frames into it under the PCM lock on SpudAudio's audio thread
+# (snd_pcm_area_copy <- alsa_transfer <- alsa_audio_thread), and PipeWire's
+# data-loop thread copies them out under its own loop lock
+# (snd_pcm_area_copy, no frame of ours). The two hand slots over through
+# the plugin's hw_ptr/appl_ptr in uninstrumented code, so ThreadSanitizer
+# sees no order between a slot read and its reuse a lap later. SpudAudio's
+# own buffers (scratch, planes) are only the source of the first copy, on
+# its one thread. Seen 2026-11-04 on Fedora 44, PipeWire 1.6.2,
+# alsa-lib 1.2.16.1 (ThinkPad P1).
+race:snd_pcm_area_copy

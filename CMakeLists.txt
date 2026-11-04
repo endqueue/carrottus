@@ -597,6 +597,12 @@ if(NOT TARGET spudlib)
         endif()
         if(UNIX AND NOT APPLE)
             target_link_libraries(spud_noalloc_tests PRIVATE ${CMAKE_DL_LIBS})
+            # glibc declares dladdr and Dl_info (tests/alloctrace.h) only under
+            # _GNU_SOURCE, which must come before the first system header; and
+            # dladdr names only an executable's exported symbols, so it
+            # exports them all.
+            target_compile_definitions(spud_noalloc_tests PRIVATE _GNU_SOURCE)
+            set_target_properties(spud_noalloc_tests PROPERTIES ENABLE_EXPORTS ON)
         endif()
         add_test(NAME spud_noalloc_tests COMMAND spud_noalloc_tests)
 
