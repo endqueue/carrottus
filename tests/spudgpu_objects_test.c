@@ -1437,6 +1437,136 @@ static void test_compute(spudgpu_device device, spudgpu_command_queue queue, spu
 	spudgpu_destroy_shader_module(module);
 }
 
+// ---- The first use of an attachment image (card S38) ------------------------
+
+// A committed image with color attachment and storage usage, first cleared
+// over the whole image (spudgpu_create_image(), "the first use of an
+// attachment image"), then written by a compute shader through a storage
+// view and read back: the left half the shader's values, the right half the
+// clear. Under D3D12's debug layer, a not-zeroed render target written first
+// by compute is message 1422; cleared first, nothing.
+#define FIRST_USE_SIZE 8u
+
+typedef struct first_use_run {
+	spudgpu_compute_pipeline pipeline;
+	spudgpu_descriptor_set set;
+	spudgpu_image image;
+	spudgpu_image_view view;
+	spudgpu_buffer readback;
+	uint64_t row_pitch;
+} first_use_run;
+
+static void record_first_use(spudgpu_command_list cmd, void *context) {
+	first_use_run *r = (first_use_run *)context;
+	spudgpu_cmd_image_barrier_view(cmd, r->view, SPUDGPU_IMAGE_LAYOUT_UNDEFINED, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	// The image's own clear value (make_image()), so D3D12 has no mismatch to warn of.
+	spudgpu_cmd_clear_color_attachment(cmd, r->view, 0.4f, 0.4f, 0.4f, 1.0f, FIRST_USE_SIZE, FIRST_USE_SIZE);
+	spudgpu_cmd_image_barrier_view(cmd, r->view, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, SPUDGPU_IMAGE_LAYOUT_GENERAL);
+	spudgpu_cmd_bind_compute_pipeline(cmd, r->pipeline);
+	spudgpu_cmd_bind_descriptor_sets_compute(cmd, r->pipeline, 0, &r->set, 1);
+	spudgpu_cmd_dispatch(cmd, 1, 1, 1);
+	spudgpu_cmd_image_barrier_view(cmd, r->view, SPUDGPU_IMAGE_LAYOUT_GENERAL, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC);
+	spudgpu_image_buffer_copy_desc copy;
+	memset(&copy, 0, sizeof(copy));
+	copy.buffer_row_length = (uint32_t)(r->row_pitch / 4);
+	copy.array_layer_count = 1;
+	copy.width             = FIRST_USE_SIZE;
+	copy.height            = FIRST_USE_SIZE;
+	copy.depth             = 1;
+	spudgpu_cmd_copy_image_to_buffer(cmd, r->image, r->readback, &copy);
+}
+
+static void test_attachment_first_use(spudgpu_device device, spudgpu_command_queue queue, spudgpu_command_allocator allocator,
+                                      spudgpu_command_list cmd) {
+	first_use_run r;
+	memset(&r, 0, sizeof(r));
+	spudgpu_shader_module module = make_module(device, &spudgpu_test_objects_first_use_comp, "first use");
+	spudgpu_descriptor_set_layout_desc layout_desc;
+	memset(&layout_desc, 0, sizeof(layout_desc));
+	layout_desc.base.type                   = SPUD_STRUCT_TYPE_GPU_DESCRIPTOR_SET_LAYOUT_DESC;
+	layout_desc.bindings[0].binding         = 0;
+	layout_desc.bindings[0].descriptor_type = SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	layout_desc.bindings[0].count           = 1;
+	layout_desc.bindings[0].stage_flags     = SPUDGPU_SHADER_STAGE_COMPUTE;
+	layout_desc.binding_count               = 1;
+	spudgpu_descriptor_set_layout layout    = NULL;
+	CHECK(spudgpu_create_descriptor_set_layout(device, &layout_desc, &layout) == SPUD_SUCCESS);
+	spudgpu_compute_pipeline_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type                   = SPUD_STRUCT_TYPE_GPU_COMPUTE_PIPELINE_DESC;
+	desc.compute_module              = module;
+	desc.descriptor_set_layouts[0]   = layout;
+	desc.descriptor_set_layout_count = 1;
+	desc.debug_name                  = "first use";
+	if (module && layout)
+		CHECK(spudgpu_create_compute_pipeline(device, &desc, &r.pipeline) == SPUD_SUCCESS);
+
+	spudgpu_descriptor_pool_desc pool_desc;
+	memset(&pool_desc, 0, sizeof(pool_desc));
+	pool_desc.base.type                     = SPUD_STRUCT_TYPE_GPU_DESCRIPTOR_POOL_DESC;
+	pool_desc.max_sets                      = 1;
+	pool_desc.pool_sizes[0].descriptor_type = SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	pool_desc.pool_sizes[0].count           = 1;
+	pool_desc.pool_size_count               = 1;
+	spudgpu_descriptor_pool pool            = NULL;
+	CHECK(spudgpu_create_descriptor_pool(device, &pool_desc, &pool) == SPUD_SUCCESS);
+	if (pool && layout) {
+		spudgpu_descriptor_set_desc set_desc;
+		memset(&set_desc, 0, sizeof(set_desc));
+		set_desc.base.type      = SPUD_STRUCT_TYPE_GPU_DESCRIPTOR_SET_DESC;
+		set_desc.pool           = pool;
+		set_desc.set_layouts[0] = layout;
+		set_desc.set_count      = 1;
+		CHECK(spudgpu_create_descriptor_sets(device, &set_desc, &r.set) == SPUD_SUCCESS);
+	}
+	r.image = make_image(device, NULL,
+	                     SPUDGPU_IMAGE_USAGE_COLOR_ATTACHMENT | SPUDGPU_IMAGE_USAGE_STORAGE | SPUDGPU_IMAGE_USAGE_TRANSFER_SRC,
+	                     SPUDGPU_FORMAT_R32_FLOAT, FIRST_USE_SIZE, FIRST_USE_SIZE, "first use");
+	r.view  = make_image_view(r.image, SPUDGPU_IMAGE_ASPECT_COLOR);
+	uint64_t total = 0;
+	if (r.image) {
+		spudgpu_get_image_buffer_copy_size(r.image, 0, &r.row_pitch, &total);
+		CHECK(r.row_pitch >= FIRST_USE_SIZE * 4 && total >= r.row_pitch * (FIRST_USE_SIZE - 1) + FIRST_USE_SIZE * 4);
+		r.readback = make_buffer(device, SPUDGPU_MEMORY_KIND_READBACK, SPUDGPU_BUFFER_USAGE_TRANSFER_DST, total, NULL);
+	}
+	if (r.pipeline && r.set && r.view && r.readback) {
+		spudgpu_descriptor_image_info info = {r.view, SPUDGPU_IMAGE_LAYOUT_GENERAL};
+		spudgpu_write_descriptor_set write;
+		memset(&write, 0, sizeof(write));
+		write.base.type        = SPUD_STRUCT_TYPE_GPU_WRITE_DESCRIPTOR_SET;
+		write.dst_set          = r.set;
+		write.dst_binding      = 0;
+		write.descriptor_count = 1;
+		write.descriptor_type  = SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		write.image_info       = &info;
+		spudgpu_update_descriptor_sets(device, &write, 1);
+		run_once(queue, allocator, cmd, record_first_use, &r);
+		void *mapped = NULL;
+		CHECK(spudgpu_map_buffer(r.readback, 0, total, &mapped) == SPUD_SUCCESS);
+		if (mapped) {
+			CHECK(spudgpu_invalidate_buffer(r.readback, 0, total) == SPUD_SUCCESS);
+			uint32_t wrong = 0;
+			for (uint32_t y = 0; y < FIRST_USE_SIZE; ++y)
+				for (uint32_t x = 0; x < FIRST_USE_SIZE; ++x) {
+					float texel;
+					memcpy(&texel, (const uint8_t *)mapped + y * r.row_pitch + x * 4, sizeof(texel));
+					const float expected = x < FIRST_USE_SIZE / 2 ? (float)(x + y * FIRST_USE_SIZE + 1) : 0.4f;
+					wrong += texel != expected;
+				}
+			CHECK(wrong == 0);
+			printf("spudgpu_objects_test: an attachment image cleared, then written by compute: %u texels wrong\n", wrong);
+			spudgpu_unmap_buffer(r.readback);
+		}
+	}
+	spudgpu_destroy_buffer(r.readback);
+	spudgpu_destroy_image_view(r.view);
+	spudgpu_destroy_image(r.image);
+	spudgpu_destroy_descriptor_pool(pool);
+	spudgpu_destroy_compute_pipeline(r.pipeline);
+	spudgpu_destroy_descriptor_set_layout(layout);
+	spudgpu_destroy_shader_module(module);
+}
+
 // ---- Every binding of a set (card S27) ----------------------------------------
 
 // Set 0 is a uniform buffer at 0, a sampled image at 5 and a sampler at 8;
@@ -1758,6 +1888,7 @@ static void test_drawing(spudgpu_adapter adapter, SPUDGPU_FEATURES supported) {
 	if (queue && cmd) {
 		test_draw_frame(device, queue, allocator, cmd);
 		test_compute(device, queue, allocator, cmd);
+		test_attachment_first_use(device, queue, allocator, cmd);
 		test_set_bindings(device, queue, allocator, cmd);
 	}
 	spudgpu_destroy_command_list(cmd);

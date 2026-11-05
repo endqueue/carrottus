@@ -2341,6 +2341,17 @@ typedef struct spudgpu_image_desc {
  * backend: what is read from a texel nothing has written is not zero or any
  * other value the caller can rely on.
  *
+ * An image whose `desc->usage` has SPUDGPU_IMAGE_USAGE_COLOR_ATTACHMENT or
+ * SPUDGPU_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT has one rule more, on every
+ * backend: the first thing done with it writes all of every subresource, by
+ * a rendering pass that clears each attachment over the whole image (depth
+ * and stencil both, for a format with the two) or by copies into all of
+ * every subresource. What anything else done first (a write through a
+ * storage view, a draw that loads, a copy out, a read in a shader) reads or
+ * leaves behind is undefined. (D3D12 requires a render target or
+ * depth/stencil resource whose memory isn't zeroed to be initialized by a
+ * clear, a full copy or a discard before any other use.)
+ *
  * @param[in]  device    Device the image is allocated on.
  * @param[in]  desc      Image configuration.
  * @param[out] out_image Receives the new image on success.
@@ -2928,16 +2939,10 @@ SPUDRESULT spudgpu_create_placed_buffer(
  *
  * The result is a spudgpu_image like any other, destroyed with
  * spudgpu_destroy_image(), with a placed buffer's rules for what destroying
- * it frees and what overlapping placements are.
- *
- * An image in a SPUDGPU_HEAP_RESOURCE_CLASS_ATTACHMENT_IMAGES heap has one
- * rule more, on every backend: the first thing done with it writes all of
- * every subresource, by a rendering pass that clears each attachment over
- * the whole image (depth and stencil both, for a format with the two) or by
- * copies into all of every subresource. What anything
- * else done first reads or leaves behind is undefined. (D3D12 requires a
- * placed render target or depth/stencil resource to be initialized by a
- * clear, a full copy or a discard before any other use.)
+ * it frees and what overlapping placements are, and spudgpu_create_image()'s
+ * rules for its contents and for the first use of an attachment image. An
+ * image in a SPUDGPU_HEAP_RESOURCE_CLASS_ATTACHMENT_IMAGES heap has an
+ * attachment usage, so that first-use rule is always its.
  *
  * @param[in]  heap      Heap to place the image in.
  * @param[in]  offset    Byte offset in the heap: a multiple of the alignment

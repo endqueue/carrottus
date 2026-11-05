@@ -1357,6 +1357,35 @@ it, with the struct's ABI break listed then. Not built.
     checks) passed on D3D12 on the Iris Xe, the RTX A2000 and WARP (debug
     layer silent) and on Vulkan on both GPUs under synchronization
     validation (silent).
+  - **Decided 2026-11-05 with the user (card S38, a): the first use of an
+    attachment image, committed or placed.** The D3D12 backend makes every
+    resource not zeroed, and D3D12 then requires a render target or
+    depth/stencil resource, committed or placed, to be initialized by a
+    clear, a full copy or a discard before anything else (debug layer
+    message 1422, seen 2026-11-05 on Windows from a caller's test whose
+    image was first written by a compute pass). `spudgpu.h` stated that
+    only for placed attachment images. It is to state it for every image
+    with a color or depth/stencil attachment usage, on every backend, and
+    the D3D12 backend keeps making them not zeroed; callers clear or copy
+    first. Draft `spudgpu_image_first_use_draft.h` (two comments, no
+    declaration or ABI change; a test in `spudgpu_objects_test`), written
+    2026-11-05 for approval. **Approved and built 2026-11-05 on Windows:**
+    `spudgpu_create_image()`'s comment states the rule for every image with
+    an attachment usage, and `spudgpu_create_placed_image()`'s refers to it.
+    `spudgpu_objects_test`'s `test_attachment_first_use`
+    (`tests/shaders/objects_first_use_comp.slang`): an 8 x 8 R32_FLOAT image
+    with color attachment, storage and copy-source usage, cleared first,
+    then its left half written by compute through a storage view, read
+    back: the shader's values and the clear. Ran on Windows 11 (ThinkPad
+    P1 Gen 5): `windows-d3d12` and `windows-vulkan`, Debug and Release, no
+    warning, 15 ctests each; `spudgpu_objects_test` on D3D12 (Iris Xe, RTX
+    A2000, WARP; debug layer silent) and Vulkan (both GPUs, synchronization
+    validation, silent), 0 texels wrong; with the clear taken out for one
+    build, D3D12 reported 1422 and 32 texels were wrong, so the test sees a
+    breach. Metal's half written, not compiled (its shader goes through the
+    build's Metal route like the rest). A caller's test that broke the rule
+    (its reflection texture written first by compute) clears it first now,
+    and its D3D12 run is silent.
   - **Decided 2026-11-01 with the user (card S30, b):** the draft's
     sentence on padding stays out of `spudgpu.h`, as built. The header
     states the contract (what a module declares, what Metal refuses); how

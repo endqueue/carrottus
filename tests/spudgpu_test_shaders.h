@@ -14,6 +14,7 @@
 #include "spudgpu_test_objects_draw_frag.spv.inc"
 #include "spudgpu_test_objects_draw_mesh.spv.inc"
 #include "spudgpu_test_objects_double_comp.spv.inc"
+#include "spudgpu_test_objects_first_use_comp.spv.inc"
 #include "spudgpu_test_rq_trace.spv.inc"
 #include "spudgpu_test_rq_shadow.spv.inc"
 #include "spudgpu_test_rq_shadow_vert.spv.inc"
@@ -35,6 +36,7 @@
 #include "spudgpu_test_objects_draw_frag.dxil.inc"
 #include "spudgpu_test_objects_draw_mesh.dxil.inc"
 #include "spudgpu_test_objects_double_comp.dxil.inc"
+#include "spudgpu_test_objects_first_use_comp.dxil.inc"
 #include "spudgpu_test_rq_trace.dxil.inc"
 #include "spudgpu_test_rq_shadow.dxil.inc"
 #include "spudgpu_test_rq_shadow_vert.dxil.inc"
@@ -60,6 +62,7 @@
 #include "spudgpu_test_objects_draw_frag.metallib.inc"
 #include "spudgpu_test_objects_draw_mesh.metallib.inc"
 #include "spudgpu_test_objects_double_comp.metallib.inc"
+#include "spudgpu_test_objects_first_use_comp.metallib.inc"
 #include "spudgpu_test_rq_trace.metallib.inc"
 #include "spudgpu_test_rq_shadow.metallib.inc"
 #include "spudgpu_test_rq_shadow_vert.metallib.inc"
@@ -106,6 +109,8 @@ static const spudgpu_test_shader spudgpu_test_objects_draw_mesh =
     SPUDGPU_TEST_SHADER(spudgpu_test_objects_draw_mesh, "objects_draw_mesh", SPUDGPU_SHADER_STAGE_MESH, 1, 1, 1);
 static const spudgpu_test_shader spudgpu_test_objects_double_comp =
     SPUDGPU_TEST_SHADER(spudgpu_test_objects_double_comp, "objects_double_comp", SPUDGPU_SHADER_STAGE_COMPUTE, 64, 1, 1);
+static const spudgpu_test_shader spudgpu_test_objects_first_use_comp =
+    SPUDGPU_TEST_SHADER(spudgpu_test_objects_first_use_comp, "objects_first_use_comp", SPUDGPU_SHADER_STAGE_COMPUTE, 8, 8, 1);
 static const spudgpu_test_shader spudgpu_test_rq_trace =
     SPUDGPU_TEST_SHADER(spudgpu_test_rq_trace, "rq_trace", SPUDGPU_SHADER_STAGE_COMPUTE, 8, 8, 1);
 static const spudgpu_test_shader spudgpu_test_rq_shadow =

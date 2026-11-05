@@ -642,6 +642,8 @@ if(NOT TARGET spudlib)
             "spudgpu_test_objects_draw_frag|objects_draw_frag|ps_6_0|"
             "spudgpu_test_objects_draw_mesh|objects_draw_mesh|ms_6_5|spvMeshShadingEXT"
             "spudgpu_test_objects_double_comp|objects_double_comp|cs_6_0|"
+            # An attachment image cleared first, then written by compute (card S38).
+            "spudgpu_test_objects_first_use_comp|objects_first_use_comp|cs_6_0|"
             # Every binding of a set (card S27): a set of a uniform buffer at
             # 0, a sampled image at 5 and a sampler at 8, declared whole and
             # read at 5 and 8 (the build pads 0); and on Metal the modules
