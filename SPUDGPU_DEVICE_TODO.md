@@ -1336,6 +1336,27 @@ it, with the struct's ABI break listed then. Not built.
       failure; the generator found no new call); `spud_noalloc_tests` none
       of ours; `iossimulator-metal` built. `abi.txt`: one addition (331),
       no break. Windows and Linux not built.
+  - **Configured on Windows 2026-11-05** (ThinkPad P1 Gen 5, Windows 11,
+    MSVC 14.51.36231, Vulkan SDK 1.4.363.0, slangc 2026.17; X1c's switch
+    and X18's first step): fresh build folders of temporary names, each
+    configured and built in Debug, for `windows-d3d12` and
+    `windows-vulkan`, and for two callers' builds that take
+    `SPUD_SHADERS_CMAKE` on each: no `spudgpu_msl` in any configure or
+    build log, none built, no `.metal` or `.metallib` written (SPIR-V
+    only, and DXIL on D3D12; spudlib's own 20 shaders, the callers' 73 and
+    84). Then `windows-d3d12` once with `-DSPUD_SHADERS_CHECK_METAL=ON`:
+    "Shaders: spudgpu_msl built for the build machine", `spudgpu_msl.exe`
+    built through ExternalProject in `spudgpu_msl_host/`, both routes'
+    Metal source for all 20 shaders (20 `.slang.metal`, 20
+    `.cross.metal`), no `.metallib`. Every build clean but MSBuild's
+    MSB8029 (a build folder under `%TEMP%`). Folders deleted after. Not
+    every build tree on the ThinkPad that includes this step was configured
+    again that day, so the INTERNAL `SPUDGPU_MSL_EXECUTABLE` clearing
+    below stays. Linux's configure is still owed. The same day `spudgpu_objects_test`
+    (`test_set_bindings` and every placed buffer and image among its
+    checks) passed on D3D12 on the Iris Xe, the RTX A2000 and WARP (debug
+    layer silent) and on Vulkan on both GPUs under synchronization
+    validation (silent).
   - **Decided 2026-11-01 with the user (card S30, b):** the draft's
     sentence on padding stays out of `spudgpu.h`, as built. The header
     states the contract (what a module declares, what Metal refuses); how
