@@ -595,6 +595,35 @@ static spudfile_file dead_spudfile_file(void) {
 	return handle;
 }
 
+/* A spudfile_listing just destroyed, or NULL with `why` set. */
+static spudfile_listing make_dead_spudfile_listing(void) {
+	spudfile_instance instance = make_file_instance();
+	if (!instance)
+		return NULL;
+	spudfile_listing_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type           = SPUD_STRUCT_TYPE_FILES_LISTING_DESC;
+	desc.path                = ".";
+	spudfile_listing listing = NULL;
+	if (spudfile_listing_open(instance, &desc, &listing) == SPUD_SUCCESS)
+		spudfile_listing_close(listing);
+	else
+		why = "spudfile_listing_open failed on the working directory";
+	spudfile_instance_destroy(instance);
+	return listing;
+}
+
+static spudfile_listing dead_spudfile_listing(void) {
+	static bool told = false;
+	why = "";
+	spudfile_listing handle = make_dead_spudfile_listing();
+	if (!handle && !told) {
+		printf("spud_misuse_tests: not covered: spudfile_listing: %s\n", why);
+		told = true;
+	}
+	return handle;
+}
+
 /* A spudfile_mapping just destroyed, or NULL with `why` set. */
 static spudfile_mapping make_dead_spudfile_mapping(void) {
 	spudfile_instance instance = make_file_instance();
@@ -1778,6 +1807,15 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		spudfile_file dead = dead_spudfile_file();
 		if (dead) {
+			expect_refused("spudfile_file_lock", spudfile_file_lock(dead, (SPUDFILE_LOCK){0}, (bool){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		spudfile_file dead = dead_spudfile_file();
+		if (dead) {
 			expect_refused("spudfile_file_map", spudfile_file_map(dead, (uint64_t){0}, (uint64_t){0}, (spudfile_mapping *){0}));
 			calls++;
 		} else {
@@ -1814,6 +1852,15 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		spudfile_file dead = dead_spudfile_file();
 		if (dead) {
+			expect_refused("spudfile_file_unlock", spudfile_file_unlock(dead));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		spudfile_file dead = dead_spudfile_file();
+		if (dead) {
 			expect_refused("spudfile_file_write_at", spudfile_file_write_at(dead, (uint64_t){0}, (const void *){0}, (uint64_t){0}));
 			calls++;
 		} else {
@@ -1825,6 +1872,34 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 		if (dead) {
 			spudfile_instance_destroy(dead);
 			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		spudfile_listing dead = dead_spudfile_listing();
+		if (dead) {
+			spudfile_listing_close(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		spudfile_listing dead = dead_spudfile_listing();
+		if (dead) {
+			expect_refused("spudfile_listing_next", spudfile_listing_next(dead, (SPUDFILE_LISTING_ENTRY *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		spudfile_instance dead = dead_spudfile_instance();
+		if (dead) {
+			expect_refused("spudfile_listing_open", spudfile_listing_open(dead, (const spudfile_listing_desc *){0}, (spudfile_listing *){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -3982,6 +4057,8 @@ int main(void)
 	calls++;
 	expect_error("spudfile_file_get_size", spudfile_file_get_size((spudfile_file){0}, (uint64_t *){0}));
 	calls++;
+	expect_error("spudfile_file_lock", spudfile_file_lock((spudfile_file){0}, (SPUDFILE_LOCK){0}, (bool){0}));
+	calls++;
 	expect_error("spudfile_file_map", spudfile_file_map((spudfile_file){0}, (uint64_t){0}, (uint64_t){0}, (spudfile_mapping *){0}));
 	calls++;
 	expect_error("spudfile_file_open", spudfile_file_open((spudfile_instance){0}, (const spudfile_open_desc *){0}, (spudfile_file *){0}));
@@ -3990,12 +4067,21 @@ int main(void)
 	calls++;
 	expect_error("spudfile_file_set_size", spudfile_file_set_size((spudfile_file){0}, (uint64_t){0}));
 	calls++;
+	expect_error("spudfile_file_unlock", spudfile_file_unlock((spudfile_file){0}));
+	calls++;
 	expect_error("spudfile_file_write_at", spudfile_file_write_at((spudfile_file){0}, (uint64_t){0}, (const void *){0}, (uint64_t){0}));
 	calls++;
 	expect_error("spudfile_instance_create", spudfile_instance_create((const spudfile_instance_desc *){0}, (spudfile_instance *){0}));
 	calls++;
 	spudfile_instance_destroy((spudfile_instance){0});
 	unchecked++;
+	calls++;
+	spudfile_listing_close((spudfile_listing){0});
+	unchecked++;
+	calls++;
+	expect_error("spudfile_listing_next", spudfile_listing_next((spudfile_listing){0}, (SPUDFILE_LISTING_ENTRY *){0}));
+	calls++;
+	expect_error("spudfile_listing_open", spudfile_listing_open((spudfile_instance){0}, (const spudfile_listing_desc *){0}, (spudfile_listing *){0}));
 	calls++;
 	(void)spudfile_mapping_get_size((spudfile_mapping){0});
 	calls++;

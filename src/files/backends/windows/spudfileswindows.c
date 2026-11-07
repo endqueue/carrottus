@@ -4,21 +4,86 @@
 
 #include <Windows.h>
 #include <stdint.h>
+#include <string.h>
 
-/* [utf8] as UTF-16, through [instance]'s allocator; freed with
+/* The UTF-16 units [wtf8] stands for, written to [out] when it isn't null,
+ * counted either way; false for bytes that aren't WTF-8: UTF-8 (RFC 3629)
+ * that may also hold an unpaired surrogate as its three bytes, but never a
+ * lead surrogate's three bytes followed by a trail's (that pair is the code
+ * point's own four bytes). MultiByteToWideChar refuses every surrogate, so
+ * SpudFiles converts paths itself. */
+static bool spudfile_windows_from_wtf8(const char *wtf8, wchar_t *out, size_t *out_count) {
+	const uint8_t *at = (const uint8_t *)wtf8;
+	size_t count      = 0;
+	bool after_lead   = false; // the last unit written was a lone lead surrogate
+	while (*at) {
+		const uint8_t lead = *at;
+		uint32_t code      = 0;
+		uint32_t extra     = 0;
+		uint32_t least     = 0;
+		if (lead < 0x80) {
+			code = lead;
+		} else if (lead >= 0xC2 && lead <= 0xDF) {
+			code  = lead & 0x1Fu;
+			extra = 1;
+			least = 0x80;
+		} else if (lead >= 0xE0 && lead <= 0xEF) {
+			code  = lead & 0x0Fu;
+			extra = 2;
+			least = 0x800;
+		} else if (lead >= 0xF0 && lead <= 0xF4) {
+			code  = lead & 0x07u;
+			extra = 3;
+			least = 0x10000;
+		} else {
+			return false;
+		}
+		for (uint32_t i = 1; i <= extra; ++i) {
+			if ((at[i] & 0xC0u) != 0x80u) // a null ends it here too
+				return false;
+			code = (code << 6) | (at[i] & 0x3Fu);
+		}
+		if (code < least || code > 0x10FFFFu)
+			return false;
+		const bool trail = code >= 0xDC00u && code <= 0xDFFFu;
+		if (trail && after_lead)
+			return false;
+		after_lead = code >= 0xD800u && code <= 0xDBFFu;
+		if (code >= 0x10000u) {
+			if (out) {
+				out[count]     = (wchar_t)(0xD800u + ((code - 0x10000u) >> 10));
+				out[count + 1] = (wchar_t)(0xDC00u + ((code - 0x10000u) & 0x3FFu));
+			}
+			count += 2;
+		} else {
+			if (out)
+				out[count] = (wchar_t)code;
+			count += 1;
+		}
+		at += extra + 1;
+	}
+	if (out)
+		out[count] = 0;
+	*out_count = count + 1;
+	return true;
+}
+
+/* [wtf8] as UTF-16, through [instance]'s allocator; freed with
  * spudfile_windows_free_wide and the count it gives. */
-static SPUDRESULT spudfile_windows_wide(spudfile_instance instance, const char *utf8, wchar_t **out_wide, int *out_count) {
-	*out_wide       = NULL;
-	*out_count      = 0;
-	const int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1, NULL, 0);
-	if (count <= 0)
-		return SPUDRESULT_SPUDFILE_NOT_FOUND; // not UTF-8: no file can have that name
-	wchar_t *wide = SPUD_NEW_ARRAY(&instance->head.allocator, wchar_t, (size_t)count);
+static SPUDRESULT spudfile_windows_wide(spudfile_instance instance, const char *wtf8, wchar_t **out_wide, int *out_count) {
+	*out_wide    = NULL;
+	*out_count   = 0;
+	size_t count = 0;
+	if (!spudfile_windows_from_wtf8(wtf8, NULL, &count))
+		return SPUDRESULT_SPUDFILE_NOT_FOUND; // not WTF-8: no file can have that name
+	if (count > (size_t)INT32_MAX)
+		return SPUDRESULT_SPUDFILE_NOT_FOUND; // longer than any path Windows takes
+	wchar_t *wide = SPUD_NEW_ARRAY(&instance->head.allocator, wchar_t, count);
 	if (!wide)
 		return SPUDRESULT_OUT_OF_MEMORY;
-	MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1, wide, count);
+	spudfile_windows_from_wtf8(wtf8, wide, &count);
 	*out_wide  = wide;
-	*out_count = count;
+	*out_count = (int)count;
 	return SPUD_SUCCESS;
 }
 
@@ -315,6 +380,203 @@ SPUDRESULT spudfile_backend_directory_create(spudfile_instance instance, const c
 		result = spudfile_windows_result(GetLastError());
 	spudfile_windows_free_wide(instance, wide, count);
 	return result;
+}
+
+/* ---- Listing a directory ---- */
+
+/* A listing's state: the find handle, and the entry FindFirstFileExW gave
+ * at open, not yet handed out. */
+typedef struct spudfile_windows_listing {
+	HANDLE find; /* INVALID_HANDLE_VALUE for an empty drive root */
+	WIN32_FIND_DATAW data;
+	bool pending;
+} spudfile_windows_listing;
+
+SPUDRESULT spudfile_backend_listing_open(spudfile_instance instance, const char *path, void **out_native) {
+	wchar_t *wide     = NULL;
+	int count         = 0;
+	SPUDRESULT result = spudfile_windows_wide(instance, path, &wide, &count);
+	if (result != SPUD_SUCCESS)
+		return result;
+	// The pattern: the path, a separator unless it ends in one, and "*".
+	const size_t length   = (size_t)count - 1;
+	const bool separated  = length > 0 && (wide[length - 1] == L'\\' || wide[length - 1] == L'/');
+	const size_t capacity = length + (separated ? 0 : 1) + 2;
+	wchar_t *pattern      = SPUD_NEW_ARRAY(&instance->head.allocator, wchar_t, capacity);
+	if (!pattern) {
+		spudfile_windows_free_wide(instance, wide, count);
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+	memcpy(pattern, wide, length * sizeof(wchar_t));
+	size_t at = length;
+	if (!separated)
+		pattern[at++] = L'\\';
+	pattern[at++] = L'*';
+	pattern[at]   = 0;
+
+	spudfile_windows_listing *listing = SPUD_NEW_ZEROED(&instance->head.allocator, spudfile_windows_listing);
+	if (!listing) {
+		SPUD_DELETE_ARRAY(&instance->head.allocator, wchar_t, pattern, capacity);
+		spudfile_windows_free_wide(instance, wide, count);
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+	listing->find     = FindFirstFileExW(pattern, FindExInfoBasic, &listing->data, FindExSearchNameMatch, NULL, FIND_FIRST_EX_LARGE_FETCH);
+	const DWORD error = listing->find == INVALID_HANDLE_VALUE ? GetLastError() : 0;
+	SPUD_DELETE_ARRAY(&instance->head.allocator, wchar_t, pattern, capacity);
+	if (listing->find != INVALID_HANDLE_VALUE) {
+		spudfile_windows_free_wide(instance, wide, count);
+		listing->pending = true;
+		*out_native      = listing;
+		return SPUD_SUCCESS;
+	}
+	// FindFirstFileExW answers a missing directory and a file alike: the
+	// path's attributes tell them apart. A directory that gives no entry at
+	// all is an empty drive root.
+	const DWORD attributes = GetFileAttributesW(wide);
+	spudfile_windows_free_wide(instance, wide, count);
+	if (attributes == INVALID_FILE_ATTRIBUTES)
+		result = error == ERROR_ACCESS_DENIED ? SPUDRESULT_SPUDFILE_ACCESS_DENIED : SPUDRESULT_SPUDFILE_NOT_FOUND;
+	else if (!(attributes & FILE_ATTRIBUTE_DIRECTORY))
+		result = SPUDRESULT_SPUDFILE_NOT_A_DIRECTORY;
+	else if (error == ERROR_FILE_NOT_FOUND)
+		result = SPUD_SUCCESS;
+	else
+		result = spudfile_windows_result(error);
+	if (result != SPUD_SUCCESS) {
+		SPUD_DELETE(&instance->head.allocator, spudfile_windows_listing, listing);
+		return result;
+	}
+	*out_native = listing;
+	return SPUD_SUCCESS;
+}
+
+/* [wide] (null-terminated) as WTF-8 into [out] of [capacity] bytes, its
+ * null included; false when it doesn't fit. [*out_utf8] says whether every
+ * surrogate was paired. */
+static bool spudfile_windows_to_wtf8(const wchar_t *wide, char *out, uint32_t capacity, uint32_t *out_size, bool *out_utf8) {
+	uint32_t size = 0;
+	bool utf8     = true;
+	for (const wchar_t *at = wide; *at; ++at) {
+		uint32_t code = (uint32_t)*at;
+		if (code >= 0xD800u && code <= 0xDBFFu && at[1] >= 0xDC00u && at[1] <= 0xDFFFu) {
+			code = 0x10000u + ((code - 0xD800u) << 10) + ((uint32_t)at[1] - 0xDC00u);
+			++at;
+		} else if (code >= 0xD800u && code <= 0xDFFFu) {
+			utf8 = false; // unpaired: its three bytes, as WTF-8 has it
+		}
+		uint8_t bytes[4];
+		uint32_t n = 0;
+		if (code < 0x80u) {
+			bytes[n++] = (uint8_t)code;
+		} else if (code < 0x800u) {
+			bytes[n++] = (uint8_t)(0xC0u | (code >> 6));
+			bytes[n++] = (uint8_t)(0x80u | (code & 0x3Fu));
+		} else if (code < 0x10000u) {
+			bytes[n++] = (uint8_t)(0xE0u | (code >> 12));
+			bytes[n++] = (uint8_t)(0x80u | ((code >> 6) & 0x3Fu));
+			bytes[n++] = (uint8_t)(0x80u | (code & 0x3Fu));
+		} else {
+			bytes[n++] = (uint8_t)(0xF0u | (code >> 18));
+			bytes[n++] = (uint8_t)(0x80u | ((code >> 12) & 0x3Fu));
+			bytes[n++] = (uint8_t)(0x80u | ((code >> 6) & 0x3Fu));
+			bytes[n++] = (uint8_t)(0x80u | (code & 0x3Fu));
+		}
+		if (size + n >= capacity)
+			return false;
+		memcpy(out + size, bytes, n);
+		size += n;
+	}
+	out[size] = 0;
+	*out_size = size;
+	*out_utf8 = utf8;
+	return true;
+}
+
+/* What a found entry is: a reparse point by its tag, else by its
+ * attributes. */
+static SPUDFILE_ENTRY_KIND spudfile_windows_kind(const WIN32_FIND_DATAW *data) {
+	if (data->dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+		switch (data->dwReserved0) {
+		case IO_REPARSE_TAG_SYMLINK:
+		case IO_REPARSE_TAG_MOUNT_POINT:
+			return SPUDFILE_ENTRY_KIND_SYMBOLIC_LINK;
+		case IO_REPARSE_TAG_AF_UNIX:
+			return SPUDFILE_ENTRY_KIND_OTHER;
+		default:
+			break; // a placeholder or the like: what it stands for
+		}
+	}
+	if (data->dwFileAttributes & FILE_ATTRIBUTE_DEVICE)
+		return SPUDFILE_ENTRY_KIND_OTHER;
+	if (data->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+		return SPUDFILE_ENTRY_KIND_DIRECTORY;
+	return SPUDFILE_ENTRY_KIND_FILE;
+}
+
+SPUDRESULT spudfile_backend_listing_next(spudfile_instance instance, void *native, SPUDFILE_LISTING_ENTRY *out_entry) {
+	(void)instance;
+	spudfile_windows_listing *listing = (spudfile_windows_listing *)native;
+	if (listing->find == INVALID_HANDLE_VALUE)
+		return SPUDRESULT_SPUDFILE_END_OF_LISTING;
+	for (;;) {
+		if (listing->pending) {
+			listing->pending = false;
+		} else if (!FindNextFileW(listing->find, &listing->data)) {
+			return GetLastError() == ERROR_NO_MORE_FILES ? SPUDRESULT_SPUDFILE_END_OF_LISTING : SPUDRESULT_API_SPECIFIC_FAILURE;
+		}
+		const wchar_t *name = listing->data.cFileName;
+		if (name[0] == L'.' && (name[1] == 0 || (name[1] == L'.' && name[2] == 0)))
+			continue;
+		uint32_t size = 0;
+		bool utf8     = true;
+		// MAX_PATH units of WTF-8 always fit SPUDFILE_NAME_CAPACITY's bytes.
+		if (!spudfile_windows_to_wtf8(name, out_entry->name, SPUDFILE_NAME_CAPACITY, &size, &utf8))
+			return SPUDRESULT_API_SPECIFIC_FAILURE;
+		out_entry->kind         = spudfile_windows_kind(&listing->data);
+		out_entry->name_is_utf8 = utf8;
+		out_entry->name_size    = size;
+		return SPUD_SUCCESS;
+	}
+}
+
+void spudfile_backend_listing_close(spudfile_instance instance, void *native) {
+	spudfile_windows_listing *listing = (spudfile_windows_listing *)native;
+	if (listing->find != INVALID_HANDLE_VALUE)
+		FindClose(listing->find);
+	SPUD_DELETE(&instance->head.allocator, spudfile_windows_listing, listing);
+}
+
+/* ---- Locking a file ---- */
+
+/* The one byte every lock takes: offset 2^64 - 2, past any data a file can
+ * hold (NTFS' largest file is 2^64 - 64 KiB), so a lock refuses other
+ * locks and no read or write. */
+static OVERLAPPED spudfile_windows_lock_byte(void) {
+	OVERLAPPED position;
+	ZeroMemory(&position, sizeof(position));
+	position.Offset     = 0xFFFFFFFEu;
+	position.OffsetHigh = 0xFFFFFFFFu;
+	return position;
+}
+
+SPUDRESULT spudfile_backend_lock(intptr_t native, SPUDFILE_LOCK lock, bool wait) {
+	DWORD flags = 0;
+	if (lock == SPUDFILE_LOCK_EXCLUSIVE)
+		flags |= LOCKFILE_EXCLUSIVE_LOCK;
+	if (!wait)
+		flags |= LOCKFILE_FAIL_IMMEDIATELY;
+	OVERLAPPED position = spudfile_windows_lock_byte();
+	if (LockFileEx((HANDLE)native, flags, 0, 1, 0, &position))
+		return SPUD_SUCCESS;
+	const DWORD error = GetLastError();
+	if (error == ERROR_LOCK_VIOLATION || error == ERROR_IO_PENDING)
+		return SPUDRESULT_SPUDFILE_LOCKED;
+	return SPUDRESULT_API_SPECIFIC_FAILURE;
+}
+
+SPUDRESULT spudfile_backend_unlock(intptr_t native) {
+	OVERLAPPED position = spudfile_windows_lock_byte();
+	return UnlockFileEx((HANDLE)native, 0, 1, 0, &position) ? SPUD_SUCCESS : SPUDRESULT_API_SPECIFIC_FAILURE;
 }
 
 #endif // SPUDLIB_PLATFORM_WIN32

@@ -100,6 +100,10 @@ void spudfile_file_close(spudfile_file file) {
 		return;
 	if (SPUD_STALE(file, "spudfile_file_close", "file"))
 		return;
+	// Windows releases a closed handle's locks only when the system gets to
+	// it; let go first, so the next locker never waits on a closed file.
+	if (file->lock != SPUDFILE_LOCK_NONE)
+		spudfile_backend_unlock(file->native);
 	spudfile_backend_close(file->native);
 	SPUD_KILL(file);
 	const SPUD_ALLOCATOR allocator = file->head.allocator;
@@ -316,4 +320,153 @@ SPUDRESULT spudfile_directory_create(
 	if (!spudfile_path_given(path))
 		return SPUDRESULT_SPUDFILE_NULL_PATH;
 	return spudfile_backend_directory_create(instance, path);
+}
+
+/* ---- Listing a directory ---- */
+
+SPUDRESULT spudfile_listing_open(
+    spudfile_instance instance,
+    const spudfile_listing_desc *desc,
+    spudfile_listing *out_listing) {
+	if (!instance)
+		return SPUDRESULT_SPUDFILE_INVALID_INSTANCE;
+	if (SPUD_STALE(instance, "spudfile_listing_open", "instance"))
+		return SPUDRESULT_SPUDFILE_INVALID_INSTANCE;
+	if (!desc)
+		return SPUDRESULT_NULL_DESC;
+	const SPUDRESULT base_result = spud_struct_check(&desc->base, SPUD_STRUCT_TYPE_FILES_LISTING_DESC);
+	if (base_result != SPUD_SUCCESS)
+		return base_result;
+	if (!out_listing)
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+	*out_listing = NULL;
+	if (!spudfile_path_given(desc->path))
+		return SPUDRESULT_SPUDFILE_NULL_PATH;
+
+	spudfile_listing listing = SPUD_NEW_ZEROED(&instance->head.allocator, struct spudfile_listing_t);
+	if (!listing)
+		return SPUDRESULT_OUT_OF_MEMORY;
+	listing->head.allocator = instance->head.allocator;
+	SPUD_BIRTH(listing);
+	listing->instance       = instance;
+
+	const SPUDRESULT result = spudfile_backend_listing_open(instance, desc->path, &listing->native);
+	if (result != SPUD_SUCCESS) {
+		const SPUD_ALLOCATOR allocator = listing->head.allocator;
+		SPUD_DELETE(&allocator, struct spudfile_listing_t, listing);
+		return result;
+	}
+	if (spud_debug_name_set(listing, desc->debug_name) != SPUD_SUCCESS) {
+		spudfile_listing_close(listing);
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+	*out_listing = listing;
+	return SPUD_SUCCESS;
+}
+
+SPUDRESULT spudfile_listing_next(
+    spudfile_listing listing,
+    SPUDFILE_LISTING_ENTRY *out_entry) {
+	if (!listing)
+		return SPUDRESULT_SPUDFILE_INVALID_LISTING;
+	if (SPUD_STALE(listing, "spudfile_listing_next", "listing"))
+		return SPUDRESULT_SPUDFILE_INVALID_LISTING;
+	if (!out_entry)
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+	const SPUDRESULT base_result = spud_struct_out_check(&out_entry->base, SPUD_STRUCT_TYPE_FILES_LISTING_ENTRY);
+	if (base_result != SPUD_SUCCESS)
+		return base_result;
+	if (listing->ended)
+		return SPUDRESULT_SPUDFILE_END_OF_LISTING;
+	const SPUDRESULT result = spudfile_backend_listing_next(listing->instance, listing->native, out_entry);
+	if (result == SPUDRESULT_SPUDFILE_END_OF_LISTING)
+		listing->ended = true;
+	return result;
+}
+
+void spudfile_listing_close(spudfile_listing listing) {
+	if (!listing)
+		return;
+	if (SPUD_STALE(listing, "spudfile_listing_close", "listing"))
+		return;
+	spudfile_backend_listing_close(listing->instance, listing->native);
+	SPUD_KILL(listing);
+	const SPUD_ALLOCATOR allocator = listing->head.allocator;
+	spud_string_free(&allocator, listing->head.debug_name);
+	SPUD_DELETE(&allocator, struct spudfile_listing_t, listing);
+}
+
+/* RFC 3629's UTF-8: no surrogate, no overlong form, nothing past U+10FFFF. */
+bool spudfile_utf8_valid(const char *bytes, uint32_t size) {
+	const uint8_t *at  = (const uint8_t *)bytes;
+	const uint8_t *end = at + size;
+	while (at < end) {
+		const uint8_t lead = *at;
+		if (lead < 0x80) {
+			++at;
+			continue;
+		}
+		uint32_t count = 0;
+		uint32_t code  = 0;
+		uint32_t least = 0;
+		if (lead >= 0xC2 && lead <= 0xDF) {
+			count = 1;
+			code  = lead & 0x1Fu;
+			least = 0x80;
+		} else if (lead >= 0xE0 && lead <= 0xEF) {
+			count = 2;
+			code  = lead & 0x0Fu;
+			least = 0x800;
+		} else if (lead >= 0xF0 && lead <= 0xF4) {
+			count = 3;
+			code  = lead & 0x07u;
+			least = 0x10000;
+		} else {
+			return false;
+		}
+		if ((uint64_t)(end - at) <= count)
+			return false;
+		for (uint32_t i = 1; i <= count; ++i) {
+			if ((at[i] & 0xC0u) != 0x80u)
+				return false;
+			code = (code << 6) | (at[i] & 0x3Fu);
+		}
+		if (code < least || code > 0x10FFFFu || (code >= 0xD800u && code <= 0xDFFFu))
+			return false;
+		at += count + 1;
+	}
+	return true;
+}
+
+/* ---- Locking a file ---- */
+
+SPUDRESULT spudfile_file_lock(
+    spudfile_file file,
+    SPUDFILE_LOCK lock,
+    bool wait) {
+	if (!file)
+		return SPUDRESULT_SPUDFILE_INVALID_FILE;
+	if (SPUD_STALE(file, "spudfile_file_lock", "file"))
+		return SPUDRESULT_SPUDFILE_INVALID_FILE;
+	if (lock != SPUDFILE_LOCK_SHARED && lock != SPUDFILE_LOCK_EXCLUSIVE)
+		return SPUDRESULT_DESC_INVALID_PARAMETERS;
+	if (file->lock != SPUDFILE_LOCK_NONE)
+		return SPUDRESULT_SPUDFILE_ALREADY_LOCKED;
+	const SPUDRESULT result = spudfile_backend_lock(file->native, lock, wait);
+	if (result == SPUD_SUCCESS)
+		file->lock = (uint8_t)lock;
+	return result;
+}
+
+SPUDRESULT spudfile_file_unlock(spudfile_file file) {
+	if (!file)
+		return SPUDRESULT_SPUDFILE_INVALID_FILE;
+	if (SPUD_STALE(file, "spudfile_file_unlock", "file"))
+		return SPUDRESULT_SPUDFILE_INVALID_FILE;
+	if (file->lock == SPUDFILE_LOCK_NONE)
+		return SPUDRESULT_SPUDFILE_NOT_LOCKED;
+	const SPUDRESULT result = spudfile_backend_unlock(file->native);
+	if (result == SPUD_SUCCESS)
+		file->lock = SPUDFILE_LOCK_NONE;
+	return result;
 }

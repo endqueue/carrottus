@@ -12,6 +12,7 @@
 #include "spudfiles.h"
 #include "../spudallocator.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -27,7 +28,21 @@ struct spudfile_file_t {
 	spud_object_head head;
 	spudfile_instance instance;
 	SPUDFILE_ACCESS access;
+	/* The lock taken through this file (SPUDFILE_LOCK), or NONE: touched
+	 * only by lock, unlock and close, which the caller doesn't overlap. */
+	uint8_t lock;
 	intptr_t native;
+};
+
+struct spudfile_listing_t {
+	spud_object_head head;
+	spudfile_instance instance;
+	/* The backend's own state, made by spudfile_backend_listing_open
+	 * through the instance's allocator and freed by _close. */
+	void *native;
+	/* Whether the end was reached: every later next says so, without
+	 * asking the platform again. */
+	bool ended;
 };
 
 struct spudfile_mapping_t {
@@ -55,6 +70,18 @@ SPUDRESULT spudfile_backend_path_get_info(spudfile_instance instance, const char
 SPUDRESULT spudfile_backend_path_replace(spudfile_instance instance, const char *source, const char *target, SPUDFILE_FLUSH_LEVEL level);
 SPUDRESULT spudfile_backend_path_remove(spudfile_instance instance, const char *path);
 SPUDRESULT spudfile_backend_directory_create(spudfile_instance instance, const char *path);
+/* Opens a listing of [path]; its state through [instance]'s allocator. */
+SPUDRESULT spudfile_backend_listing_open(spudfile_instance instance, const char *path, void **out_native);
+/* The next entry, "." and ".." skipped; SPUDRESULT_SPUDFILE_END_OF_LISTING
+ * at the end. [out_entry]'s base is checked. */
+SPUDRESULT spudfile_backend_listing_next(spudfile_instance instance, void *native, SPUDFILE_LISTING_ENTRY *out_entry);
+void spudfile_backend_listing_close(spudfile_instance instance, void *native);
+/* [lock] is SHARED or EXCLUSIVE; the file holds none taken here. */
+SPUDRESULT spudfile_backend_lock(intptr_t native, SPUDFILE_LOCK lock, bool wait);
+SPUDRESULT spudfile_backend_unlock(intptr_t native);
+/* Whether [bytes] are valid UTF-8 (no surrogate, no overlong form, nothing
+ * past U+10FFFF): what a listing entry's name_is_utf8 says. */
+bool spudfile_utf8_valid(const char *bytes, uint32_t size);
 
 #ifdef __cplusplus
 }

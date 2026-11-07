@@ -244,21 +244,63 @@ Left:
 
 ## Listing a directory, and an advisory lock (card S39, decided 2026-11-06 with you, a)
 
-Two plain translations, each with a caller now (Latran's cook,
-`latran/editor/latran_cook_draft.h`, answers 4 and 7; its headless tool,
-prompt 05):
+Two plain translations, each with a caller now (a cook cache that lists
+its folder and locks it against a second process; a tool that walks a
+project folder):
 
-- **`spudfile_directory_list`**: one call filling the caller's buffer of
-  entries (name, kind), `readdir` / `FindFirstFileExW`, in the order the
-  platform gives; a buffer too small says how many there are. No sorting,
-  no recursion, no filtering: the caller's.
-- **An advisory lock on an open file**: `flock` / `LockFileEx`, shared or
-  exclusive, wait or fail at once, released by its own call or the file's
-  close. Advisory on POSIX, as `flock` is; said so on the call.
+- **A listing**: `spudfile_listing_open` / `_next` / `_close`, an
+  iterator over `readdir` / `FindFirstFileExW`, one entry a call (its kind
+  and its name, held in the entry), in the order the platform gives, "."
+  and ".." never. No sorting, no recursion, no filtering: the caller's.
+  (The card said one call into a buffer; the draft's Q1 says why not.)
+- **An advisory lock on an open file**: `spudfile_file_lock` /
+  `spudfile_file_unlock`, `flock` / `LockFileEx` on one byte past any data,
+  shared or exclusive, wait or fail at once, released by its own call or
+  the file's close; the file records the lock it holds.
+- **Windows paths read as WTF-8**, so a listed name holding an unpaired
+  surrogate opens.
 
-Not built. An approved draft first (`spudlib/spudfiles_list_lock_draft.h`),
-as every SpudLib addition; then Latran's cache finds orphaned entries and
-locks its folder on POSIX too.
+**Draft approved 2026-11-06 by you** (`spudfiles_list_lock_draft.h`, its
+second version, Q1-Q4 all a); it is the contract, and stays as the record.
+**Built 2026-11-06 overnight on Windows 11** (ThinkPad P1 Gen 5, MSVC
+14.51; the first step of that night's prompt): the six
+codes (1014-1019) and two struct types (5003, 5004) in `spudcore.h`, the
+five calls in `spudfiles.h`, every check in the front end
+(`src/spudfiles.c`: arguments in order, the end said again without asking
+the platform, the lock a file holds recorded there, so locking twice and
+unlocking none answer the same on every backend, and a close letting go
+of a held lock first), the Windows backend (`FindFirstFileExW` with
+`FindExInfoBasic` and a large fetch, a reparse point by its tag,
+`LockFileEx` on the byte at 2^64 - 2, and SpudFiles' own WTF-8 converter
+for every path in place of `MultiByteToWideChar`, a lone surrogate's
+three bytes taken, a pair of them refused), and the POSIX backend
+(`opendir`/`readdir`, `fstatat` with `AT_SYMLINK_NOFOLLOW` for
+`DT_UNKNOWN`, `flock`; written, not compiled: the Mac and Linux compile
+and run it next). `spudfiles_test` gained the draft's tests, seen failing
+first against stubs (48 failures), then passing: every argument refused in
+order, an empty folder, files, a folder, a hidden file, a non-ASCII name
+round-tripped, a junction listed as a link (symbolic links aren't made
+here without developer mode: reported, not listed), a name with an
+unpaired surrogate listed as WTF-8 and opened by it, the converter's
+refusals, and the locks between two files on one path (exclusive against
+both kinds, shared with shared, advisory reads and writes, unlock, close,
+a waiting lock on a second thread had only after the holder lets go), on
+NTFS; `SPUDFILES_TEST_LOCK_DIRS` runs the locks on more file systems
+(none other on this machine). `windows-d3d12` and `-vulkan`, Debug and
+Release, every ctest (15) passing; `abi.txt` additions only; the misuse
+harness regenerated with a listing factory. Its first caller locks its
+cache folder with it on every platform and lists the folder for orphaned
+entries.
+
+## Removing and renaming a directory (card S41, raised 2026-11-06)
+
+Found overnight, a caller writing a folder whole and swapping it into
+place: no call removes a directory or
+renames one (`spudfile_path_remove` is a file's; `spudfile_path_replace`
+is a file's rename). Drafted for approval, not built:
+`spudfiles_directory_draft.h` (`spudfile_directory_remove`,
+`spudfile_directory_rename`, `SPUDRESULT_SPUDFILE_NOT_EMPTY`). Beside it,
+card S42: a copied file can't keep its executable bit on POSIX.
 
 ## Breaks
 

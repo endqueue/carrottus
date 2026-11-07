@@ -1370,6 +1370,19 @@ evening on the Mac (Known gaps below, `SPUDGPU_DEVICE_TODO.md`).
   (`F_FULLFSYNC` where it exists) and Windows. Built and run on macOS,
   and on Windows 11 (MSVC, `windows-d3d12`, Debug, 2026-10-22); the Linux
   build hasn't been compiled. The platform's own error number isn't kept yet.
+  Listing a directory and an advisory lock on an open file (card S39,
+  `spudfiles_list_lock_draft.h`) were built on 2026-11-06 on Windows 11:
+  `spudfile_listing_open`/`_next`/`_close` (no "." or "..", a reparse point
+  by its tag, the end said again by the front end) and
+  `spudfile_file_lock`/`_unlock` (`LockFileEx` on the byte at 2^64 - 2,
+  `flock` on POSIX; the file records its lock, so twice and none answer the
+  same everywhere), and every Windows path read as WTF-8 by SpudFiles' own
+  converter, so a listed name with an unpaired surrogate opens. Run on
+  NTFS only (no other file system on the machine); symbolic links not made
+  there (no developer mode), a junction listed in their place. The POSIX
+  backend's half is written, not compiled. SpudFiles still can't remove or
+  rename a directory (card S41, a draft) or keep a file's executable bit
+  (card S42).
 - SpudNet was written on 2026-10-07 and its header reworked, and every backend
   rewritten to it, on 2026-10-08: streaming HTTP transfers, TLS and proxy
   descs, error detail, a resolver, a wait set. The Apple side compiles clean

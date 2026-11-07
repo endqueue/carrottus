@@ -704,6 +704,12 @@ if(NOT TARGET spudlib)
         # else, so a ctest; exits 77, skipped, with no temporary directory.
         add_executable(spudfiles_test tests/spudfiles_test.c)
         target_link_libraries(spudfiles_test PRIVATE spudlib)
+        # The lock test's flags are <stdatomic.h>'s (spudaudio_test, below,
+        # says why MSVC needs these).
+        if(CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+            set_property(TARGET spudfiles_test PROPERTY C_STANDARD 11)
+            target_compile_options(spudfiles_test PRIVATE /experimental:c11atomics)
+        endif()
         add_test(NAME spudfiles_test COMMAND spudfiles_test)
         set_tests_properties(spudfiles_test PROPERTIES SKIP_RETURN_CODE 77)
 

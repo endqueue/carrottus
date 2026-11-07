@@ -483,6 +483,12 @@ typedef enum SPUDRESULT {
 	SPUDRESULT_SPUDFILE_ACCESS_DENIED = 1011, /**< The platform's permissions refuse it. */
 	SPUDRESULT_SPUDFILE_NOT_A_FILE = 1012, /**< A directory, or another kind of entry, is where a file is wanted. */
 	SPUDRESULT_SPUDFILE_NOT_WRITABLE = 1013, /**< Writing to a file not opened for writing. */
+	SPUDRESULT_SPUDFILE_END_OF_LISTING = 1014, /**< A listing has given every entry. An answer, not a failure. */
+	SPUDRESULT_SPUDFILE_NOT_A_DIRECTORY = 1015, /**< A file, or another kind of entry, is where a directory is wanted. */
+	SPUDRESULT_SPUDFILE_LOCKED = 1016, /**< Another lock holds the file, and the call was not to wait. */
+	SPUDRESULT_SPUDFILE_INVALID_LISTING = 1017, /**< A listing argument is NULL. */
+	SPUDRESULT_SPUDFILE_ALREADY_LOCKED = 1018, /**< The file holds a lock taken through it already. */
+	SPUDRESULT_SPUDFILE_NOT_LOCKED = 1019, /**< The file holds no lock taken through it. */
 
 	/* 2001-2003 and 2026 (ZERO_CAPACITY, INSUFFICIENT_CAPACITY,
 	 * PLAT_COMMIT_FAIL, INVALID_ARENA) went with SpudMemory's arena and are
@@ -717,6 +723,10 @@ typedef enum SPUD_STRUCT_TYPE {
 	SPUD_STRUCT_TYPE_FILES_INSTANCE_DESC            = 5001,
 	/** SPUDFILE_PATH_INFO (SPUD_STRUCT_BASE_OUT). */
 	SPUD_STRUCT_TYPE_FILES_PATH_INFO                = 5002,
+	/** spudfile_listing_desc (SPUD_STRUCT_BASE). */
+	SPUD_STRUCT_TYPE_FILES_LISTING_DESC             = 5003,
+	/** SPUDFILE_LISTING_ENTRY (SPUD_STRUCT_BASE_OUT). */
+	SPUD_STRUCT_TYPE_FILES_LISTING_ENTRY            = 5004,
 
 	/** Keeps the enum 32 bits wide on every compiler. Never a valid type. */
 	SPUD_STRUCT_TYPE_MAX_ENUM = 0x7FFFFFFF

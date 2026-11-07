@@ -6,12 +6,14 @@
 
 #include "../../spudfilesshared.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h> // rename
 #include <string.h>
+#include <sys/file.h> // flock
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -259,5 +261,112 @@ SPUDRESULT spudfile_backend_directory_create(spudfile_instance instance, const c
 		return SPUD_SUCCESS;
 	return spudfile_posix_result(errno);
 }
+
+/* ---- Listing a directory ---- */
+
+/* A listing's state: the platform's stream over the directory. */
+typedef struct spudfile_posix_listing {
+	DIR *dir;
+} spudfile_posix_listing;
+
+SPUDRESULT spudfile_backend_listing_open(spudfile_instance instance, const char *path, void **out_native) {
+	spudfile_posix_listing *listing = SPUD_NEW_ZEROED(&instance->head.allocator, spudfile_posix_listing);
+	if (!listing)
+		return SPUDRESULT_OUT_OF_MEMORY;
+	listing->dir = opendir(path);
+	if (!listing->dir) {
+		const int error = errno;
+		SPUD_DELETE(&instance->head.allocator, spudfile_posix_listing, listing);
+		// ENOTDIR is both "a file is there" and "a file is on the way to
+		// it": what is at the path tells them apart.
+		if (error == ENOTDIR) {
+			struct stat status;
+			if (stat(path, &status) == 0 && !S_ISDIR(status.st_mode))
+				return SPUDRESULT_SPUDFILE_NOT_A_DIRECTORY;
+			return SPUDRESULT_SPUDFILE_NOT_FOUND;
+		}
+		return spudfile_posix_result(error);
+	}
+	*out_native = listing;
+	return SPUD_SUCCESS;
+}
+
+SPUDRESULT spudfile_backend_listing_next(spudfile_instance instance, void *native, SPUDFILE_LISTING_ENTRY *out_entry) {
+	(void)instance;
+	spudfile_posix_listing *listing = (spudfile_posix_listing *)native;
+	for (;;) {
+		errno                       = 0;
+		const struct dirent *found = readdir(listing->dir);
+		if (!found)
+			return errno == 0 ? SPUDRESULT_SPUDFILE_END_OF_LISTING : SPUDRESULT_API_SPECIFIC_FAILURE;
+		const char *name = found->d_name;
+		if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0)))
+			continue;
+		SPUDFILE_ENTRY_KIND kind = SPUDFILE_ENTRY_KIND_OTHER;
+		switch (found->d_type) {
+		case DT_REG:
+			kind = SPUDFILE_ENTRY_KIND_FILE;
+			break;
+		case DT_DIR:
+			kind = SPUDFILE_ENTRY_KIND_DIRECTORY;
+			break;
+		case DT_LNK:
+			kind = SPUDFILE_ENTRY_KIND_SYMBOLIC_LINK;
+			break;
+		case DT_UNKNOWN: {
+			// The file system gives no kind: ask it, without following a
+			// link. An entry removed before it could be asked is skipped.
+			struct stat status;
+			if (fstatat(dirfd(listing->dir), name, &status, AT_SYMLINK_NOFOLLOW) != 0) {
+				if (errno == ENOENT)
+					continue;
+				return SPUDRESULT_API_SPECIFIC_FAILURE;
+			}
+			if (S_ISREG(status.st_mode))
+				kind = SPUDFILE_ENTRY_KIND_FILE;
+			else if (S_ISDIR(status.st_mode))
+				kind = SPUDFILE_ENTRY_KIND_DIRECTORY;
+			else if (S_ISLNK(status.st_mode))
+				kind = SPUDFILE_ENTRY_KIND_SYMBOLIC_LINK;
+			break;
+		}
+		default:
+			break; // a device, socket or pipe
+		}
+		const size_t size = strlen(name);
+		if (size >= SPUDFILE_NAME_CAPACITY)
+			return SPUDRESULT_API_SPECIFIC_FAILURE; // NAME_MAX is 255 everywhere SpudFiles runs
+		memcpy(out_entry->name, name, size + 1);
+		out_entry->kind         = kind;
+		out_entry->name_size    = (uint32_t)size;
+		out_entry->name_is_utf8 = spudfile_utf8_valid(name, (uint32_t)size);
+		return SPUD_SUCCESS;
+	}
+}
+
+void spudfile_backend_listing_close(spudfile_instance instance, void *native) {
+	spudfile_posix_listing *listing = (spudfile_posix_listing *)native;
+	closedir(listing->dir);
+	SPUD_DELETE(&instance->head.allocator, spudfile_posix_listing, listing);
+}
+
+/* ---- Locking a file ---- */
+
+SPUDRESULT spudfile_backend_lock(intptr_t native, SPUDFILE_LOCK lock, bool wait) {
+	int operation = lock == SPUDFILE_LOCK_EXCLUSIVE ? LOCK_EX : LOCK_SH;
+	if (!wait)
+		operation |= LOCK_NB;
+	for (;;) {
+		if (flock((int)native, operation) == 0)
+			return SPUD_SUCCESS;
+		if (errno == EINTR)
+			continue; // a signal while waiting: still waiting
+		if (errno == EWOULDBLOCK)
+			return SPUDRESULT_SPUDFILE_LOCKED;
+		return SPUDRESULT_API_SPECIFIC_FAILURE;
+	}
+}
+
+SPUDRESULT spudfile_backend_unlock(intptr_t native) { return flock((int)native, LOCK_UN) == 0 ? SPUD_SUCCESS : SPUDRESULT_API_SPECIFIC_FAILURE; }
 
 #endif // SPUDLIB_PLATFORM_LINUX || SPUDLIB_PLATFORM_APPLE

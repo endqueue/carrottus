@@ -92,9 +92,16 @@ const SPUDFILE_CREATE_NONE = 0
 const SPUDFILE_CREATE_OPEN_EXISTING = 1
 const SPUDFILE_CREATE_OPEN_OR_CREATE = 3
 const SPUDFILE_CREATE_TRUNCATE = 4
+const SPUDFILE_ENTRY_KIND_DIRECTORY = 2
+const SPUDFILE_ENTRY_KIND_FILE = 1
+const SPUDFILE_ENTRY_KIND_OTHER = 4
+const SPUDFILE_ENTRY_KIND_SYMBOLIC_LINK = 3
 const SPUDFILE_FLUSH_LEVEL_DEVICE = 1
 const SPUDFILE_FLUSH_LEVEL_MEDIA = 2
 const SPUDFILE_FLUSH_LEVEL_NONE = 0
+const SPUDFILE_LOCK_EXCLUSIVE = 2
+const SPUDFILE_LOCK_NONE = 0
+const SPUDFILE_LOCK_SHARED = 1
 const SPUDFILE_PATH_KIND_DIRECTORY = 2
 const SPUDFILE_PATH_KIND_FILE = 1
 const SPUDFILE_PATH_KIND_OTHER = 3
@@ -628,14 +635,20 @@ const SPUDRESULT_SAUD_THREAD_PRIORITY_DENIED = 4010
 const SPUDRESULT_SAUD_THREAD_PRIORITY_UNSUPPORTED = 4009
 const SPUDRESULT_SPUDFILE_ACCESS_DENIED = 1011
 const SPUDRESULT_SPUDFILE_ALREADY_EXISTS = 1010
+const SPUDRESULT_SPUDFILE_ALREADY_LOCKED = 1018
 const SPUDRESULT_SPUDFILE_DIFFERENT_VOLUME = 1005
+const SPUDRESULT_SPUDFILE_END_OF_LISTING = 1014
 const SPUDRESULT_SPUDFILE_FLUSH_LEVEL_NOT_SUPPORTED = 1007
 const SPUDRESULT_SPUDFILE_INVALID_FILE = 1002
 const SPUDRESULT_SPUDFILE_INVALID_INSTANCE = 1008
+const SPUDRESULT_SPUDFILE_INVALID_LISTING = 1017
 const SPUDRESULT_SPUDFILE_INVALID_MAPPING = 1003
 const SPUDRESULT_SPUDFILE_IN_USE = 1006
+const SPUDRESULT_SPUDFILE_LOCKED = 1016
+const SPUDRESULT_SPUDFILE_NOT_A_DIRECTORY = 1015
 const SPUDRESULT_SPUDFILE_NOT_A_FILE = 1012
 const SPUDRESULT_SPUDFILE_NOT_FOUND = 1009
+const SPUDRESULT_SPUDFILE_NOT_LOCKED = 1019
 const SPUDRESULT_SPUDFILE_NOT_READABLE = 1004
 const SPUDRESULT_SPUDFILE_NOT_WRITABLE = 1013
 const SPUDRESULT_SPUDFILE_NULL_PATH = 1001
@@ -685,6 +698,8 @@ const SPUD_STRUCT_TYPE_AUDIO_STREAM_CONFIG = 2003
 const SPUD_STRUCT_TYPE_AUDIO_STREAM_DESC = 2002
 const SPUD_STRUCT_TYPE_AUDIO_TIMING_CAPS = 2001
 const SPUD_STRUCT_TYPE_FILES_INSTANCE_DESC = 5001
+const SPUD_STRUCT_TYPE_FILES_LISTING_DESC = 5003
+const SPUD_STRUCT_TYPE_FILES_LISTING_ENTRY = 5004
 const SPUD_STRUCT_TYPE_FILES_OPEN_DESC = 5000
 const SPUD_STRUCT_TYPE_FILES_PATH_INFO = 5002
 const SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_BARRIER = 1035
@@ -756,13 +771,18 @@ fn spudfile_directory_create SPUDRESULT (spudfile_instance, const char *)
 fn spudfile_file_close void (spudfile_file)
 fn spudfile_file_flush SPUDRESULT (spudfile_file, SPUDFILE_FLUSH_LEVEL)
 fn spudfile_file_get_size SPUDRESULT (spudfile_file, uint64_t *)
+fn spudfile_file_lock SPUDRESULT (spudfile_file, SPUDFILE_LOCK, bool)
 fn spudfile_file_map SPUDRESULT (spudfile_file, uint64_t, uint64_t, spudfile_mapping *)
 fn spudfile_file_open SPUDRESULT (spudfile_instance, const spudfile_open_desc *, spudfile_file *)
 fn spudfile_file_read_at SPUDRESULT (spudfile_file, uint64_t, void *, uint64_t, uint64_t *)
 fn spudfile_file_set_size SPUDRESULT (spudfile_file, uint64_t)
+fn spudfile_file_unlock SPUDRESULT (spudfile_file)
 fn spudfile_file_write_at SPUDRESULT (spudfile_file, uint64_t, const void *, uint64_t)
 fn spudfile_instance_create SPUDRESULT (const spudfile_instance_desc *, spudfile_instance *)
 fn spudfile_instance_destroy void (spudfile_instance)
+fn spudfile_listing_close void (spudfile_listing)
+fn spudfile_listing_next SPUDRESULT (spudfile_listing, SPUDFILE_LISTING_ENTRY *)
+fn spudfile_listing_open SPUDRESULT (spudfile_instance, const spudfile_listing_desc *, spudfile_listing *)
 fn spudfile_mapping_get_data const void *(spudfile_mapping)
 fn spudfile_mapping_get_size uint64_t (spudfile_mapping)
 fn spudfile_mapping_release void (spudfile_mapping)
@@ -1025,6 +1045,7 @@ macro SPUDAUDIO_PLATFORM_WATCHOS 0
 [apple,linux] macro SPUDAUDIO_PLATFORM_WINDOWS 0
 [windows] macro SPUDAUDIO_PLATFORM_WINDOWS 1
 macro SPUDFAIL(sr) ((sr) != SPUD_SUCCESS)
+macro SPUDFILE_NAME_CAPACITY 1024
 [linux,windows] macro SPUDGPU_BINDLESS_INVALID_INDEX 0xFFFFFFFFu
 [apple] macro SPUDGPU_EXT_BINDLESS 0
 [linux,windows] macro SPUDGPU_EXT_BINDLESS 1
@@ -1119,6 +1140,7 @@ opaque spudaudio_instance_t
 opaque spudaudio_stream_t
 opaque spudfile_file_t
 opaque spudfile_instance_t
+opaque spudfile_listing_t
 opaque spudfile_mapping_t
 opaque spudgpu_acceleration_structure_t
 opaque spudgpu_adapter_t
@@ -1213,6 +1235,12 @@ field SPUDAUDIO_TIMING_CAPS.default_period_frames @32 uint32_t
 field SPUDAUDIO_TIMING_CAPS.min_buffer_frames @36 uint32_t
 field SPUDAUDIO_TIMING_CAPS.max_buffer_frames @40 uint32_t
 field SPUDAUDIO_TIMING_CAPS.variable_callback_frames @44 bool
+struct SPUDFILE_LISTING_ENTRY size=1056 align=8
+field SPUDFILE_LISTING_ENTRY.base @0 SPUD_STRUCT_BASE_OUT
+field SPUDFILE_LISTING_ENTRY.kind @16 SPUDFILE_ENTRY_KIND
+field SPUDFILE_LISTING_ENTRY.name_is_utf8 @20 bool
+field SPUDFILE_LISTING_ENTRY.name_size @24 uint32_t
+field SPUDFILE_LISTING_ENTRY.name @28 char[1024]
 struct SPUDFILE_PATH_INFO size=40 align=8
 field SPUDFILE_PATH_INFO.base @0 SPUD_STRUCT_BASE_OUT
 field SPUDFILE_PATH_INFO.kind @16 SPUDFILE_PATH_KIND
@@ -1343,6 +1371,10 @@ field SPUD_STRUCT_BASE_OUT.next @8 struct SPUD_STRUCT_BASE_OUT *
 struct spudfile_instance_desc size=24 align=8
 field spudfile_instance_desc.base @0 SPUD_STRUCT_BASE
 field spudfile_instance_desc.allocator @16 const SPUD_ALLOCATOR *
+struct spudfile_listing_desc size=32 align=8
+field spudfile_listing_desc.base @0 SPUD_STRUCT_BASE
+field spudfile_listing_desc.path @16 const char *
+field spudfile_listing_desc.debug_name @24 const char *
 struct spudfile_open_desc size=48 align=8
 field spudfile_open_desc.base @0 SPUD_STRUCT_BASE
 field spudfile_open_desc.path @16 const char *
@@ -1806,7 +1838,10 @@ typedef SPUDAUDIO_THREAD_PRIORITY = uint32_t
 typedef SPUDAUDIO_TIMING_CAPS = struct SPUDAUDIO_TIMING_CAPS
 typedef SPUDFILE_ACCESS = enum SPUDFILE_ACCESS
 typedef SPUDFILE_CREATE = enum SPUDFILE_CREATE
+typedef SPUDFILE_ENTRY_KIND = enum SPUDFILE_ENTRY_KIND
 typedef SPUDFILE_FLUSH_LEVEL = enum SPUDFILE_FLUSH_LEVEL
+typedef SPUDFILE_LISTING_ENTRY = struct SPUDFILE_LISTING_ENTRY
+typedef SPUDFILE_LOCK = enum SPUDFILE_LOCK
 typedef SPUDFILE_PATH_INFO = struct SPUDFILE_PATH_INFO
 typedef SPUDFILE_PATH_KIND = enum SPUDFILE_PATH_KIND
 typedef SPUDFILE_SHARE = uint32_t
@@ -1897,6 +1932,8 @@ typedef spudaudio_stream = struct spudaudio_stream_t *
 typedef spudfile_file = struct spudfile_file_t *
 typedef spudfile_instance = struct spudfile_instance_t *
 typedef spudfile_instance_desc = struct spudfile_instance_desc
+typedef spudfile_listing = struct spudfile_listing_t *
+typedef spudfile_listing_desc = struct spudfile_listing_desc
 typedef spudfile_mapping = struct spudfile_mapping_t *
 typedef spudfile_open_desc = struct spudfile_open_desc
 typedef spudgpu_acceleration_structure = struct spudgpu_acceleration_structure_t *

@@ -563,6 +563,21 @@ FACTORIES = {
 	spudfile_path_remove(instance, FREED_FILE);
 	spudfile_instance_destroy(instance);
 	return mapping;''',
+    'spudfile_listing': r'''
+	spudfile_instance instance = make_file_instance();
+	if (!instance)
+		return NULL;
+	spudfile_listing_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type           = SPUD_STRUCT_TYPE_FILES_LISTING_DESC;
+	desc.path                = ".";
+	spudfile_listing listing = NULL;
+	if (spudfile_listing_open(instance, &desc, &listing) == SPUD_SUCCESS)
+		spudfile_listing_close(listing);
+	else
+		why = "spudfile_listing_open failed on the working directory";
+	spudfile_instance_destroy(instance);
+	return listing;''',
     # ---- SpudGPU
     'spudgpu_instance': r'''
 	spudgpu_instance instance = make_gpu_instance();

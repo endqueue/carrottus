@@ -5,16 +5,20 @@
  * @file spudfiles.h
  * @brief SpudFiles: files and paths, as the platform's file system has them.
  *
- * Opening, reading and writing at an offset, sizing, flushing and mapping a
- * file; what is at a path, replacing and removing a file, and making a
- * directory. One call each, translated: POSIX on Linux and every Apple
- * system, the Win32 W functions on Windows.
+ * Opening, reading and writing at an offset, sizing, flushing, mapping and
+ * locking a file; what is at a path, replacing and removing a file, making
+ * a directory and listing one. One call each, translated: POSIX on Linux
+ * and every Apple system, the Win32 W functions on Windows.
  *
  * Rules that hold on every backend:
  *
  * - Every path is UTF-8, null-terminated, as the platform takes it
  *   (relative to the process's working directory, or absolute). The Windows
- *   backend converts each to UTF-16. Nothing is normalised, joined or split:
+ *   backend converts each to UTF-16, reading it as WTF-8: UTF-8 that may
+ *   also hold an unpaired UTF-16 surrogate as its three bytes, so every
+ *   name a listing gives opens, whatever it holds. A path that isn't WTF-8
+ *   names nothing (SPUDRESULT_SPUDFILE_NOT_FOUND), as one that isn't UTF-8
+ *   names nothing on POSIX's terms. Nothing is normalised, joined or split:
  *   a path is the caller's.
  * - A NULL or empty path is refused with SPUDRESULT_SPUDFILE_NULL_PATH.
  * - There is no cursor: every read and write names its offset, so one
@@ -51,6 +55,8 @@ typedef struct spudfile_instance_t *spudfile_instance;
 typedef struct spudfile_file_t *spudfile_file;
 /** Opaque handle to a read-only mapping of part of a file. */
 typedef struct spudfile_mapping_t *spudfile_mapping;
+/** Opaque handle to an open listing of a directory's entries. */
+typedef struct spudfile_listing_t *spudfile_listing;
 
 /* ---- Instance ---- */
 
@@ -527,6 +533,211 @@ SPUDRESULT spudfile_path_remove(
 SPUDRESULT spudfile_directory_create(
     spudfile_instance instance,
     const char *path);
+
+/* ---- Listing a directory ---- */
+
+/** @brief What an entry of a directory is, as the listing says, without
+ * following a link. The same kinds on every backend. */
+typedef enum SPUDFILE_ENTRY_KIND {
+	SPUDFILE_ENTRY_KIND_FILE      = 1, /**< A file. */
+	SPUDFILE_ENTRY_KIND_DIRECTORY = 2, /**< A directory. */
+	/** A symbolic link; on Windows also a junction (a mount point).
+	 * Windows' other reparse points (a cloud placeholder, a deduplicated
+	 * file) are the file or directory they stand for. */
+	SPUDFILE_ENTRY_KIND_SYMBOLIC_LINK = 3,
+	SPUDFILE_ENTRY_KIND_OTHER         = 4, /**< A device, socket, pipe or the like. */
+} SPUDFILE_ENTRY_KIND;
+
+/** @brief The room an entry's name has: the longest name of any platform
+ * (255 UTF-16 units on Windows and HFS+, at most 765 bytes of WTF-8; 255
+ * bytes on Linux and APFS), its null and room to spare. */
+#define SPUDFILE_NAME_CAPACITY 1024
+
+/** @brief What the caller decides when opening a listing. No field has a
+ * default. */
+typedef struct spudfile_listing_desc {
+	/** `type` is SPUD_STRUCT_TYPE_FILES_LISTING_DESC; `next` is NULL. Set
+	 * by the caller. See SPUD_STRUCT_BASE. */
+	SPUD_STRUCT_BASE base;
+	/** The directory. A file, or anything but a directory, is refused with
+	 * SPUDRESULT_SPUDFILE_NOT_A_DIRECTORY. */
+	const char *path;
+	/** Name for debugging, or NULL. Copied; see spud_debug_name_set(). */
+	const char *debug_name;
+} spudfile_listing_desc;
+
+/** @brief One entry of a listing, filled by spudfile_listing_next(). */
+typedef struct SPUDFILE_LISTING_ENTRY {
+	/** `type` is SPUD_STRUCT_TYPE_FILES_LISTING_ENTRY; `next` is NULL. The
+	 * caller sets the type; SpudFiles fills in the rest. See
+	 * SPUD_STRUCT_BASE. */
+	SPUD_STRUCT_BASE_OUT base;
+	SPUDFILE_ENTRY_KIND kind; /**< What it is. */
+	/** True when `name` is valid UTF-8. False for a POSIX name that isn't,
+	 * its bytes then given as they are, and a Windows name holding an
+	 * unpaired surrogate, given as WTF-8. Either way a path made from
+	 * `name` opens the entry. */
+	bool name_is_utf8;
+	/** Bytes in `name`, its null not counted. */
+	uint32_t name_size;
+	/** The name alone, no directory before it, null-terminated. */
+	char name[SPUDFILE_NAME_CAPACITY];
+} SPUDFILE_LISTING_ENTRY;
+
+/**
+ * @brief Opens a listing of a directory's entries: opendir, or
+ * FindFirstFileExW (FindExInfoBasic, with a large fetch). They are then
+ * given one a call by spudfile_listing_next(), in the order the platform
+ * gives them, hidden ones included, "." and ".." never. Entries made or
+ * removed while it is open may or may not be given, as the platform has
+ * it. An empty drive root on Windows, which FindFirstFileExW answers with
+ * ERROR_FILE_NOT_FOUND, is an empty listing. Nothing is sorted, filtered
+ * or recursed: the caller's.
+ *
+ * Thread: may overlap any call on the same instance but
+ * spudfile_instance_destroy().
+ *
+ * @param[in]  instance    The instance the listing is made with.
+ * @param[in]  desc        What the caller decides.
+ * @param[out] out_listing Receives the listing; NULL on failure.
+ *
+ * @retval SPUD_SUCCESS The listing is open.
+ * @retval SPUDRESULT_SPUDFILE_INVALID_INSTANCE `instance` is NULL.
+ * @retval SPUDRESULT_NULL_DESC `desc` is NULL.
+ * @retval SPUDRESULT_STRUCT_WRONG_TYPE `desc->base.type` is not
+ *         SPUD_STRUCT_TYPE_FILES_LISTING_DESC.
+ * @retval SPUDRESULT_STRUCT_UNKNOWN_IN_CHAIN `desc->base.next` is not NULL.
+ * @retval SPUDRESULT_NULL_OUTPUT_PARAMETER `out_listing` is NULL.
+ * @retval SPUDRESULT_SPUDFILE_NULL_PATH `desc->path` is NULL or empty.
+ * @retval SPUDRESULT_SPUDFILE_NOT_FOUND Nothing is there, or a directory on
+ *         the way to it isn't (a Windows path that isn't WTF-8 among
+ *         them).
+ * @retval SPUDRESULT_SPUDFILE_NOT_A_DIRECTORY Something other than a
+ *         directory is there (on Windows told apart from a missing parent
+ *         by the path's attributes, since FindFirstFileExW answers both
+ *         alike).
+ * @retval SPUDRESULT_SPUDFILE_ACCESS_DENIED The platform won't list it.
+ * @retval SPUDRESULT_OUT_OF_MEMORY The listing could not be allocated.
+ * @retval SPUDRESULT_API_SPECIFIC_FAILURE The platform refused for another
+ *         reason.
+ */
+SPUDRESULT spudfile_listing_open(
+    spudfile_instance instance,
+    const spudfile_listing_desc *desc,
+    spudfile_listing *out_listing);
+
+/**
+ * @brief Gives the listing's next entry: readdir, or FindNextFileW. Where
+ * readdir gives no kind (DT_UNKNOWN, on some file systems) the POSIX
+ * backend asks with fstatat(AT_SYMLINK_NOFOLLOW), and skips an entry
+ * removed before it could ask. On Windows a reparse point's tag decides
+ * whether it is a link (IO_REPARSE_TAG_SYMLINK, _MOUNT_POINT), a socket
+ * (IO_REPARSE_TAG_AF_UNIX, OTHER) or the file or directory its attributes
+ * say.
+ *
+ * Thread: one caller at a time on a listing (it moves the platform's own
+ * place in the directory); may overlap calls on other objects of the
+ * instance.
+ *
+ * @param[in]  listing   The listing.
+ * @param[out] out_entry Receives the entry. Its `base.type` is set by the
+ *                       caller.
+ *
+ * @retval SPUD_SUCCESS `*out_entry` is the next entry.
+ * @retval SPUDRESULT_SPUDFILE_END_OF_LISTING Every entry has been given;
+ *         every later call says so too. `*out_entry` is unchanged.
+ * @retval SPUDRESULT_SPUDFILE_INVALID_LISTING `listing` is NULL.
+ * @retval SPUDRESULT_NULL_OUTPUT_PARAMETER `out_entry` is NULL.
+ * @retval SPUDRESULT_STRUCT_WRONG_TYPE `out_entry->base.type` is not
+ *         SPUD_STRUCT_TYPE_FILES_LISTING_ENTRY.
+ * @retval SPUDRESULT_STRUCT_UNKNOWN_IN_CHAIN `out_entry->base.next` is not
+ *         NULL.
+ * @retval SPUDRESULT_API_SPECIFIC_FAILURE The platform failed to read the
+ *         directory (it may have gone). The listing can then only be
+ *         closed: what a later next gives is undefined.
+ */
+SPUDRESULT spudfile_listing_next(
+    spudfile_listing listing,
+    SPUDFILE_LISTING_ENTRY *out_entry);
+
+/**
+ * @brief Closes a listing: closedir, or FindClose.
+ *
+ * @param[in] listing The listing. NULL does nothing.
+ */
+void spudfile_listing_close(spudfile_listing listing);
+
+/* ---- Locking a file ---- */
+
+/** @brief What a lock lets others have. */
+typedef enum SPUDFILE_LOCK {
+	SPUDFILE_LOCK_NONE      = 0, /**< Not a lock: refused. */
+	SPUDFILE_LOCK_SHARED    = 1, /**< Others may hold shared locks too. */
+	SPUDFILE_LOCK_EXCLUSIVE = 2, /**< No other lock while it is held. */
+} SPUDFILE_LOCK;
+
+/**
+ * @brief Takes an advisory lock on an open file: flock, or LockFileEx on
+ * one byte at offset 2^64 - 2, past any data a file can hold, so it
+ * refuses other locks and never another file's reads or writes, on every
+ * backend. Held until spudfile_file_unlock() or the file's close.
+ *
+ * Advisory: only callers that lock are kept apart. Per open file, as flock
+ * is: two files opened on one path exclude each other, in one process or
+ * two. Where that fails:
+ * - Over NFS, Linux emulates flock with POSIX record locks, which belong
+ *   to a process: two files of one process there don't exclude each
+ *   other, and other network file systems may not honour a lock at all.
+ * - A child process that inherited the descriptor keeps the lock held
+ *   while it has it open. SpudFiles opens every file with O_CLOEXEC, so
+ *   only a descriptor the caller handed on is inherited.
+ *
+ * A file holds at most one lock taken through it, and records which: a
+ * second is refused (ALREADY_LOCKED) without asking the platform. A lock
+ * is changed (shared to exclusive) by unlocking and locking again, which
+ * isn't atomic.
+ *
+ * Thread: may overlap a read, write, size, flush or map on the same file,
+ * and any call on other files; not spudfile_file_unlock() or
+ * spudfile_file_close() on the same file. With @p wait, blocks the calling
+ * thread until the lock is had, with no limit and no cancel: a caller that
+ * wants a limit asks with @p wait false, as often as it chooses.
+ *
+ * @param[in] file The file; open for reading, writing or both.
+ * @param[in] lock SHARED or EXCLUSIVE.
+ * @param[in] wait true: wait until it can be had. false: refuse at once.
+ *
+ * @retval SPUD_SUCCESS The lock is held.
+ * @retval SPUDRESULT_SPUDFILE_INVALID_FILE `file` is NULL.
+ * @retval SPUDRESULT_DESC_INVALID_PARAMETERS `lock` is not SHARED or
+ *         EXCLUSIVE.
+ * @retval SPUDRESULT_SPUDFILE_ALREADY_LOCKED The file holds a lock taken
+ *         through it.
+ * @retval SPUDRESULT_SPUDFILE_LOCKED Another lock holds it, and @p wait is
+ *         false.
+ * @retval SPUDRESULT_API_SPECIFIC_FAILURE The platform refused for another
+ *         reason (a file system that can't lock among them).
+ */
+SPUDRESULT spudfile_file_lock(
+    spudfile_file file,
+    SPUDFILE_LOCK lock,
+    bool wait);
+
+/**
+ * @brief Lets go of a file's lock: flock with LOCK_UN, or UnlockFileEx on
+ * the same byte.
+ *
+ * Thread: as spudfile_file_lock().
+ *
+ * @param[in] file The file.
+ *
+ * @retval SPUD_SUCCESS The lock is gone.
+ * @retval SPUDRESULT_SPUDFILE_INVALID_FILE `file` is NULL.
+ * @retval SPUDRESULT_SPUDFILE_NOT_LOCKED The file holds no lock taken
+ *         through it.
+ * @retval SPUDRESULT_API_SPECIFIC_FAILURE The platform refused.
+ */
+SPUDRESULT spudfile_file_unlock(spudfile_file file);
 
 #ifdef __cplusplus
 }

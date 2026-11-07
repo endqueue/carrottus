@@ -6,7 +6,10 @@
  * an offset, a short read at the end, a write past it; sizing; flushing;
  * mapping at an offset no page boundary falls on, outliving its file; what
  * is at a path; replacing, removing and making a directory; a file with a
- * name outside ASCII; and two threads reading one file at once. Every block
+ * name outside ASCII; two threads reading one file at once; listing a
+ * directory (each kind of entry the platform lets the test make, names
+ * that aren't UTF-8) and locking a file between two files opened on one
+ * path, one waiting on a second thread. Every block
  * goes through a counting allocator, checked at the end. Needs nothing but
  * a writable temporary directory.
  *
@@ -18,6 +21,7 @@
 
 #include "spudtest_allocator.h"
 
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,6 +35,9 @@
 #define SLASH "\\"
 #else
 #include <pthread.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 #define SLASH "/"
 #endif
@@ -539,6 +546,510 @@ static void test_two_readers(void) {
 	CHECK_RESULT(spudfile_path_remove(g_files, path), SPUD_SUCCESS);
 }
 
+/* ---- Listing ---- */
+
+static spudfile_listing_desc listing_desc(const char *path) {
+	spudfile_listing_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type = SPUD_STRUCT_TYPE_FILES_LISTING_DESC;
+	desc.path      = path;
+	return desc;
+}
+
+static SPUDFILE_LISTING_ENTRY empty_entry(void) {
+	SPUDFILE_LISTING_ENTRY entry;
+	memset(&entry, 0, sizeof(entry));
+	entry.base.type = SPUD_STRUCT_TYPE_FILES_LISTING_ENTRY;
+	return entry;
+}
+
+/* What a listing of a directory gave: up to 16 entries. */
+struct seen {
+	char names[16][64];
+	SPUDFILE_ENTRY_KIND kinds[16];
+	bool utf8[16];
+	int count;
+	int extra; /* past 16, or a name too long to keep */
+	SPUDRESULT end;
+};
+
+static struct seen list_dir(const char *dir) {
+	struct seen seen;
+	memset(&seen, 0, sizeof(seen));
+	const spudfile_listing_desc desc = listing_desc(dir);
+	spudfile_listing listing         = NULL;
+	CHECK_RESULT(spudfile_listing_open(g_files, &desc, &listing), SPUD_SUCCESS);
+	if (!listing)
+		return seen;
+	for (;;) {
+		SPUDFILE_LISTING_ENTRY entry = empty_entry();
+		const SPUDRESULT result      = spudfile_listing_next(listing, &entry);
+		if (result != SPUD_SUCCESS) {
+			seen.end = result;
+			break;
+		}
+		CHECK(entry.name_size == strlen(entry.name));
+		if (seen.count < 16 && entry.name_size < 64) {
+			memcpy(seen.names[seen.count], entry.name, entry.name_size + 1);
+			seen.kinds[seen.count] = entry.kind;
+			seen.utf8[seen.count]  = entry.name_is_utf8;
+			++seen.count;
+		} else {
+			++seen.extra;
+		}
+	}
+	// The end is said again, and the entry left as it was.
+	SPUDFILE_LISTING_ENTRY after = empty_entry();
+	after.name_size              = 77;
+	CHECK_RESULT(spudfile_listing_next(listing, &after), SPUDRESULT_SPUDFILE_END_OF_LISTING);
+	CHECK(after.name_size == 77);
+	spudfile_listing_close(listing);
+	return seen;
+}
+
+/* How many times [name] was given, its kind and whether it was UTF-8. */
+static int seen_count(
+    const struct seen *seen,
+    const char *name,
+    SPUDFILE_ENTRY_KIND *out_kind,
+    bool *out_utf8) {
+	int count = 0;
+	for (int i = 0; i < seen->count; ++i) {
+		if (strcmp(seen->names[i], name) == 0) {
+			++count;
+			if (out_kind)
+				*out_kind = seen->kinds[i];
+			if (out_utf8)
+				*out_utf8 = seen->utf8[i];
+		}
+	}
+	return count;
+}
+
+static void test_listing_checks(void) {
+	char dir[1100];
+	path_in(dir, sizeof(dir), "listing_checks");
+	CHECK_RESULT(spudfile_directory_create(g_files, dir), SPUD_SUCCESS);
+	spudfile_listing_desc desc = listing_desc(dir);
+	spudfile_listing listing   = (spudfile_listing)(uintptr_t)1;
+
+	// Every argument in order, nothing made.
+	CHECK_RESULT(spudfile_listing_open(NULL, &desc, &listing), SPUDRESULT_SPUDFILE_INVALID_INSTANCE);
+	CHECK_RESULT(spudfile_listing_open(g_files, NULL, &listing), SPUDRESULT_NULL_DESC);
+	desc.base.type = SPUD_STRUCT_TYPE_FILES_OPEN_DESC;
+	CHECK_RESULT(spudfile_listing_open(g_files, &desc, &listing), SPUDRESULT_STRUCT_WRONG_TYPE);
+	desc.base.type = SPUD_STRUCT_TYPE_FILES_LISTING_DESC;
+	desc.base.next = &desc.base;
+	CHECK_RESULT(spudfile_listing_open(g_files, &desc, &listing), SPUDRESULT_STRUCT_UNKNOWN_IN_CHAIN);
+	desc.base.next = NULL;
+	CHECK_RESULT(spudfile_listing_open(g_files, &desc, NULL), SPUDRESULT_NULL_OUTPUT_PARAMETER);
+	desc.path = NULL;
+	CHECK_RESULT(spudfile_listing_open(g_files, &desc, &listing), SPUDRESULT_SPUDFILE_NULL_PATH);
+	CHECK(listing == NULL);
+	desc.path = "";
+	CHECK_RESULT(spudfile_listing_open(g_files, &desc, &listing), SPUDRESULT_SPUDFILE_NULL_PATH);
+
+	// Missing, and a file where a directory is wanted.
+	char missing[1100];
+	path_in(missing, sizeof(missing), "listing_checks" SLASH "none");
+	desc.path = missing;
+	CHECK_RESULT(spudfile_listing_open(g_files, &desc, &listing), SPUDRESULT_SPUDFILE_NOT_FOUND);
+	char missing_parent[1100];
+	path_in(missing_parent, sizeof(missing_parent), "listing_checks" SLASH "none" SLASH "deeper");
+	desc.path = missing_parent;
+	CHECK_RESULT(spudfile_listing_open(g_files, &desc, &listing), SPUDRESULT_SPUDFILE_NOT_FOUND);
+	char file[1100];
+	path_in(file, sizeof(file), "listing_checks" SLASH "a_file");
+	write_whole(file, "x");
+	desc.path = file;
+	CHECK_RESULT(spudfile_listing_open(g_files, &desc, &listing), SPUDRESULT_SPUDFILE_NOT_A_DIRECTORY);
+	CHECK(listing == NULL);
+
+	// An empty directory ends at once.
+	char empty[1100];
+	path_in(empty, sizeof(empty), "listing_checks" SLASH "empty");
+	CHECK_RESULT(spudfile_directory_create(g_files, empty), SPUD_SUCCESS);
+	const struct seen seen = list_dir(empty);
+	CHECK(seen.count == 0 && seen.extra == 0);
+	CHECK(seen.end == SPUDRESULT_SPUDFILE_END_OF_LISTING);
+
+	// next's own checks, and a debug name.
+	desc.path       = dir;
+	desc.debug_name = "checks";
+	listing         = NULL;
+	CHECK_RESULT(spudfile_listing_open(g_files, &desc, &listing), SPUD_SUCCESS);
+	SPUDFILE_LISTING_ENTRY entry = empty_entry();
+	CHECK_RESULT(spudfile_listing_next(NULL, &entry), SPUDRESULT_SPUDFILE_INVALID_LISTING);
+	CHECK_RESULT(spudfile_listing_next(listing, NULL), SPUDRESULT_NULL_OUTPUT_PARAMETER);
+	entry.base.type = SPUD_STRUCT_TYPE_FILES_PATH_INFO;
+	CHECK_RESULT(spudfile_listing_next(listing, &entry), SPUDRESULT_STRUCT_WRONG_TYPE);
+	entry.base.type = SPUD_STRUCT_TYPE_FILES_LISTING_ENTRY;
+	entry.base.next = &entry.base;
+	CHECK_RESULT(spudfile_listing_next(listing, &entry), SPUDRESULT_STRUCT_UNKNOWN_IN_CHAIN);
+	spudfile_listing_close(listing);
+	spudfile_listing_close(NULL);
+
+	CHECK_RESULT(spudfile_path_remove(g_files, file), SPUD_SUCCESS);
+	CHECK(rmdir(empty) == 0);
+	CHECK(rmdir(dir) == 0);
+}
+
+/* Makes a symbolic link at [link] to [target] (a directory if
+ * [directory]); false where the platform won't let the test (Windows
+ * without developer mode or the privilege). */
+static bool make_symbolic_link(
+    const char *target,
+    const char *link,
+    bool directory) {
+#if SPUDLIB_PLATFORM_WIN32
+	wchar_t wide_target[1100];
+	wchar_t wide_link[1100];
+	if (!MultiByteToWideChar(CP_UTF8, 0, target, -1, wide_target, 1100) || !MultiByteToWideChar(CP_UTF8, 0, link, -1, wide_link, 1100))
+		return false;
+	const DWORD flags = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE | (directory ? SYMBOLIC_LINK_FLAG_DIRECTORY : 0);
+	return CreateSymbolicLinkW(wide_link, wide_target, flags) != 0;
+#else
+	(void)directory;
+	return symlink(target, link) == 0;
+#endif
+}
+
+static void remove_link(
+    const char *link,
+    bool directory) {
+#if SPUDLIB_PLATFORM_WIN32
+	wchar_t wide[1100];
+	MultiByteToWideChar(CP_UTF8, 0, link, -1, wide, 1100);
+	CHECK(directory ? RemoveDirectoryW(wide) != 0 : DeleteFileW(wide) != 0);
+#else
+	(void)directory;
+	CHECK(unlink(link) == 0);
+#endif
+}
+
+static void test_listing_kinds(void) {
+	char dir[1100];
+	path_in(dir, sizeof(dir), "listing");
+	CHECK_RESULT(spudfile_directory_create(g_files, dir), SPUD_SUCCESS);
+	char a[1100];
+	char sub[1100];
+	char hidden[1100];
+	char unicode[1100];
+	path_in(a, sizeof(a), "listing" SLASH "a.txt");
+	path_in(sub, sizeof(sub), "listing" SLASH "sub");
+	path_in(hidden, sizeof(hidden), "listing" SLASH ".hidden");
+	path_in(unicode, sizeof(unicode), "listing" SLASH "pl\xC3\xA4n \xE5\x9B\xB3.txt");
+	write_whole(a, "a");
+	write_whole(hidden, "h");
+	write_whole(unicode, "u");
+	CHECK_RESULT(spudfile_directory_create(g_files, sub), SPUD_SUCCESS);
+#if SPUDLIB_PLATFORM_WIN32
+	// Hidden by its attribute too, as Explorer hides a file.
+	wchar_t wide_hidden[1100];
+	MultiByteToWideChar(CP_UTF8, 0, hidden, -1, wide_hidden, 1100);
+	CHECK(SetFileAttributesW(wide_hidden, FILE_ATTRIBUTE_HIDDEN) != 0);
+#endif
+
+	char file_link[1100];
+	char dir_link[1100];
+	path_in(file_link, sizeof(file_link), "listing" SLASH "file_link");
+	path_in(dir_link, sizeof(dir_link), "listing" SLASH "dir_link");
+	const bool file_linked = make_symbolic_link(a, file_link, false);
+	const bool dir_linked  = make_symbolic_link(sub, dir_link, true);
+	if (!file_linked || !dir_linked)
+		printf("spudfiles_test: symbolic links not made here (Windows needs developer mode): not listed\n");
+
+#if SPUDLIB_PLATFORM_WIN32
+	// A junction, through mklink, which needs no privilege.
+	char junction[1100];
+	path_in(junction, sizeof(junction), "listing" SLASH "junction");
+	char command[2400];
+	snprintf(command, sizeof(command), "cmd /c mklink /J \"%s\" \"%s\" >NUL", junction, sub);
+	const bool junctioned = system(command) == 0;
+	if (!junctioned)
+		printf("spudfiles_test: no junction made: not listed\n");
+#else
+	// A socket: OTHER.
+	char socket_path[1100];
+	path_in(socket_path, sizeof(socket_path), "listing" SLASH "sock");
+	bool socketed = false;
+	const int fd  = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (fd >= 0) {
+		struct sockaddr_un address;
+		memset(&address, 0, sizeof(address));
+		address.sun_family = AF_UNIX;
+		if (strlen(socket_path) < sizeof(address.sun_path)) {
+			memcpy(address.sun_path, socket_path, strlen(socket_path) + 1);
+			socketed = bind(fd, (struct sockaddr *)&address, sizeof(address)) == 0;
+		}
+		close(fd);
+	}
+	if (!socketed)
+		printf("spudfiles_test: no socket made (path too long?): not listed\n");
+#endif
+
+	const struct seen seen = list_dir(dir);
+	CHECK(seen.end == SPUDRESULT_SPUDFILE_END_OF_LISTING);
+	CHECK(seen.extra == 0);
+	CHECK(seen_count(&seen, ".", NULL, NULL) == 0);
+	CHECK(seen_count(&seen, "..", NULL, NULL) == 0);
+	SPUDFILE_ENTRY_KIND kind = (SPUDFILE_ENTRY_KIND)0;
+	bool utf8                = false;
+	CHECK(seen_count(&seen, "a.txt", &kind, &utf8) == 1 && kind == SPUDFILE_ENTRY_KIND_FILE && utf8);
+	CHECK(seen_count(&seen, "sub", &kind, NULL) == 1 && kind == SPUDFILE_ENTRY_KIND_DIRECTORY);
+	CHECK(seen_count(&seen, ".hidden", &kind, NULL) == 1 && kind == SPUDFILE_ENTRY_KIND_FILE);
+	CHECK(seen_count(&seen, "pl\xC3\xA4n \xE5\x9B\xB3.txt", &kind, &utf8) == 1 && kind == SPUDFILE_ENTRY_KIND_FILE && utf8);
+	int expected = 4;
+	if (file_linked) {
+		CHECK(seen_count(&seen, "file_link", &kind, NULL) == 1 && kind == SPUDFILE_ENTRY_KIND_SYMBOLIC_LINK);
+		++expected;
+	}
+	if (dir_linked) {
+		CHECK(seen_count(&seen, "dir_link", &kind, NULL) == 1 && kind == SPUDFILE_ENTRY_KIND_SYMBOLIC_LINK);
+		++expected;
+	}
+#if SPUDLIB_PLATFORM_WIN32
+	if (junctioned) {
+		CHECK(seen_count(&seen, "junction", &kind, NULL) == 1 && kind == SPUDFILE_ENTRY_KIND_SYMBOLIC_LINK);
+		++expected;
+	}
+#else
+	if (socketed) {
+		CHECK(seen_count(&seen, "sock", &kind, NULL) == 1 && kind == SPUDFILE_ENTRY_KIND_OTHER);
+		++expected;
+	}
+#endif
+	CHECK(seen.count == expected);
+
+	// A listed name round-trips: opened by the path made from it.
+	char reopened[1100];
+	snprintf(reopened, sizeof(reopened), "%s" SLASH "%s", dir, "pl\xC3\xA4n \xE5\x9B\xB3.txt");
+	CHECK(holds(reopened, "u"));
+
+	if (file_linked)
+		remove_link(file_link, false);
+	if (dir_linked)
+		remove_link(dir_link, true);
+#if SPUDLIB_PLATFORM_WIN32
+	if (junctioned)
+		remove_link(junction, true);
+	CHECK(SetFileAttributesW(wide_hidden, FILE_ATTRIBUTE_NORMAL) != 0);
+#else
+	if (socketed)
+		CHECK(unlink(socket_path) == 0);
+#endif
+	CHECK_RESULT(spudfile_path_remove(g_files, a), SPUD_SUCCESS);
+	CHECK_RESULT(spudfile_path_remove(g_files, hidden), SPUD_SUCCESS);
+	CHECK_RESULT(spudfile_path_remove(g_files, unicode), SPUD_SUCCESS);
+	CHECK(rmdir(sub) == 0);
+	CHECK(rmdir(dir) == 0);
+}
+
+/* Names that aren't UTF-8: listed with name_is_utf8 false, and opened by
+ * the name given. */
+static void test_listing_non_utf8(void) {
+	char dir[1100];
+	path_in(dir, sizeof(dir), "non_utf8");
+	CHECK_RESULT(spudfile_directory_create(g_files, dir), SPUD_SUCCESS);
+#if SPUDLIB_PLATFORM_WIN32
+	// An unpaired surrogate, made through the W call; its WTF-8 is ED A0 80.
+	wchar_t wide[1100];
+	MultiByteToWideChar(CP_UTF8, 0, dir, -1, wide, 1100);
+	wcscat_s(wide, 1100, L"\\lone\xD800.txt");
+	HANDLE handle = CreateFileW(wide, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+	CHECK(handle != INVALID_HANDLE_VALUE);
+	if (handle != INVALID_HANDLE_VALUE) {
+		DWORD written = 0;
+		CHECK(WriteFile(handle, "w", 1, &written, NULL) && written == 1);
+		CloseHandle(handle);
+	}
+	const char *const name = "lone\xED\xA0\x80.txt";
+#else
+	// An invalid byte: POSIX takes a name's bytes as they are.
+	const char *const name = "bad\xFF.txt";
+	char made[1100];
+	path_in(made, sizeof(made), "non_utf8" SLASH "bad\xFF.txt");
+	write_whole(made, "w");
+#endif
+	const struct seen seen   = list_dir(dir);
+	SPUDFILE_ENTRY_KIND kind = (SPUDFILE_ENTRY_KIND)0;
+	bool utf8                = true;
+	CHECK(seen.count == 1);
+	CHECK(seen_count(&seen, name, &kind, &utf8) == 1 && kind == SPUDFILE_ENTRY_KIND_FILE && !utf8);
+	char path[1100];
+	snprintf(path, sizeof(path), "%s" SLASH "%s", dir, name);
+	CHECK(holds(path, "w"));
+	CHECK_RESULT(spudfile_path_remove(g_files, path), SPUD_SUCCESS);
+	CHECK(rmdir(dir) == 0);
+
+#if SPUDLIB_PLATFORM_WIN32
+	// The converter's refusals: an encoded surrogate pair (WTF-8 forbids
+	// it: the pair is the code point's own four bytes), an overlong '/',
+	// a surrogate cut short, and a lead byte with nothing after it. None
+	// names a file.
+	const char *const refused[] = {"pair\xED\xA0\x80\xED\xB0\x80.txt", "over\xC0\xAF.txt", "cut\xED\xA0.txt", "end\xE5"};
+	for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); ++i) {
+		char bad[1100];
+		path_in(bad, sizeof(bad), refused[i]);
+		const spudfile_open_desc desc = open_desc(bad, SPUDFILE_ACCESS_WRITE, SPUDFILE_CREATE_TRUNCATE);
+		spudfile_file file            = NULL;
+		CHECK_RESULT(spudfile_file_open(g_files, &desc, &file), SPUDRESULT_SPUDFILE_NOT_FOUND);
+	}
+#endif
+}
+
+/* ---- Locks ---- */
+
+static spudfile_file open_shared(const char *path) {
+	spudfile_open_desc desc = open_desc(path, SPUDFILE_ACCESS_READ_WRITE, SPUDFILE_CREATE_OPEN_OR_CREATE);
+	spudfile_file file      = NULL;
+	CHECK_RESULT(spudfile_file_open(g_files, &desc, &file), SPUD_SUCCESS);
+	return file;
+}
+
+struct waiter {
+	spudfile_file file;
+	atomic_int released; /* set by the holder just before it unlocks */
+	atomic_int took;     /* 1 once the lock is had after that; 2 if before */
+	SPUDRESULT result;
+};
+
+#if SPUDLIB_PLATFORM_WIN32
+static unsigned __stdcall wait_for_lock(void *argument)
+#else
+static void *wait_for_lock(void *argument)
+#endif
+{
+	struct waiter *waiter = (struct waiter *)argument;
+	waiter->result        = spudfile_file_lock(waiter->file, SPUDFILE_LOCK_EXCLUSIVE, true);
+	atomic_store(&waiter->took, atomic_load(&waiter->released) ? 1 : 2);
+	return 0;
+}
+
+static void sleep_ms(unsigned ms) {
+#if SPUDLIB_PLATFORM_WIN32
+	Sleep(ms);
+#else
+	struct timespec wait = {(time_t)(ms / 1000), (long)(ms % 1000) * 1000000L};
+	nanosleep(&wait, NULL);
+#endif
+}
+
+/* Locks in [dir], a directory on the file system to test them on. */
+static void test_locks_in(const char *dir) {
+	char path[1100];
+	snprintf(path, sizeof(path), "%s" SLASH "lock.bin", dir);
+	spudfile_file one = open_shared(path);
+	spudfile_file two = open_shared(path);
+	if (!one || !two) {
+		spudfile_file_close(one);
+		spudfile_file_close(two);
+		return;
+	}
+	CHECK_RESULT(spudfile_file_write_at(one, 0, "0123", 4), SPUD_SUCCESS);
+
+	// Checks, in order.
+	CHECK_RESULT(spudfile_file_lock(NULL, SPUDFILE_LOCK_EXCLUSIVE, false), SPUDRESULT_SPUDFILE_INVALID_FILE);
+	CHECK_RESULT(spudfile_file_lock(one, SPUDFILE_LOCK_NONE, false), SPUDRESULT_DESC_INVALID_PARAMETERS);
+	CHECK_RESULT(spudfile_file_lock(one, (SPUDFILE_LOCK)3, false), SPUDRESULT_DESC_INVALID_PARAMETERS);
+	CHECK_RESULT(spudfile_file_unlock(NULL), SPUDRESULT_SPUDFILE_INVALID_FILE);
+	CHECK_RESULT(spudfile_file_unlock(one), SPUDRESULT_SPUDFILE_NOT_LOCKED);
+
+	// Exclusive refuses exclusive and shared; it is advisory: the other
+	// file still reads and writes.
+	CHECK_RESULT(spudfile_file_lock(one, SPUDFILE_LOCK_EXCLUSIVE, false), SPUD_SUCCESS);
+	CHECK_RESULT(spudfile_file_lock(one, SPUDFILE_LOCK_EXCLUSIVE, false), SPUDRESULT_SPUDFILE_ALREADY_LOCKED);
+	CHECK_RESULT(spudfile_file_lock(one, SPUDFILE_LOCK_SHARED, false), SPUDRESULT_SPUDFILE_ALREADY_LOCKED);
+	CHECK_RESULT(spudfile_file_lock(two, SPUDFILE_LOCK_EXCLUSIVE, false), SPUDRESULT_SPUDFILE_LOCKED);
+	CHECK_RESULT(spudfile_file_lock(two, SPUDFILE_LOCK_SHARED, false), SPUDRESULT_SPUDFILE_LOCKED);
+	char read[4]   = {0};
+	uint64_t count = 0;
+	CHECK_RESULT(spudfile_file_read_at(two, 0, read, 4, &count), SPUD_SUCCESS);
+	CHECK(count == 4 && memcmp(read, "0123", 4) == 0);
+	CHECK_RESULT(spudfile_file_write_at(two, 1, "x", 1), SPUD_SUCCESS);
+	CHECK_RESULT(spudfile_file_set_size(two, 8), SPUD_SUCCESS);
+
+	// Unlocking lets the other take it.
+	CHECK_RESULT(spudfile_file_unlock(one), SPUD_SUCCESS);
+	CHECK_RESULT(spudfile_file_unlock(one), SPUDRESULT_SPUDFILE_NOT_LOCKED);
+	CHECK_RESULT(spudfile_file_lock(two, SPUDFILE_LOCK_EXCLUSIVE, false), SPUD_SUCCESS);
+	CHECK_RESULT(spudfile_file_lock(one, SPUDFILE_LOCK_SHARED, false), SPUDRESULT_SPUDFILE_LOCKED);
+	CHECK_RESULT(spudfile_file_unlock(two), SPUD_SUCCESS);
+
+	// Shared allows shared, and refuses exclusive.
+	CHECK_RESULT(spudfile_file_lock(one, SPUDFILE_LOCK_SHARED, false), SPUD_SUCCESS);
+	CHECK_RESULT(spudfile_file_lock(two, SPUDFILE_LOCK_SHARED, false), SPUD_SUCCESS);
+	CHECK_RESULT(spudfile_file_unlock(two), SPUD_SUCCESS);
+	CHECK_RESULT(spudfile_file_lock(two, SPUDFILE_LOCK_EXCLUSIVE, false), SPUDRESULT_SPUDFILE_LOCKED);
+	CHECK_RESULT(spudfile_file_unlock(one), SPUD_SUCCESS);
+
+	// Closing lets go.
+	CHECK_RESULT(spudfile_file_lock(one, SPUDFILE_LOCK_EXCLUSIVE, false), SPUD_SUCCESS);
+	spudfile_file_close(one);
+	CHECK_RESULT(spudfile_file_lock(two, SPUDFILE_LOCK_EXCLUSIVE, false), SPUD_SUCCESS);
+	CHECK_RESULT(spudfile_file_unlock(two), SPUD_SUCCESS);
+
+	// A waiting lock is had once the holder lets go, and not before.
+	one = open_shared(path);
+	if (one) {
+		CHECK_RESULT(spudfile_file_lock(two, SPUDFILE_LOCK_EXCLUSIVE, false), SPUD_SUCCESS);
+		struct waiter waiter;
+		waiter.file = one;
+		atomic_init(&waiter.released, 0);
+		atomic_init(&waiter.took, 0);
+		waiter.result = SPUDRESULT_API_SPECIFIC_FAILURE;
+#if SPUDLIB_PLATFORM_WIN32
+		HANDLE thread = (HANDLE)_beginthreadex(NULL, 0, wait_for_lock, &waiter, 0, NULL);
+#else
+		pthread_t thread;
+		pthread_create(&thread, NULL, wait_for_lock, &waiter);
+#endif
+		sleep_ms(200);
+		CHECK(atomic_load(&waiter.took) == 0);
+		atomic_store(&waiter.released, 1);
+		CHECK_RESULT(spudfile_file_unlock(two), SPUD_SUCCESS);
+#if SPUDLIB_PLATFORM_WIN32
+		WaitForSingleObject(thread, INFINITE);
+		CloseHandle(thread);
+#else
+		pthread_join(thread, NULL);
+#endif
+		CHECK_RESULT(waiter.result, SPUD_SUCCESS);
+		CHECK(atomic_load(&waiter.took) == 1);
+		CHECK_RESULT(spudfile_file_unlock(one), SPUD_SUCCESS);
+		spudfile_file_close(one);
+	}
+	spudfile_file_close(two);
+	CHECK_RESULT(spudfile_path_remove(g_files, path), SPUD_SUCCESS);
+}
+
+/* The temporary directory's file system, then each directory named in
+ * SPUDFILES_TEST_LOCK_DIRS (';'-separated: another file system, a share),
+ * each reported. */
+static void test_locks(void) {
+	test_locks_in(g_dir);
+	printf("spudfiles_test: locks on the temporary directory's file system\n");
+	const char *more = getenv("SPUDFILES_TEST_LOCK_DIRS");
+	if (!more || !more[0])
+		return;
+	char dirs[2048];
+	snprintf(dirs, sizeof(dirs), "%s", more);
+	char *rest = dirs;
+	while (rest && rest[0]) {
+		char *dir  = rest;
+		char *stop = strchr(rest, ';');
+		if (stop) {
+			*stop = 0;
+			rest  = stop + 1;
+		} else {
+			rest = NULL;
+		}
+		const int before = failures;
+		test_locks_in(dir);
+		printf("spudfiles_test: locks in %s: %s\n", dir, failures == before ? "passed" : "FAILED");
+	}
+}
+
 int main(void) {
 #if SPUDLIB_PLATFORM_WIN32
 	const char *tmp = getenv("TEMP");
@@ -577,6 +1088,10 @@ int main(void) {
 		test_paths();
 		test_unicode_name();
 		test_two_readers();
+		test_listing_checks();
+		test_listing_kinds();
+		test_listing_non_utf8();
+		test_locks();
 		spudfile_instance_destroy(g_files);
 	}
 	CHECK(spudtest_allocator_clean(&tracker));
