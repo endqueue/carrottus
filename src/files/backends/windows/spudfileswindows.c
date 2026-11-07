@@ -370,6 +370,59 @@ SPUDRESULT spudfile_backend_path_remove(spudfile_instance instance, const char *
 	return result;
 }
 
+/* What is at [path], a link followed, opened for [access] to its attributes
+ * alone (no sharing check), with backup semantics so a directory opens too;
+ * INVALID_HANDLE_VALUE with *out_result set otherwise. */
+static HANDLE spudfile_windows_open_attributes(spudfile_instance instance, const char *path, DWORD access, SPUDRESULT *out_result) {
+	wchar_t *wide = NULL;
+	int count     = 0;
+	*out_result   = spudfile_windows_wide(instance, path, &wide, &count);
+	if (*out_result != SPUD_SUCCESS)
+		return INVALID_HANDLE_VALUE;
+	HANDLE handle = CreateFileW(wide, access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+	if (handle == INVALID_HANDLE_VALUE)
+		*out_result = spudfile_windows_result(GetLastError());
+	spudfile_windows_free_wide(instance, wide, count);
+	return handle;
+}
+
+SPUDRESULT spudfile_backend_path_copy_mode(spudfile_instance instance, const char *source, const char *target) {
+	SPUDRESULT result = SPUD_SUCCESS;
+	HANDLE from       = spudfile_windows_open_attributes(instance, source, FILE_READ_ATTRIBUTES, &result);
+	if (from == INVALID_HANDLE_VALUE)
+		return result;
+	FILE_BASIC_INFO source_info;
+	const BOOL read = GetFileInformationByHandleEx(from, FileBasicInfo, &source_info, sizeof(source_info));
+	CloseHandle(from);
+	if (!read)
+		return SPUDRESULT_API_SPECIFIC_FAILURE;
+	HANDLE to = spudfile_windows_open_attributes(instance, target, FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES, &result);
+	if (to == INVALID_HANDLE_VALUE)
+		return result;
+	FILE_BASIC_INFO info;
+	if (!GetFileInformationByHandleEx(to, FileBasicInfo, &info, sizeof(info))) {
+		CloseHandle(to);
+		return SPUDRESULT_API_SPECIFIC_FAILURE;
+	}
+	// Only the read-only attribute is the source's; the target keeps every
+	// other, and its times (zero leaves a time as it is).
+	const DWORD wanted = (info.FileAttributes & ~(DWORD)FILE_ATTRIBUTE_READONLY) | (source_info.FileAttributes & FILE_ATTRIBUTE_READONLY);
+	if (wanted != info.FileAttributes) {
+		FILE_BASIC_INFO change;
+		ZeroMemory(&change, sizeof(change));
+		// Zero would mean "unchanged": a file with no attribute left is
+		// FILE_ATTRIBUTE_NORMAL.
+		change.FileAttributes = wanted ? wanted : FILE_ATTRIBUTE_NORMAL;
+		if (!SetFileInformationByHandle(to, FileBasicInfo, &change, sizeof(change))) {
+			const DWORD error = GetLastError();
+			// A read-only volume is the platform's refusal, not a permission.
+			result = error == ERROR_WRITE_PROTECT ? SPUDRESULT_API_SPECIFIC_FAILURE : spudfile_windows_result(error);
+		}
+	}
+	CloseHandle(to);
+	return result;
+}
+
 SPUDRESULT spudfile_backend_directory_create(spudfile_instance instance, const char *path) {
 	wchar_t *wide     = NULL;
 	int count         = 0;
@@ -379,6 +432,66 @@ SPUDRESULT spudfile_backend_directory_create(spudfile_instance instance, const c
 	if (!CreateDirectoryW(wide, NULL))
 		result = spudfile_windows_result(GetLastError());
 	spudfile_windows_free_wide(instance, wide, count);
+	return result;
+}
+
+/* What is at [path] itself, a link not followed: a symbolic link to a
+ * directory, or a junction, carries the directory attribute and is removed
+ * or renamed as one, itself. */
+static SPUDRESULT spudfile_windows_directory_at(const wchar_t *path) {
+	const DWORD attributes = GetFileAttributesW(path);
+	if (attributes == INVALID_FILE_ATTRIBUTES)
+		return spudfile_windows_result(GetLastError());
+	return (attributes & FILE_ATTRIBUTE_DIRECTORY) ? SPUD_SUCCESS : SPUDRESULT_SPUDFILE_NOT_A_DIRECTORY;
+}
+
+SPUDRESULT spudfile_backend_directory_remove(spudfile_instance instance, const char *path) {
+	wchar_t *wide     = NULL;
+	int count         = 0;
+	SPUDRESULT result = spudfile_windows_wide(instance, path, &wide, &count);
+	if (result != SPUD_SUCCESS)
+		return result;
+	result = spudfile_windows_directory_at(wide);
+	if (result == SPUD_SUCCESS && !RemoveDirectoryW(wide)) {
+		const DWORD error = GetLastError();
+		if (error == ERROR_DIR_NOT_EMPTY)
+			result = SPUDRESULT_SPUDFILE_NOT_EMPTY;
+		else if (error == ERROR_DIRECTORY)
+			result = SPUDRESULT_SPUDFILE_NOT_A_DIRECTORY;
+		else
+			result = spudfile_windows_result(error);
+	}
+	spudfile_windows_free_wide(instance, wide, count);
+	return result;
+}
+
+SPUDRESULT spudfile_backend_directory_rename(spudfile_instance instance, const char *source, const char *target, SPUDFILE_FLUSH_LEVEL level) {
+	wchar_t *wide_source = NULL;
+	wchar_t *wide_target = NULL;
+	int source_count     = 0;
+	int target_count     = 0;
+	SPUDRESULT result    = spudfile_windows_wide(instance, source, &wide_source, &source_count);
+	if (result == SPUD_SUCCESS)
+		result = spudfile_windows_wide(instance, target, &wide_target, &target_count);
+	if (result == SPUD_SUCCESS)
+		result = spudfile_windows_directory_at(wide_source);
+	if (result == SPUD_SUCCESS) {
+		// No MOVEFILE_REPLACE_EXISTING: anything at the target refuses the
+		// move, as a directory can't replace anything on Windows; no
+		// MOVEFILE_COPY_ALLOWED: a directory is never copied across volumes.
+		const DWORD flags = level != SPUDFILE_FLUSH_LEVEL_NONE ? MOVEFILE_WRITE_THROUGH : 0;
+		if (!MoveFileExW(wide_source, wide_target, flags)) {
+			const DWORD error = GetLastError();
+			// Access denied is also what a directory in the way, or a handle
+			// open inside the source, gives: told apart by what is there.
+			if (error == ERROR_ACCESS_DENIED)
+				result = GetFileAttributesW(wide_target) != INVALID_FILE_ATTRIBUTES ? SPUDRESULT_SPUDFILE_ALREADY_EXISTS : SPUDRESULT_SPUDFILE_IN_USE;
+			else
+				result = spudfile_windows_result(error);
+		}
+	}
+	spudfile_windows_free_wide(instance, wide_source, source_count);
+	spudfile_windows_free_wide(instance, wide_target, target_count);
 	return result;
 }
 

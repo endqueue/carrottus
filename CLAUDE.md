@@ -1380,9 +1380,16 @@ evening on the Mac (Known gaps below, `SPUDGPU_DEVICE_TODO.md`).
   converter, so a listed name with an unpaired surrogate opens. Run on
   NTFS only (no other file system on the machine); symbolic links not made
   there (no developer mode), a junction listed in their place. The POSIX
-  backend's half is written, not compiled. SpudFiles still can't remove or
-  rename a directory (card S41, a draft) or keep a file's executable bit
-  (card S42).
+  backend's half is written, not compiled. Removing an empty directory
+  and renaming one to a free name (card S41, `spudfiles_directory_draft.h`:
+  `spudfile_directory_remove`, `spudfile_directory_rename`,
+  `SPUDRESULT_SPUDFILE_NOT_EMPTY`) were built on 2026-11-07 on Windows 11,
+  the same way (`SPUDFILES_TODO.md` has the run); POSIX's half, on
+  `renameat2`/`renamex_np` so the target is refused by the rename itself,
+  written, not compiled. Copying a file's permissions to another (card
+  S42, `spudfiles_mode_draft.h`: `spudfile_path_copy_mode`, POSIX's nine
+  bits or Windows' read-only attribute, links followed) was built the same
+  day on Windows; its POSIX half written, not compiled.
 - SpudNet was written on 2026-10-07 and its header reworked, and every backend
   rewritten to it, on 2026-10-08: streaming HTTP transfers, TLS and proxy
   descs, error detail, a resolver, a wait set. The Apple side compiles clean

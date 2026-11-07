@@ -143,7 +143,7 @@ uint32_t spud_get_version(void);
  * spudresult_str().
  *
  * The values are grouped by module: 1-16 are general, 199-369 are SpudGPU
- * (`SPUDRESULT_GPU_*`), 1001-1013 SpudFiles (`SPUDRESULT_SPUDFILE_*`), 2027-2028
+ * (`SPUDRESULT_GPU_*`), 1001-1020 SpudFiles (`SPUDRESULT_SPUDFILE_*`), 2027-2028
  * SpudMemory (`SPUDRESULT_SPUDMEM_*`), 3001-3033 SpudNet (`SPUDRESULT_SPUDNET_*`),
  * 4001-4015 SpudAudio (`SPUDRESULT_SAUD_*`) and 5001-5005 SpudInput
  * (`SPUDRESULT_SPUDINPUT_*`). A value is never reused for
@@ -489,6 +489,7 @@ typedef enum SPUDRESULT {
 	SPUDRESULT_SPUDFILE_INVALID_LISTING = 1017, /**< A listing argument is NULL. */
 	SPUDRESULT_SPUDFILE_ALREADY_LOCKED = 1018, /**< The file holds a lock taken through it already. */
 	SPUDRESULT_SPUDFILE_NOT_LOCKED = 1019, /**< The file holds no lock taken through it. */
+	SPUDRESULT_SPUDFILE_NOT_EMPTY = 1020, /**< A directory to remove holds entries. */
 
 	/* 2001-2003 and 2026 (ZERO_CAPACITY, INSUFFICIENT_CAPACITY,
 	 * PLAT_COMMIT_FAIL, INVALID_ARENA) went with SpudMemory's arena and are

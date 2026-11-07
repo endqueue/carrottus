@@ -1,7 +1,7 @@
 #if SPUDLIB_PLATFORM_LINUX || SPUDLIB_PLATFORM_APPLE
 
 #if SPUDLIB_PLATFORM_LINUX && !defined(_GNU_SOURCE)
-#define _GNU_SOURCE // pread, pwrite, the st_mtim member
+#define _GNU_SOURCE // pread, pwrite, the st_mtim member, renameat2
 #endif
 
 #include "../../spudfilesshared.h"
@@ -11,7 +11,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <stdint.h>
-#include <stdio.h> // rename
+#include <stdio.h> // rename, renameat2, renamex_np
 #include <string.h>
 #include <sys/file.h> // flock
 #include <sys/mman.h>
@@ -255,11 +255,88 @@ SPUDRESULT spudfile_backend_path_remove(spudfile_instance instance, const char *
 	return spudfile_posix_result(error);
 }
 
+SPUDRESULT spudfile_backend_path_copy_mode(spudfile_instance instance, const char *source, const char *target) {
+	(void)instance;
+	struct stat st;
+	if (stat(source, &st) != 0)
+		return spudfile_posix_result(errno);
+	// The nine permission bits only: what set-user-ID, set-group-ID and
+	// sticky grant depends on an owner a copy doesn't carry.
+	if (chmod(target, st.st_mode & 0777) == 0)
+		return SPUD_SUCCESS;
+	const int error = errno;
+	// A read-only file system is the platform's refusal, not a permission.
+	return error == EROFS ? SPUDRESULT_API_SPECIFIC_FAILURE : spudfile_posix_result(error);
+}
+
 SPUDRESULT spudfile_backend_directory_create(spudfile_instance instance, const char *path) {
 	(void)instance;
 	if (mkdir(path, 0777) == 0)
 		return SPUD_SUCCESS;
 	return spudfile_posix_result(errno);
+}
+
+SPUDRESULT spudfile_backend_directory_remove(spudfile_instance instance, const char *path) {
+	(void)instance;
+	struct stat entry;
+	if (lstat(path, &entry) != 0)
+		return spudfile_posix_result(errno);
+	if (S_ISLNK(entry.st_mode)) {
+		// rmdir of a link is ENOTDIR: a link to a directory is unlink's,
+		// and goes itself; a link to anything else isn't a directory.
+		struct stat target;
+		if (stat(path, &target) != 0)
+			return spudfile_posix_result(errno);
+		if (!S_ISDIR(target.st_mode))
+			return SPUDRESULT_SPUDFILE_NOT_A_DIRECTORY;
+		return unlink(path) == 0 ? SPUD_SUCCESS : spudfile_posix_result(errno);
+	}
+	if (!S_ISDIR(entry.st_mode))
+		return SPUDRESULT_SPUDFILE_NOT_A_DIRECTORY;
+	if (rmdir(path) == 0)
+		return SPUD_SUCCESS;
+	const int error = errno;
+	// A directory with entries is ENOTEMPTY, or EEXIST where POSIX allows it.
+	if (error == ENOTEMPTY || error == EEXIST)
+		return SPUDRESULT_SPUDFILE_NOT_EMPTY;
+	return spudfile_posix_result(error);
+}
+
+SPUDRESULT spudfile_backend_directory_rename(spudfile_instance instance, const char *source, const char *target, SPUDFILE_FLUSH_LEVEL level) {
+	(void)instance;
+	// What source leads to must be a directory; a link to one is renamed
+	// itself, as rename does.
+	struct stat st;
+	if (stat(source, &st) != 0)
+		return spudfile_posix_result(errno);
+	if (!S_ISDIR(st.st_mode))
+		return SPUDRESULT_SPUDFILE_NOT_A_DIRECTORY;
+	// rename replaces an empty directory; nothing may be there, so the
+	// platform's own rename that refuses any target is used (EEXIST).
+	int r;
+#if SPUDLIB_PLATFORM_APPLE
+	r = renamex_np(source, target, RENAME_EXCL);
+#else
+	r = renameat2(AT_FDCWD, source, AT_FDCWD, target, RENAME_NOREPLACE);
+#endif
+	if (r != 0 && (errno == EINVAL || errno == ENOTSUP || errno == ENOSYS)) {
+		// A file system without it (some network ones): the same rule,
+		// checked first, which a target made in between can slip past.
+		if (lstat(target, &st) == 0)
+			return SPUDRESULT_SPUDFILE_ALREADY_EXISTS;
+		if (errno != ENOENT)
+			return spudfile_posix_result(errno);
+		r = rename(source, target);
+	}
+	if (r != 0) {
+		const int error = errno;
+		if (error == ENOTEMPTY || error == EEXIST)
+			return SPUDRESULT_SPUDFILE_ALREADY_EXISTS;
+		return spudfile_posix_result(error);
+	}
+	if (level != SPUDFILE_FLUSH_LEVEL_NONE)
+		return spudfile_posix_flush_parent(target, level);
+	return SPUD_SUCCESS;
 }
 
 /* ---- Listing a directory ---- */

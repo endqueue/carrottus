@@ -8,8 +8,13 @@
  * is at a path; replacing, removing and making a directory; a file with a
  * name outside ASCII; two threads reading one file at once; listing a
  * directory (each kind of entry the platform lets the test make, names
- * that aren't UTF-8) and locking a file between two files opened on one
- * path, one waiting on a second thread. Every block
+ * that aren't UTF-8); removing a directory (empty, full, a link to one)
+ * and renaming one (to a free name at each level, onto each kind of thing
+ * in the way), and a tree written beside its place, renamed in and removed;
+ * a file's permissions copied to another (Windows' read-only attribute,
+ * POSIX's nine bits whatever the umask, never the set-ID bits; links
+ * followed; directories); and locking a file between two files opened on one path, one waiting on
+ * a second thread. Every block
  * goes through a counting allocator, checked at the end. Needs nothing but
  * a writable temporary directory.
  *
@@ -36,6 +41,7 @@
 #else
 #include <pthread.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
@@ -1023,6 +1029,439 @@ static void test_locks_in(const char *dir) {
 	CHECK_RESULT(spudfile_path_remove(g_files, path), SPUD_SUCCESS);
 }
 
+/* ---- A file's permissions copied (card S42) ---- */
+
+#if SPUDLIB_PLATFORM_WIN32
+static bool make_junction(
+    const char *target,
+    const char *link);
+
+static DWORD attributes_of(const char *path) {
+	wchar_t wide[1100];
+	if (!MultiByteToWideChar(CP_UTF8, 0, path, -1, wide, 1100))
+		return INVALID_FILE_ATTRIBUTES;
+	return GetFileAttributesW(wide);
+}
+
+static void set_attributes(
+    const char *path,
+    DWORD attributes) {
+	wchar_t wide[1100];
+	MultiByteToWideChar(CP_UTF8, 0, path, -1, wide, 1100);
+	CHECK(SetFileAttributesW(wide, attributes) != 0);
+}
+#else
+static mode_t mode_of(const char *path) {
+	struct stat st;
+	return stat(path, &st) == 0 ? (st.st_mode & 07777) : (mode_t)0xFFFF;
+}
+#endif
+
+static void test_copy_mode(void) {
+	char source[1100];
+	char target[1100];
+	char dir[1100];
+	char missing[1100];
+	path_in(source, sizeof(source), "mode_source.txt");
+	path_in(target, sizeof(target), "mode_target.txt");
+	path_in(dir, sizeof(dir), "mode_dir");
+	path_in(missing, sizeof(missing), "mode_missing.txt");
+	write_whole(source, "s");
+	write_whole(target, "t");
+	CHECK_RESULT(spudfile_directory_create(g_files, dir), SPUD_SUCCESS);
+
+	// Argument checks, in order.
+	CHECK_RESULT(spudfile_path_copy_mode(NULL, NULL, NULL), SPUDRESULT_SPUDFILE_INVALID_INSTANCE);
+	CHECK_RESULT(spudfile_path_copy_mode(g_files, NULL, NULL), SPUDRESULT_SPUDFILE_NULL_PATH);
+	CHECK_RESULT(spudfile_path_copy_mode(g_files, "", target), SPUDRESULT_SPUDFILE_NULL_PATH);
+	CHECK_RESULT(spudfile_path_copy_mode(g_files, source, NULL), SPUDRESULT_SPUDFILE_NULL_PATH);
+	CHECK_RESULT(spudfile_path_copy_mode(g_files, source, ""), SPUDRESULT_SPUDFILE_NULL_PATH);
+
+	// Nothing at either path: not found, the target unchanged.
+	CHECK_RESULT(spudfile_path_copy_mode(g_files, missing, target), SPUDRESULT_SPUDFILE_NOT_FOUND);
+	CHECK_RESULT(spudfile_path_copy_mode(g_files, source, missing), SPUDRESULT_SPUDFILE_NOT_FOUND);
+	CHECK(holds(target, "t"));
+
+#if SPUDLIB_PLATFORM_WIN32
+	// The read-only attribute, both ways; the target's hidden attribute kept.
+	set_attributes(target, FILE_ATTRIBUTE_HIDDEN);
+	set_attributes(source, FILE_ATTRIBUTE_READONLY);
+	CHECK_RESULT(spudfile_path_copy_mode(g_files, source, target), SPUD_SUCCESS);
+	CHECK((attributes_of(target) & (FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN)) == (FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN));
+	set_attributes(source, FILE_ATTRIBUTE_NORMAL);
+	CHECK_RESULT(spudfile_path_copy_mode(g_files, source, target), SPUD_SUCCESS);
+	CHECK((attributes_of(target) & (FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN)) == FILE_ATTRIBUTE_HIDDEN);
+	// Copied again onto a target that has it already: unchanged.
+	CHECK_RESULT(spudfile_path_copy_mode(g_files, source, target), SPUD_SUCCESS);
+	CHECK((attributes_of(target) & (FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN)) == FILE_ATTRIBUTE_HIDDEN);
+	set_attributes(target, FILE_ATTRIBUTE_NORMAL);
+
+	// A directory either way.
+	set_attributes(source, FILE_ATTRIBUTE_READONLY);
+	CHECK_RESULT(spudfile_path_copy_mode(g_files, source, dir), SPUD_SUCCESS);
+	CHECK((attributes_of(dir) & (FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_DIRECTORY)) == (FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_DIRECTORY));
+	CHECK_RESULT(spudfile_path_copy_mode(g_files, dir, target), SPUD_SUCCESS);
+	CHECK((attributes_of(target) & FILE_ATTRIBUTE_READONLY) != 0);
+	set_attributes(source, FILE_ATTRIBUTE_NORMAL);
+	CHECK_RESULT(spudfile_path_copy_mode(g_files, source, dir), SPUD_SUCCESS);
+	CHECK((attributes_of(dir) & (FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_DIRECTORY)) == FILE_ATTRIBUTE_DIRECTORY);
+	CHECK_RESULT(spudfile_path_copy_mode(g_files, source, target), SPUD_SUCCESS);
+
+	// A junction as the target: what it leads to changed, the link not.
+	char junction[1100];
+	path_in(junction, sizeof(junction), "mode_junction");
+	if (make_junction(dir, junction)) {
+		set_attributes(source, FILE_ATTRIBUTE_READONLY);
+		CHECK_RESULT(spudfile_path_copy_mode(g_files, source, junction), SPUD_SUCCESS);
+		CHECK((attributes_of(dir) & FILE_ATTRIBUTE_READONLY) != 0);
+		CHECK((attributes_of(junction) & FILE_ATTRIBUTE_READONLY) == 0);
+		set_attributes(source, FILE_ATTRIBUTE_NORMAL);
+		CHECK_RESULT(spudfile_path_copy_mode(g_files, source, junction), SPUD_SUCCESS);
+		CHECK((attributes_of(dir) & FILE_ATTRIBUTE_READONLY) == 0);
+		CHECK_RESULT(spudfile_directory_remove(g_files, junction), SPUD_SUCCESS);
+	} else {
+		printf("spudfiles_test: no junction made: copy_mode through one not run\n");
+	}
+#else
+	// The nine bits, whatever the umask; never the set-ID or sticky bits.
+	const mode_t old_umask = umask(077);
+	const mode_t modes[]   = {0755, 0444, 0600, 0640};
+	for (int i = 0; i < 4; ++i) {
+		CHECK(chmod(source, modes[i]) == 0);
+		CHECK(chmod(target, 0644) == 0);
+		CHECK_RESULT(spudfile_path_copy_mode(g_files, source, target), SPUD_SUCCESS);
+		CHECK(mode_of(target) == modes[i]);
+	}
+	if (chmod(source, 06755) == 0 && (mode_of(source) & 06000)) {
+		CHECK_RESULT(spudfile_path_copy_mode(g_files, source, target), SPUD_SUCCESS);
+		CHECK(mode_of(target) == 0755);
+	} else {
+		printf("spudfiles_test: no set-ID bits on the source here: their copy not run\n");
+	}
+	umask(old_umask);
+	CHECK(chmod(source, 0644) == 0);
+	CHECK(chmod(target, 0644) == 0);
+
+	// A directory either way.
+	CHECK(chmod(source, 0700) == 0);
+	CHECK_RESULT(spudfile_path_copy_mode(g_files, source, dir), SPUD_SUCCESS);
+	CHECK(mode_of(dir) == 0700);
+	CHECK(chmod(dir, 0751) == 0);
+	CHECK_RESULT(spudfile_path_copy_mode(g_files, dir, target), SPUD_SUCCESS);
+	CHECK(mode_of(target) == 0751);
+	CHECK(chmod(dir, 0755) == 0);
+	CHECK(chmod(source, 0644) == 0);
+	CHECK(chmod(target, 0644) == 0);
+
+	// Symbolic links followed both ways, the links themselves unchanged.
+	char source_link[1100];
+	char target_link[1100];
+	path_in(source_link, sizeof(source_link), "mode_source_link");
+	path_in(target_link, sizeof(target_link), "mode_target_link");
+	CHECK(symlink(source, source_link) == 0);
+	CHECK(symlink(target, target_link) == 0);
+	struct stat link_before;
+	CHECK(lstat(target_link, &link_before) == 0);
+	CHECK(chmod(source, 0750) == 0);
+	CHECK_RESULT(spudfile_path_copy_mode(g_files, source_link, target_link), SPUD_SUCCESS);
+	CHECK(mode_of(target) == 0750);
+	struct stat link_after;
+	CHECK(lstat(target_link, &link_after) == 0);
+	CHECK(link_after.st_mode == link_before.st_mode);
+	CHECK(unlink(source_link) == 0);
+	CHECK(unlink(target_link) == 0);
+	CHECK(chmod(source, 0644) == 0);
+
+	// Another's entry: refused. The root directory, onto itself, which
+	// would change nothing even where the call were allowed.
+	if (geteuid() != 0) {
+		CHECK_RESULT(spudfile_path_copy_mode(g_files, "/", "/"), SPUDRESULT_SPUDFILE_ACCESS_DENIED);
+	} else {
+		printf("spudfiles_test: run as root: copy_mode's refusal not run\n");
+	}
+#endif
+
+	CHECK_RESULT(spudfile_path_remove(g_files, source), SPUD_SUCCESS);
+	CHECK_RESULT(spudfile_path_remove(g_files, target), SPUD_SUCCESS);
+	CHECK_RESULT(spudfile_directory_remove(g_files, dir), SPUD_SUCCESS);
+}
+
+/* ---- Removing and renaming a directory ---- */
+
+#if SPUDLIB_PLATFORM_WIN32
+/* A junction at [link] to [target], through mklink, which needs no
+ * privilege; false if none was made. */
+static bool make_junction(
+    const char *target,
+    const char *link) {
+	char command[2400];
+	snprintf(command, sizeof(command), "cmd /c mklink /J \"%s\" \"%s\" >NUL", link, target);
+	return system(command) == 0;
+}
+
+/* [path] opened for reading, sharing read and write but not delete, so a
+ * remove or rename of it, or of what holds it, is refused. (A handle that
+ * asks only for attributes takes no part in sharing: Windows lets a delete
+ * past it.) */
+static HANDLE hold_without_delete(const char *path) {
+	wchar_t wide[1100];
+	if (!MultiByteToWideChar(CP_UTF8, 0, path, -1, wide, 1100))
+		return INVALID_HANDLE_VALUE;
+	return CreateFileW(wide, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+}
+#endif
+
+static SPUDRESULT kind_at(
+    const char *path,
+    SPUDFILE_PATH_KIND *out_kind) {
+	SPUDRESULT r                  = SPUD_SUCCESS;
+	const SPUDFILE_PATH_INFO info = info_of(path, &r);
+	*out_kind                     = info.kind;
+	return r;
+}
+
+static void test_directory_remove(void) {
+	SPUDFILE_PATH_KIND kind = (SPUDFILE_PATH_KIND)0;
+
+	// Argument checks, in order.
+	char dir[1100];
+	path_in(dir, sizeof(dir), "rm");
+	CHECK_RESULT(spudfile_directory_remove(NULL, dir), SPUDRESULT_SPUDFILE_INVALID_INSTANCE);
+	CHECK_RESULT(spudfile_directory_remove(NULL, NULL), SPUDRESULT_SPUDFILE_INVALID_INSTANCE);
+	CHECK_RESULT(spudfile_directory_remove(g_files, NULL), SPUDRESULT_SPUDFILE_NULL_PATH);
+	CHECK_RESULT(spudfile_directory_remove(g_files, ""), SPUDRESULT_SPUDFILE_NULL_PATH);
+
+	// An empty directory goes; then nothing is there.
+	CHECK_RESULT(spudfile_directory_create(g_files, dir), SPUD_SUCCESS);
+	CHECK_RESULT(spudfile_directory_remove(g_files, dir), SPUD_SUCCESS);
+	CHECK_RESULT(kind_at(dir, &kind), SPUDRESULT_SPUDFILE_NOT_FOUND);
+	CHECK_RESULT(spudfile_directory_remove(g_files, dir), SPUDRESULT_SPUDFILE_NOT_FOUND);
+
+	// One that holds a file is refused, and stays with its file.
+	char full[1100];
+	char inside[1200];
+	path_in(full, sizeof(full), "rm_full");
+	snprintf(inside, sizeof(inside), "%s" SLASH "keep.txt", full);
+	CHECK_RESULT(spudfile_directory_create(g_files, full), SPUD_SUCCESS);
+	write_whole(inside, "kept");
+	CHECK_RESULT(spudfile_directory_remove(g_files, full), SPUDRESULT_SPUDFILE_NOT_EMPTY);
+	CHECK(kind_at(full, &kind) == SPUD_SUCCESS && kind == SPUDFILE_PATH_KIND_DIRECTORY);
+	CHECK(holds(inside, "kept"));
+
+	// One that holds only a directory is refused too.
+	char only_dir[1100];
+	char nested[1200];
+	path_in(only_dir, sizeof(only_dir), "rm_nested");
+	snprintf(nested, sizeof(nested), "%s" SLASH "inner", only_dir);
+	CHECK_RESULT(spudfile_directory_create(g_files, only_dir), SPUD_SUCCESS);
+	CHECK_RESULT(spudfile_directory_create(g_files, nested), SPUD_SUCCESS);
+	CHECK_RESULT(spudfile_directory_remove(g_files, only_dir), SPUDRESULT_SPUDFILE_NOT_EMPTY);
+	CHECK_RESULT(spudfile_directory_remove(g_files, nested), SPUD_SUCCESS);
+	CHECK_RESULT(spudfile_directory_remove(g_files, only_dir), SPUD_SUCCESS);
+
+	// A file isn't a directory, and stays.
+	char file[1100];
+	path_in(file, sizeof(file), "rm_file.txt");
+	write_whole(file, "f");
+	CHECK_RESULT(spudfile_directory_remove(g_files, file), SPUDRESULT_SPUDFILE_NOT_A_DIRECTORY);
+	CHECK(holds(file, "f"));
+
+	// Nothing on the way.
+	char under_missing[1200];
+	snprintf(under_missing, sizeof(under_missing), "%s" SLASH "missing" SLASH "x", g_dir);
+	CHECK_RESULT(spudfile_directory_remove(g_files, under_missing), SPUDRESULT_SPUDFILE_NOT_FOUND);
+
+	// A link to a directory is removed itself; what it led to stays, with
+	// its file. A link to a file isn't a directory.
+	char dir_link[1100];
+	char file_link[1100];
+	path_in(dir_link, sizeof(dir_link), "rm_dir_link");
+	path_in(file_link, sizeof(file_link), "rm_file_link");
+	if (make_symbolic_link(full, dir_link, true)) {
+		CHECK_RESULT(spudfile_directory_remove(g_files, dir_link), SPUD_SUCCESS);
+		CHECK_RESULT(kind_at(dir_link, &kind), SPUDRESULT_SPUDFILE_NOT_FOUND);
+		CHECK(holds(inside, "kept"));
+	} else {
+		printf("spudfiles_test: no symbolic link to a directory made: its remove not run\n");
+	}
+	if (make_symbolic_link(file, file_link, false)) {
+		CHECK_RESULT(spudfile_directory_remove(g_files, file_link), SPUDRESULT_SPUDFILE_NOT_A_DIRECTORY);
+		remove_link(file_link, false);
+	} else {
+		printf("spudfiles_test: no symbolic link to a file made: its remove not run\n");
+	}
+#if SPUDLIB_PLATFORM_WIN32
+	char junction[1100];
+	path_in(junction, sizeof(junction), "rm_junction");
+	if (make_junction(full, junction)) {
+		CHECK_RESULT(spudfile_directory_remove(g_files, junction), SPUD_SUCCESS);
+		CHECK_RESULT(kind_at(junction, &kind), SPUDRESULT_SPUDFILE_NOT_FOUND);
+		CHECK(holds(inside, "kept"));
+	} else {
+		printf("spudfiles_test: no junction made: its remove not run\n");
+	}
+
+	// Held open without sharing delete: in use, and still there.
+	CHECK_RESULT(spudfile_directory_create(g_files, dir), SPUD_SUCCESS);
+	HANDLE held = hold_without_delete(dir);
+	CHECK(held != INVALID_HANDLE_VALUE);
+	if (held != INVALID_HANDLE_VALUE) {
+		CHECK_RESULT(spudfile_directory_remove(g_files, dir), SPUDRESULT_SPUDFILE_IN_USE);
+		CloseHandle(held);
+	}
+	CHECK_RESULT(spudfile_directory_remove(g_files, dir), SPUD_SUCCESS);
+#endif
+
+	CHECK_RESULT(spudfile_path_remove(g_files, file), SPUD_SUCCESS);
+	CHECK_RESULT(spudfile_path_remove(g_files, inside), SPUD_SUCCESS);
+	CHECK_RESULT(spudfile_directory_remove(g_files, full), SPUD_SUCCESS);
+}
+
+static void test_directory_rename(void) {
+	SPUDFILE_PATH_KIND kind = (SPUDFILE_PATH_KIND)0;
+	char source[1100];
+	char target[1100];
+	char source_file[1200];
+	char target_file[1200];
+	path_in(source, sizeof(source), "mv_source");
+	path_in(target, sizeof(target), "mv_target");
+	snprintf(source_file, sizeof(source_file), "%s" SLASH "f.txt", source);
+	snprintf(target_file, sizeof(target_file), "%s" SLASH "f.txt", target);
+
+	// Argument checks, in order.
+	CHECK_RESULT(spudfile_directory_rename(NULL, NULL, NULL, (SPUDFILE_FLUSH_LEVEL)9), SPUDRESULT_SPUDFILE_INVALID_INSTANCE);
+	CHECK_RESULT(spudfile_directory_rename(g_files, NULL, NULL, (SPUDFILE_FLUSH_LEVEL)9), SPUDRESULT_SPUDFILE_NULL_PATH);
+	CHECK_RESULT(spudfile_directory_rename(g_files, "", target, SPUDFILE_FLUSH_LEVEL_NONE), SPUDRESULT_SPUDFILE_NULL_PATH);
+	CHECK_RESULT(spudfile_directory_rename(g_files, source, NULL, (SPUDFILE_FLUSH_LEVEL)9), SPUDRESULT_SPUDFILE_NULL_PATH);
+	CHECK_RESULT(spudfile_directory_rename(g_files, source, "", SPUDFILE_FLUSH_LEVEL_NONE), SPUDRESULT_SPUDFILE_NULL_PATH);
+	CHECK_RESULT(spudfile_directory_rename(g_files, source, target, (SPUDFILE_FLUSH_LEVEL)9), SPUDRESULT_DESC_INVALID_PARAMETERS);
+
+	// No source.
+	CHECK_RESULT(spudfile_directory_rename(g_files, source, target, SPUDFILE_FLUSH_LEVEL_NONE), SPUDRESULT_SPUDFILE_NOT_FOUND);
+
+	// A directory with a file, to a free name and back, at each level: the
+	// file under the new name, nothing under the old.
+	CHECK_RESULT(spudfile_directory_create(g_files, source), SPUD_SUCCESS);
+	write_whole(source_file, "moved");
+	const SPUDFILE_FLUSH_LEVEL levels[] = {SPUDFILE_FLUSH_LEVEL_NONE, SPUDFILE_FLUSH_LEVEL_DEVICE, SPUDFILE_FLUSH_LEVEL_MEDIA};
+	for (int i = 0; i < 3; ++i) {
+		SPUDRESULT r = spudfile_directory_rename(g_files, source, target, levels[i]);
+		CHECK(r == SPUD_SUCCESS || (levels[i] == SPUDFILE_FLUSH_LEVEL_MEDIA && r == SPUDRESULT_SPUDFILE_FLUSH_LEVEL_NOT_SUPPORTED));
+		CHECK_RESULT(kind_at(source, &kind), SPUDRESULT_SPUDFILE_NOT_FOUND);
+		CHECK(holds(target_file, "moved"));
+		r = spudfile_directory_rename(g_files, target, source, levels[i]);
+		CHECK(r == SPUD_SUCCESS || (levels[i] == SPUDFILE_FLUSH_LEVEL_MEDIA && r == SPUDRESULT_SPUDFILE_FLUSH_LEVEL_NOT_SUPPORTED));
+		CHECK(holds(source_file, "moved"));
+	}
+
+	// Something at the target: a file, an empty directory, a full one. Each
+	// refused, both left as they were.
+	write_whole(target, "in the way");
+	CHECK_RESULT(spudfile_directory_rename(g_files, source, target, SPUDFILE_FLUSH_LEVEL_NONE), SPUDRESULT_SPUDFILE_ALREADY_EXISTS);
+	CHECK(holds(target, "in the way"));
+	CHECK(holds(source_file, "moved"));
+	CHECK_RESULT(spudfile_path_remove(g_files, target), SPUD_SUCCESS);
+	CHECK_RESULT(spudfile_directory_create(g_files, target), SPUD_SUCCESS);
+	CHECK_RESULT(spudfile_directory_rename(g_files, source, target, SPUDFILE_FLUSH_LEVEL_NONE), SPUDRESULT_SPUDFILE_ALREADY_EXISTS);
+	CHECK(kind_at(target, &kind) == SPUD_SUCCESS && kind == SPUDFILE_PATH_KIND_DIRECTORY);
+	CHECK(holds(source_file, "moved"));
+	write_whole(target_file, "theirs");
+	CHECK_RESULT(spudfile_directory_rename(g_files, source, target, SPUDFILE_FLUSH_LEVEL_NONE), SPUDRESULT_SPUDFILE_ALREADY_EXISTS);
+	CHECK(holds(target_file, "theirs"));
+	CHECK(holds(source_file, "moved"));
+	CHECK_RESULT(spudfile_path_remove(g_files, target_file), SPUD_SUCCESS);
+	CHECK_RESULT(spudfile_directory_remove(g_files, target), SPUD_SUCCESS);
+
+	// A file source isn't a directory.
+	char file[1100];
+	path_in(file, sizeof(file), "mv_file.txt");
+	write_whole(file, "f");
+	CHECK_RESULT(spudfile_directory_rename(g_files, file, target, SPUDFILE_FLUSH_LEVEL_NONE), SPUDRESULT_SPUDFILE_NOT_A_DIRECTORY);
+	CHECK(holds(file, "f"));
+	CHECK_RESULT(kind_at(target, &kind), SPUDRESULT_SPUDFILE_NOT_FOUND);
+
+	// No parent for the target.
+	char orphan[1200];
+	snprintf(orphan, sizeof(orphan), "%s" SLASH "missing" SLASH "x", g_dir);
+	CHECK_RESULT(spudfile_directory_rename(g_files, source, orphan, SPUDFILE_FLUSH_LEVEL_NONE), SPUDRESULT_SPUDFILE_NOT_FOUND);
+	CHECK(holds(source_file, "moved"));
+
+#if SPUDLIB_PLATFORM_WIN32
+	// A file inside held open without sharing delete: in use, nothing moved.
+	HANDLE held = hold_without_delete(source_file);
+	CHECK(held != INVALID_HANDLE_VALUE);
+	if (held != INVALID_HANDLE_VALUE) {
+		CHECK_RESULT(spudfile_directory_rename(g_files, source, target, SPUDFILE_FLUSH_LEVEL_NONE), SPUDRESULT_SPUDFILE_IN_USE);
+		CloseHandle(held);
+		CHECK(holds(source_file, "moved"));
+		CHECK_RESULT(kind_at(target, &kind), SPUDRESULT_SPUDFILE_NOT_FOUND);
+	}
+#endif
+
+	// Across volumes, where a directory on another one is named.
+	const char *other = getenv("SPUDFILES_TEST_OTHER_VOLUME_DIR");
+	if (other && other[0]) {
+		char away[1200];
+		snprintf(away, sizeof(away), "%s" SLASH "spudfiles_test_moved", other);
+		CHECK_RESULT(spudfile_directory_rename(g_files, source, away, SPUDFILE_FLUSH_LEVEL_NONE), SPUDRESULT_SPUDFILE_DIFFERENT_VOLUME);
+		CHECK(holds(source_file, "moved"));
+		printf("spudfiles_test: a directory renamed across volumes, to %s: refused\n", other);
+	} else {
+		printf("spudfiles_test: no SPUDFILES_TEST_OTHER_VOLUME_DIR: a rename across volumes not run\n");
+	}
+
+	CHECK_RESULT(spudfile_path_remove(g_files, file), SPUD_SUCCESS);
+	CHECK_RESULT(spudfile_path_remove(g_files, source_file), SPUD_SUCCESS);
+	CHECK_RESULT(spudfile_directory_remove(g_files, source), SPUD_SUCCESS);
+}
+
+/* Removes the tree at [dir] through the calls a caller has: a listing, then
+ * each entry (a directory's tree first), then the directory. */
+static void remove_tree(const char *dir) {
+	const struct seen seen = list_dir(dir);
+	CHECK(seen.extra == 0);
+	for (int i = 0; i < seen.count; ++i) {
+		char path[1300];
+		snprintf(path, sizeof(path), "%s" SLASH "%s", dir, seen.names[i]);
+		if (seen.kinds[i] == SPUDFILE_ENTRY_KIND_DIRECTORY)
+			remove_tree(path);
+		else
+			CHECK_RESULT(spudfile_path_remove(g_files, path), SPUD_SUCCESS);
+	}
+	CHECK_RESULT(spudfile_directory_remove(g_files, dir), SPUD_SUCCESS);
+}
+
+static void test_directory_tree(void) {
+	// A tree written whole beside its place, renamed into it, then removed.
+	char partial[1100];
+	char done[1100];
+	path_in(partial, sizeof(partial), ".tree.partial");
+	path_in(done, sizeof(done), "tree");
+	const char *dirs[]  = {"", SLASH "a", SLASH "a" SLASH "b", SLASH "c"};
+	const char *files[] = {SLASH "top.txt", SLASH "a" SLASH "one.txt", SLASH "a" SLASH "b" SLASH "two.txt", SLASH "a" SLASH "b" SLASH "three.txt"};
+	for (int i = 0; i < 4; ++i) {
+		char path[1300];
+		snprintf(path, sizeof(path), "%s%s", partial, dirs[i]);
+		CHECK_RESULT(spudfile_directory_create(g_files, path), SPUD_SUCCESS);
+	}
+	for (int i = 0; i < 4; ++i) {
+		char path[1300];
+		snprintf(path, sizeof(path), "%s%s", partial, files[i]);
+		write_whole(path, files[i]);
+	}
+	CHECK_RESULT(spudfile_directory_rename(g_files, partial, done, SPUDFILE_FLUSH_LEVEL_DEVICE), SPUD_SUCCESS);
+	for (int i = 0; i < 4; ++i) {
+		char path[1300];
+		snprintf(path, sizeof(path), "%s%s", done, files[i]);
+		CHECK(holds(path, files[i]));
+	}
+	CHECK_RESULT(spudfile_directory_remove(g_files, done), SPUDRESULT_SPUDFILE_NOT_EMPTY);
+	remove_tree(done);
+	SPUDFILE_PATH_KIND kind = (SPUDFILE_PATH_KIND)0;
+	CHECK_RESULT(kind_at(done, &kind), SPUDRESULT_SPUDFILE_NOT_FOUND);
+	CHECK_RESULT(kind_at(partial, &kind), SPUDRESULT_SPUDFILE_NOT_FOUND);
+}
+
 /* The temporary directory's file system, then each directory named in
  * SPUDFILES_TEST_LOCK_DIRS (';'-separated: another file system, a share),
  * each reported. */
@@ -1091,6 +1530,10 @@ int main(void) {
 		test_listing_checks();
 		test_listing_kinds();
 		test_listing_non_utf8();
+		test_directory_remove();
+		test_directory_rename();
+		test_directory_tree();
+		test_copy_mode();
 		test_locks();
 		spudfile_instance_destroy(g_files);
 	}

@@ -310,6 +310,21 @@ SPUDRESULT spudfile_path_remove(
 	return spudfile_backend_path_remove(instance, path);
 }
 
+SPUDRESULT spudfile_path_copy_mode(
+    spudfile_instance instance,
+    const char *source,
+    const char *target) {
+	if (!instance)
+		return SPUDRESULT_SPUDFILE_INVALID_INSTANCE;
+	if (SPUD_STALE(instance, "spudfile_path_copy_mode", "instance"))
+		return SPUDRESULT_SPUDFILE_INVALID_INSTANCE;
+	if (!spudfile_path_given(source))
+		return SPUDRESULT_SPUDFILE_NULL_PATH;
+	if (!spudfile_path_given(target))
+		return SPUDRESULT_SPUDFILE_NULL_PATH;
+	return spudfile_backend_path_copy_mode(instance, source, target);
+}
+
 SPUDRESULT spudfile_directory_create(
     spudfile_instance instance,
     const char *path) {
@@ -320,6 +335,36 @@ SPUDRESULT spudfile_directory_create(
 	if (!spudfile_path_given(path))
 		return SPUDRESULT_SPUDFILE_NULL_PATH;
 	return spudfile_backend_directory_create(instance, path);
+}
+
+SPUDRESULT spudfile_directory_remove(
+    spudfile_instance instance,
+    const char *path) {
+	if (!instance)
+		return SPUDRESULT_SPUDFILE_INVALID_INSTANCE;
+	if (SPUD_STALE(instance, "spudfile_directory_remove", "instance"))
+		return SPUDRESULT_SPUDFILE_INVALID_INSTANCE;
+	if (!spudfile_path_given(path))
+		return SPUDRESULT_SPUDFILE_NULL_PATH;
+	return spudfile_backend_directory_remove(instance, path);
+}
+
+SPUDRESULT spudfile_directory_rename(
+    spudfile_instance instance,
+    const char *source,
+    const char *target,
+    SPUDFILE_FLUSH_LEVEL level) {
+	if (!instance)
+		return SPUDRESULT_SPUDFILE_INVALID_INSTANCE;
+	if (SPUD_STALE(instance, "spudfile_directory_rename", "instance"))
+		return SPUDRESULT_SPUDFILE_INVALID_INSTANCE;
+	if (!spudfile_path_given(source))
+		return SPUDRESULT_SPUDFILE_NULL_PATH;
+	if (!spudfile_path_given(target))
+		return SPUDRESULT_SPUDFILE_NULL_PATH;
+	if (level != SPUDFILE_FLUSH_LEVEL_NONE && level != SPUDFILE_FLUSH_LEVEL_DEVICE && level != SPUDFILE_FLUSH_LEVEL_MEDIA)
+		return SPUDRESULT_DESC_INVALID_PARAMETERS;
+	return spudfile_backend_directory_rename(instance, source, target, level);
 }
 
 /* ---- Listing a directory ---- */

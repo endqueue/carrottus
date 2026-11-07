@@ -647,6 +647,7 @@ const SPUDRESULT_SPUDFILE_IN_USE = 1006
 const SPUDRESULT_SPUDFILE_LOCKED = 1016
 const SPUDRESULT_SPUDFILE_NOT_A_DIRECTORY = 1015
 const SPUDRESULT_SPUDFILE_NOT_A_FILE = 1012
+const SPUDRESULT_SPUDFILE_NOT_EMPTY = 1020
 const SPUDRESULT_SPUDFILE_NOT_FOUND = 1009
 const SPUDRESULT_SPUDFILE_NOT_LOCKED = 1019
 const SPUDRESULT_SPUDFILE_NOT_READABLE = 1004
@@ -768,6 +769,8 @@ fn spudaudio_stream_get_status SPUDRESULT (spudaudio_stream, SPUDAUDIO_STREAM_ST
 fn spudaudio_stream_start SPUDRESULT (spudaudio_stream)
 fn spudaudio_stream_stop SPUDRESULT (spudaudio_stream)
 fn spudfile_directory_create SPUDRESULT (spudfile_instance, const char *)
+fn spudfile_directory_remove SPUDRESULT (spudfile_instance, const char *)
+fn spudfile_directory_rename SPUDRESULT (spudfile_instance, const char *, const char *, SPUDFILE_FLUSH_LEVEL)
 fn spudfile_file_close void (spudfile_file)
 fn spudfile_file_flush SPUDRESULT (spudfile_file, SPUDFILE_FLUSH_LEVEL)
 fn spudfile_file_get_size SPUDRESULT (spudfile_file, uint64_t *)
@@ -786,6 +789,7 @@ fn spudfile_listing_open SPUDRESULT (spudfile_instance, const spudfile_listing_d
 fn spudfile_mapping_get_data const void *(spudfile_mapping)
 fn spudfile_mapping_get_size uint64_t (spudfile_mapping)
 fn spudfile_mapping_release void (spudfile_mapping)
+fn spudfile_path_copy_mode SPUDRESULT (spudfile_instance, const char *, const char *)
 fn spudfile_path_get_info SPUDRESULT (spudfile_instance, const char *, SPUDFILE_PATH_INFO *)
 fn spudfile_path_remove SPUDRESULT (spudfile_instance, const char *)
 fn spudfile_path_replace SPUDRESULT (spudfile_instance, const char *, const char *, SPUDFILE_FLUSH_LEVEL)

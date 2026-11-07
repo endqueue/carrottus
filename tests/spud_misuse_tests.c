@@ -1777,6 +1777,24 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 		}
 	}
 	{
+		spudfile_instance dead = dead_spudfile_instance();
+		if (dead) {
+			expect_refused("spudfile_directory_remove", spudfile_directory_remove(dead, (const char *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		spudfile_instance dead = dead_spudfile_instance();
+		if (dead) {
+			expect_refused("spudfile_directory_rename", spudfile_directory_rename(dead, (const char *){0}, (const char *){0}, (SPUDFILE_FLUSH_LEVEL){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
 		spudfile_file dead = dead_spudfile_file();
 		if (dead) {
 			spudfile_file_close(dead);
@@ -1919,6 +1937,15 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 		if (dead) {
 			spudfile_mapping_release(dead);
 			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		spudfile_instance dead = dead_spudfile_instance();
+		if (dead) {
+			expect_refused("spudfile_path_copy_mode", spudfile_path_copy_mode(dead, (const char *){0}, (const char *){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -4050,6 +4077,10 @@ int main(void)
 	calls++;
 	expect_error("spudfile_directory_create", spudfile_directory_create((spudfile_instance){0}, (const char *){0}));
 	calls++;
+	expect_error("spudfile_directory_remove", spudfile_directory_remove((spudfile_instance){0}, (const char *){0}));
+	calls++;
+	expect_error("spudfile_directory_rename", spudfile_directory_rename((spudfile_instance){0}, (const char *){0}, (const char *){0}, (SPUDFILE_FLUSH_LEVEL){0}));
+	calls++;
 	spudfile_file_close((spudfile_file){0});
 	unchecked++;
 	calls++;
@@ -4087,6 +4118,8 @@ int main(void)
 	calls++;
 	spudfile_mapping_release((spudfile_mapping){0});
 	unchecked++;
+	calls++;
+	expect_error("spudfile_path_copy_mode", spudfile_path_copy_mode((spudfile_instance){0}, (const char *){0}, (const char *){0}));
 	calls++;
 	expect_error("spudfile_path_get_info", spudfile_path_get_info((spudfile_instance){0}, (const char *){0}, (SPUDFILE_PATH_INFO *){0}));
 	calls++;

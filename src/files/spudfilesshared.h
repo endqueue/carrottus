@@ -69,7 +69,15 @@ void spudfile_backend_unmap(void *base, uint64_t base_size);
 SPUDRESULT spudfile_backend_path_get_info(spudfile_instance instance, const char *path, SPUDFILE_PATH_INFO *out_info);
 SPUDRESULT spudfile_backend_path_replace(spudfile_instance instance, const char *source, const char *target, SPUDFILE_FLUSH_LEVEL level);
 SPUDRESULT spudfile_backend_path_remove(spudfile_instance instance, const char *path);
+/* Gives [target] [source]'s permissions: POSIX's nine bits, Windows'
+ * read-only attribute; links followed. */
+SPUDRESULT spudfile_backend_path_copy_mode(spudfile_instance instance, const char *source, const char *target);
 SPUDRESULT spudfile_backend_directory_create(spudfile_instance instance, const char *path);
+/* Removes the empty directory, or the link to one, at [path]. */
+SPUDRESULT spudfile_backend_directory_remove(spudfile_instance instance, const char *path);
+/* Renames the directory [source] to [target], where nothing is; [level] is
+ * checked. */
+SPUDRESULT spudfile_backend_directory_rename(spudfile_instance instance, const char *source, const char *target, SPUDFILE_FLUSH_LEVEL level);
 /* Opens a listing of [path]; its state through [instance]'s allocator. */
 SPUDRESULT spudfile_backend_listing_open(spudfile_instance instance, const char *path, void **out_native);
 /* The next entry, "." and ".." skipped; SPUDRESULT_SPUDFILE_END_OF_LISTING

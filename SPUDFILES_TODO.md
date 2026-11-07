@@ -292,15 +292,100 @@ harness regenerated with a listing factory. Its first caller locks its
 cache folder with it on every platform and lists the folder for orphaned
 entries.
 
-## Removing and renaming a directory (card S41, raised 2026-11-06)
+## Removing and renaming a directory (card S41, decided 2026-11-07 with you, the draft as written)
 
-Found overnight, a caller writing a folder whole and swapping it into
-place: no call removes a directory or
-renames one (`spudfile_path_remove` is a file's; `spudfile_path_replace`
-is a file's rename). Drafted for approval, not built:
-`spudfiles_directory_draft.h` (`spudfile_directory_remove`,
-`spudfile_directory_rename`, `SPUDRESULT_SPUDFILE_NOT_EMPTY`). Beside it,
-card S42: a copied file can't keep its executable bit on POSIX.
+Found 2026-11-06 overnight, a caller writing a folder whole and swapping it
+into place: no call removes a directory or renames one
+(`spudfile_path_remove` is a file's; `spudfile_path_replace` is a file's
+rename).
+
+**Draft approved 2026-11-07 by you** (`spudfiles_directory_draft.h`, its
+first version, Q1 a and Q2 a); it is the contract, and stays as the record:
+- `spudfile_directory_remove`: an empty directory, `rmdir` /
+  `RemoveDirectoryW`; a link or junction to a directory removed itself,
+  never what it points at.
+- `spudfile_directory_rename`: a call of its own (Q1 a), to a name where
+  nothing is, on every backend (`rename` / `MoveFileExW`, the flush level
+  as `spudfile_path_replace` takes it); `path_replace` stays a file's.
+- `SPUDRESULT_SPUDFILE_NOT_EMPTY` (1020) for a directory that holds
+  entries (Q2 a), so a caller removing a tree can branch on it.
+
+**Built 2026-11-07 on Windows 11** (ThinkPad P1 Gen 5, MSVC 14.51):
+`SPUDRESULT_SPUDFILE_NOT_EMPTY` in `spudcore.h` and `spudresult_str`, the
+two calls in `spudfiles.h`, their checks in the front end
+(`src/spudfiles.c`: arguments in order, the flush level as
+`spudfile_path_replace` checks it), the Windows backend
+(`GetFileAttributesW` for what is there, links not followed, then
+`RemoveDirectoryW`, `ERROR_DIR_NOT_EMPTY` as NOT_EMPTY; `MoveFileExW` with
+no replace and no copy, `MOVEFILE_WRITE_THROUGH` for DEVICE and MEDIA,
+access denied told apart by what is at the target), and the POSIX backend
+(`lstat`, a link to a directory `unlink`ed, `rmdir`, ENOTEMPTY or EEXIST as
+NOT_EMPTY; the rename `renameat2` with `RENAME_NOREPLACE` on Linux and
+`renamex_np` with `RENAME_EXCL` on Apple, so nothing at the target holds
+with no window, a checked `rename` only on a file system without them;
+written, not compiled). `spudfiles_test` gained the draft's tests, seen
+failing first against stubs (55 failures), then passing: each argument
+refused in order; an empty directory removed, one holding a file or a
+directory NOT_EMPTY and kept, a file NOT_A_DIRECTORY, nothing NOT_FOUND; a
+junction removed itself, its directory and file kept (symbolic links not
+made here, as for S39); a directory held open without sharing delete
+IN_USE; a directory with a file renamed to a free name and back at each
+level; a file, an empty directory and a full one at the target each
+ALREADY_EXISTS, both kept; a file source NOT_A_DIRECTORY; no parent for
+the target NOT_FOUND; a file inside held open IN_USE, nothing moved; and a
+tree written as `.tree.partial`, renamed into place and removed through a
+listing and the two calls, nothing left. Across volumes runs only with
+`SPUDFILES_TEST_OTHER_VOLUME_DIR` (one volume here: not run).
+`windows-d3d12` and `-vulkan`, Debug and Release, and both `-asan`
+presets: every ctest (15) passing; `spud_misuse_tests` 10 of 10 on each
+backend in Debug (249 calls with a destroyed handle); `abi.txt` additions
+only. Its first caller writes its export as a partial folder and swaps it
+in on these calls.
+
+## A copied file's mode (card S42, decided 2026-11-07 with you, b)
+
+Found 2026-11-06 overnight, read from the code: a file SpudFiles creates
+takes the platform's default mode (0666 less the umask), and no call sets
+one, so a program copied through SpudFiles on Linux or macOS isn't
+executable. **Decided: b.** A call that copies a file's mode bits from
+another, `spudfile_path_copy_mode(instance, source, target)`. It carries
+what the source already is and decides nothing. Rejected: a "make it a program" choice in the open desc (a, a
+decision the caller would make per file, refused on one platform), and
+leaving it to the developer's `chmod +x` (c).
+
+**Draft approved 2026-11-07 by you** (`spudfiles_mode_draft.h`, its first
+version, Q1 a and Q2 a); it is the contract, and stays as the record:
+- POSIX: the nine permission bits (`stat`, then `chmod`; `st_mode & 0777`),
+  never the set-user-ID, set-group-ID and sticky bits, whose meaning
+  depends on an owner a copy doesn't carry (Q1 a).
+- Windows: the read-only attribute (`GetFileAttributesW`, then
+  `SetFileAttributesW`, the target's other attributes kept), so a source
+  that can't be written gives a target that can't be written on every
+  backend (Q2 a; the card had said Windows does nothing, before the draft
+  found that Windows keeps this one permission).
+- Links followed for both paths, the umask no part of it, any kind of
+  entry, nothing flushed; no owner, ACL or extended attribute copied.
+
+**Built 2026-11-07 on Windows 11** (the same machine and day as S41):
+`spudfile_path_copy_mode` in `spudfiles.h`, its file comment's rule on
+new files' permissions pointing to it; its checks in the front end; the
+Windows backend (each path opened for its attributes alone, a link
+followed, `FILE_BASIC_INFO` read from both and written to the target with
+only `FILE_ATTRIBUTE_READONLY` taken from the source, its times left as
+they are, `ERROR_WRITE_PROTECT` the platform's failure); the POSIX backend
+(`stat`, then `chmod` with `st_mode & 0777`, `EROFS` the platform's
+failure; written, not compiled). `spudfiles_test` gained the draft's
+tests, seen failing first against a stub (15 failures), then passing on
+Windows: each argument refused in order, nothing at either path NOT_FOUND
+with the target unchanged, the read-only attribute carried both ways with
+the target's hidden attribute kept, a directory as either path, a
+junction as the target changing its directory and not itself. The POSIX
+tests (written, not compiled): each of four modes carried under a umask
+of 077, the set-ID bits never carried, a directory either way, symbolic
+links followed both ways with the links unchanged, and `/` onto itself
+refused when not root. Its first caller gives each Linux and macOS
+export's executable its template executable's permissions. Its caller's Linux and macOS exports, and the
+ctest that runs an exported game there, wait on it.
 
 ## Breaks
 

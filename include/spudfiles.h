@@ -6,8 +6,9 @@
  * @brief SpudFiles: files and paths, as the platform's file system has them.
  *
  * Opening, reading and writing at an offset, sizing, flushing, mapping and
- * locking a file; what is at a path, replacing and removing a file, making
- * a directory and listing one. One call each, translated: POSIX on Linux
+ * locking a file; what is at a path, replacing and removing a file, copying
+ * a file's permissions to another; making,
+ * listing, renaming and removing a directory. One call each, translated: POSIX on Linux
  * and every Apple system, the Win32 W functions on Windows.
  *
  * Rules that hold on every backend:
@@ -24,7 +25,8 @@
  * - There is no cursor: every read and write names its offset, so one
  *   call on a file leaves nothing behind that the next depends on.
  * - New files and directories get the platform's default permissions, with
- *   the process's umask applied on POSIX (0666 and 0777 before it).
+ *   the process's umask applied on POSIX (0666 and 0777 before it);
+ *   spudfile_path_copy_mode() gives one the permissions of another.
  * - What a failure was is one of the results below; the platform's own
  *   number is not kept (not yet).
  *
@@ -515,6 +517,41 @@ SPUDRESULT spudfile_path_remove(
     const char *path);
 
 /**
+ * @brief Gives `target` the permissions `source` has: on Linux and Apple,
+ * its nine permission bits (stat, then chmod; st_mode & 0777); on Windows,
+ * its read-only attribute (the target's other attributes kept). Symbolic
+ * links are followed for both. The set-user-ID, set-group-ID and sticky
+ * bits, the owner, access control lists and extended attributes are not
+ * copied: what the first three grant depends on an owner a copy doesn't
+ * carry. The umask plays no part. Nothing is flushed. Either may be any
+ * kind of entry, and they needn't be the same kind or on the same volume.
+ *
+ * Thread: may overlap any call on the same instance but
+ * spudfile_instance_destroy(); two calls changing one target at once leave
+ * it as either one left it.
+ *
+ * @param[in] instance The instance.
+ * @param[in] source   What the permissions are read from.
+ * @param[in] target   What they are given to.
+ *
+ * @retval SPUD_SUCCESS `target` has `source`'s permissions.
+ * @retval SPUDRESULT_SPUDFILE_INVALID_INSTANCE `instance` is NULL.
+ * @retval SPUDRESULT_SPUDFILE_NULL_PATH `source` or `target` is NULL or
+ *         empty.
+ * @retval SPUDRESULT_SPUDFILE_NOT_FOUND Nothing is at `source`, or at
+ *         `target` (the target unchanged either way).
+ * @retval SPUDRESULT_SPUDFILE_ACCESS_DENIED A directory on the way can't be
+ *         read, or the platform won't let the caller change `target`'s
+ *         permissions (POSIX: not its owner).
+ * @retval SPUDRESULT_API_SPECIFIC_FAILURE The platform refused (a
+ *         read-only file system among them).
+ */
+SPUDRESULT spudfile_path_copy_mode(
+    spudfile_instance instance,
+    const char *source,
+    const char *target);
+
+/**
  * @brief Makes one directory: mkdir, or CreateDirectoryW. Its parent must
  * exist; making the directories on the way is the caller's.
  *
@@ -533,6 +570,74 @@ SPUDRESULT spudfile_path_remove(
 SPUDRESULT spudfile_directory_create(
     spudfile_instance instance,
     const char *path);
+
+/**
+ * @brief Removes an empty directory: rmdir, or RemoveDirectoryW. A symbolic
+ * link to a directory, or a junction, is removed itself, never what it
+ * points at. Removing a tree is the caller's: list it, remove what is in it,
+ * then the directory.
+ *
+ * Thread: may overlap any call on the same instance but
+ * spudfile_instance_destroy().
+ *
+ * @param[in] instance The instance.
+ * @param[in] path     The directory.
+ *
+ * @retval SPUD_SUCCESS It is gone.
+ * @retval SPUDRESULT_SPUDFILE_INVALID_INSTANCE `instance` is NULL.
+ * @retval SPUDRESULT_SPUDFILE_NULL_PATH `path` is NULL or empty.
+ * @retval SPUDRESULT_SPUDFILE_NOT_FOUND Nothing is there.
+ * @retval SPUDRESULT_SPUDFILE_NOT_A_DIRECTORY A file, or another kind of
+ *         entry, is there.
+ * @retval SPUDRESULT_SPUDFILE_NOT_EMPTY It holds entries.
+ * @retval SPUDRESULT_SPUDFILE_IN_USE Windows: another handle has it open
+ *         without sharing delete.
+ * @retval SPUDRESULT_SPUDFILE_ACCESS_DENIED Its parent can't be written.
+ * @retval SPUDRESULT_API_SPECIFIC_FAILURE The platform refused.
+ */
+SPUDRESULT spudfile_directory_remove(
+    spudfile_instance instance,
+    const char *path);
+
+/**
+ * @brief Gives a directory another name, on the same volume: rename, or
+ * MoveFileExW (MOVEFILE_WRITE_THROUGH for DEVICE and MEDIA). Nothing may be
+ * at the target, on every backend: Windows can't rename a directory over
+ * anything, and POSIX only over an empty directory, so "nothing there" is
+ * the rule all of them keep. A symbolic link to a directory, or a junction,
+ * is renamed itself. `level` is how far the rename is pushed before
+ * returning, as spudfile_path_replace() says.
+ *
+ * Thread: as spudfile_directory_remove().
+ *
+ * @param[in] instance The instance.
+ * @param[in] source   The directory.
+ * @param[in] target   The name it takes; nothing is there.
+ * @param[in] level    How far the rename is pushed.
+ *
+ * @retval SPUD_SUCCESS `target` names the directory.
+ * @retval SPUDRESULT_SPUDFILE_INVALID_INSTANCE `instance` is NULL.
+ * @retval SPUDRESULT_SPUDFILE_NULL_PATH `source` or `target` is NULL or
+ *         empty.
+ * @retval SPUDRESULT_DESC_INVALID_PARAMETERS `level` isn't an
+ *         SPUDFILE_FLUSH_LEVEL.
+ * @retval SPUDRESULT_SPUDFILE_NOT_FOUND There is no `source`, or no parent
+ *         of `target`.
+ * @retval SPUDRESULT_SPUDFILE_NOT_A_DIRECTORY `source` isn't a directory.
+ * @retval SPUDRESULT_SPUDFILE_ALREADY_EXISTS Something is at `target`.
+ * @retval SPUDRESULT_SPUDFILE_DIFFERENT_VOLUME They're on different
+ *         volumes.
+ * @retval SPUDRESULT_SPUDFILE_IN_USE Windows: a handle inside it forbids
+ *         the move.
+ * @retval SPUDRESULT_SPUDFILE_FLUSH_LEVEL_NOT_SUPPORTED See
+ *         SPUDFILE_FLUSH_LEVEL_MEDIA.
+ * @retval SPUDRESULT_API_SPECIFIC_FAILURE The platform refused.
+ */
+SPUDRESULT spudfile_directory_rename(
+    spudfile_instance instance,
+    const char *source,
+    const char *target,
+    SPUDFILE_FLUSH_LEVEL level);
 
 /* ---- Listing a directory ---- */
 

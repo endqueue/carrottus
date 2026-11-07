@@ -3,8 +3,8 @@
  * renaming a directory (card S41, raised 2026-11-06 overnight, where a
  * caller needed both).
  *
- * DRAFT, 2026-11-06, first version, FOR APPROVAL. Not built, not in any
- * target. Not compilable: it repeats spudcore.h's enum and spudfiles.h's
+ * DRAFT, 2026-11-06, first version. APPROVED 2026-11-07 (Q1 a, Q2 a, card
+ * S41): the contract, kept as the record. Not built, not in any target. Not compilable: it repeats spudcore.h's enum and spudfiles.h's
  * declarations to show them changed. Every declaration is marked [ADDED]
  * or [CHANGED]. Written against include/spudfiles.h as it stands after
  * card S39's listing and lock (built 2026-11-06 on Windows).
