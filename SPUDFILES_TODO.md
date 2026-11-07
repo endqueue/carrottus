@@ -242,6 +242,24 @@ Left:
 - Directory listing and the platform's known folders: only when a caller
   needs them.
 
+## Listing a directory, and an advisory lock (card S39, decided 2026-11-06 with you, a)
+
+Two plain translations, each with a caller now (Latran's cook,
+`latran/editor/latran_cook_draft.h`, answers 4 and 7; its headless tool,
+prompt 05):
+
+- **`spudfile_directory_list`**: one call filling the caller's buffer of
+  entries (name, kind), `readdir` / `FindFirstFileExW`, in the order the
+  platform gives; a buffer too small says how many there are. No sorting,
+  no recursion, no filtering: the caller's.
+- **An advisory lock on an open file**: `flock` / `LockFileEx`, shared or
+  exclusive, wait or fail at once, released by its own call or the file's
+  close. Advisory on POSIX, as `flock` is; said so on the call.
+
+Not built. An approved draft first (`spudlib/spudfiles_list_lock_draft.h`),
+as every SpudLib addition; then Latran's cache finds orphaned entries and
+locks its folder on POSIX too.
+
 ## Breaks
 
 Every caller of `spudfile_file_open` and `spudfile_file_exists` (the grep above finds
