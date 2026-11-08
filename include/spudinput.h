@@ -632,6 +632,12 @@ typedef struct SPUDINPUT_GAMEPAD_RUMBLE {
  * @param[in] gamepad  The gamepad.
  * @param[in] rumble   The levels. All four 0 stops every motor.
  *
+ * Thread: with SPUDINPUT_NATIVE_API_GAMECONTROLLER, only on the process's
+ * main thread, as spudinput_poll: the framework's controllers and haptics
+ * belong to it. A call on any other thread returns
+ * SPUDRESULT_GENERAL_FAILURE and changes nothing. Other native APIs take
+ * it from any thread.
+ *
  * @retval SPUD_SUCCESS The levels were set.
  * @retval SPUDRESULT_SPUDINPUT_INVALID_INSTANCE `instance` is NULL.
  * @retval SPUDRESULT_SPUDINPUT_GAMEPAD_NOT_CONNECTED `gamepad` names
@@ -645,6 +651,8 @@ typedef struct SPUDINPUT_GAMEPAD_RUMBLE {
  * @retval SPUDRESULT_SPUDINPUT_ACCESS_DENIED The platform won't let this
  *         process write to the device.
  * @retval SPUDRESULT_API_SPECIFIC_FAILURE The platform's API failed.
+ * @retval SPUDRESULT_GENERAL_FAILURE On GameController, called off the
+ *         main thread.
  */
 SPUDRESULT spudinput_gamepad_set_rumble(
     spudinput_instance instance,
@@ -776,6 +784,11 @@ typedef struct SPUDINPUT_GAMEPAD_MOTION_SAMPLE {
  * @param[in] enabled  true for on, false for off. Setting what already
  *                     holds succeeds and changes nothing.
  *
+ * Thread: with SPUDINPUT_NATIVE_API_GAMECONTROLLER, only on the process's
+ * main thread, as spudinput_poll: the framework's controllers belong to
+ * it. A call on any other thread returns SPUDRESULT_GENERAL_FAILURE and
+ * changes nothing. Other native APIs take it from any thread.
+ *
  * @retval SPUD_SUCCESS The sensors are as asked.
  * @retval SPUDRESULT_SPUDINPUT_INVALID_INSTANCE `instance` is NULL.
  * @retval SPUDRESULT_SPUDINPUT_GAMEPAD_NOT_CONNECTED `gamepad` names
@@ -788,6 +801,8 @@ typedef struct SPUDINPUT_GAMEPAD_MOTION_SAMPLE {
  * @retval SPUDRESULT_SPUDINPUT_ACCESS_DENIED The platform won't let this
  *         process read the sensors.
  * @retval SPUDRESULT_API_SPECIFIC_FAILURE The platform's API failed.
+ * @retval SPUDRESULT_GENERAL_FAILURE On GameController, called off the
+ *         main thread.
  */
 SPUDRESULT spudinput_gamepad_set_motion_enabled(
     spudinput_instance instance,

@@ -662,6 +662,10 @@ SPUDINPUT_BACKEND_FUNCTION SPUDRESULT spudinput_gamecontroller_set_rumble(
     spudinput_gamepad_record *record,
     const SPUDINPUT_GAMEPAD_RUMBLE *rumble) {
 	(void)instance;
+	/* The framework's controllers and haptics belong to the main thread
+	 * (spudinput.h), as the poll's do. */
+	if (![NSThread isMainThread])
+		return SPUDRESULT_GENERAL_FAILURE;
 	spudinput_gc_pad *pad = (spudinput_gc_pad *)record->native;
 
 	const float levels[SPUDINPUT_GC_MOTOR_COUNT] = {
@@ -690,6 +694,9 @@ SPUDINPUT_BACKEND_FUNCTION SPUDRESULT spudinput_gamecontroller_set_motion_enable
     spudinput_instance instance,
     spudinput_gamepad_record *record,
     bool enabled) {
+	/* The main thread's, as the poll (spudinput.h). */
+	if (![NSThread isMainThread])
+		return SPUDRESULT_GENERAL_FAILURE;
 	spudinput_gc_pad *pad = (spudinput_gc_pad *)record->native;
 
 	if (enabled && !pad->pending) {
