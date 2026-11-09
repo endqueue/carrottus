@@ -8,7 +8,8 @@
  * Opening, reading and writing at an offset, sizing, flushing, mapping and
  * locking a file; what is at a path, replacing and removing a file, copying
  * a file's permissions to another; making,
- * listing, renaming and removing a directory. One call each, translated: POSIX on Linux
+ * listing, renaming and removing a directory; opening a dynamic
+ * library and finding a function it exports. One call each, translated: POSIX on Linux
  * and every Apple system, the Win32 W functions on Windows.
  *
  * Rules that hold on every backend:
@@ -27,8 +28,9 @@
  * - New files and directories get the platform's default permissions, with
  *   the process's umask applied on POSIX (0666 and 0777 before it);
  *   spudfile_path_copy_mode() gives one the permissions of another.
- * - What a failure was is one of the results below; the platform's own
- *   number is not kept (not yet).
+ * - What a failure was is one of the results below; every failure a
+ *   platform call reports goes to the instance's message callback
+ *   (spudcore.h, "Messages"), with the platform's own number.
  *
  * Every object of an instance is made through the instance's allocator.
  *
@@ -75,6 +77,13 @@ typedef struct spudfile_instance_desc {
 	 * from it comes from. Copied; its functions and `user_data` must outlive
 	 * the instance and everything made from it. Required. */
 	const SPUD_ALLOCATOR *allocator;
+	/** Called with every message of this instance and its objects
+	 * (spudcore.h, "Messages"), or NULL for none. Its functions and
+	 * `message_user_data` must outlive the instance and everything made
+	 * from it. */
+	SPUD_MESSAGE_CALLBACK message_callback;
+	/** Handed to #message_callback unchanged. */
+	void *message_user_data;
 } spudfile_instance_desc;
 
 /**
@@ -843,6 +852,195 @@ SPUDRESULT spudfile_file_lock(
  * @retval SPUDRESULT_API_SPECIFIC_FAILURE The platform refused.
  */
 SPUDRESULT spudfile_file_unlock(spudfile_file file);
+
+/* ---- Dynamic libraries ---- */
+
+/**
+ * @defgroup spudfile_libraries Dynamic libraries
+ * @brief Opening a dynamic library, finding a function it exports, closing
+ * it: LoadLibraryExW, GetProcAddress and FreeLibrary on Windows; dlopen,
+ * dlsym and dlclose on Linux and every Apple system.
+ *
+ * - The path is UTF-8, converted as every SpudFiles path is (WTF-8 to
+ *   UTF-16 on Windows). Nothing is added to it: no extension, no "lib"
+ *   prefix, no search of SpudFiles' own. A name with no directory is
+ *   searched for by the platform's own rules, which differ
+ *   (#spudfile_library_desc::dependencies).
+ * - Opening runs the library's initializers (DllMain's
+ *   DLL_PROCESS_ATTACH, ELF constructors, Objective-C +load, C++ static
+ *   constructors) inside the call, on the caller's thread; one that fails
+ *   fails the open. Closing runs its finalizers when the platform unloads
+ *   it. The platform's loader lock is held while they run: what they may
+ *   call then is the platform's rule, not SpudFiles'.
+ * - The platform counts opens of one library: two opens of one path give
+ *   two handles over one loaded image, sharing its globals, each closed on
+ *   its own. A second, separate image of a rebuilt library is opened under
+ *   a path of its own (a copy): on every platform a path already loaded
+ *   gives the image already loaded.
+ * - Closing is a request: the platform may keep the image mapped (Linux
+ *   keeps one that registered C++ thread_local destructors; Apple keeps one
+ *   that holds Objective-C classes or Swift metadata). After
+ *   spudfile_library_close() nothing found through the handle may be
+ *   called, whether or not the image went.
+ * - A function is found among the library's own exports, by the name it
+ *   exports, as given; what a lookup finds in the library's dependencies
+ *   is undefined. Exported data is not offered: a library exposes data
+ *   through a function that returns its address.
+ * - Windows' error mode (SetThreadErrorMode) is the calling thread's, and
+ *   the caller's to set; it is not changed.
+ * - Whatever the loader refuses (no file there, a dependency missing,
+ *   another architecture, an initializer that failed, a signature the
+ *   platform's policy refused) is SPUDRESULT_SPUDFILE_LIBRARY_NOT_LOADED,
+ *   and the loader's own words (dlerror's text, GetLastError's number) go
+ *   to the instance's message callback. A caller that needs to know whether
+ *   the file is there asks spudfile_path_get_info() first.
+ * @{
+ */
+
+/** Opaque handle to an open dynamic library. */
+typedef struct spudfile_library_t *spudfile_library;
+
+/** @brief When the library's references to other libraries are bound. */
+typedef enum SPUDFILE_LIBRARY_BINDING {
+	/** Not chosen: refused. */
+	SPUDFILE_LIBRARY_BINDING_NONE = 0,
+	/** All of them, before the open returns (RTLD_NOW; Windows' imports). */
+	SPUDFILE_LIBRARY_BINDING_NOW = 1,
+	/** Each function's when it is first called (RTLD_LAZY). Not on
+	 * Windows. */
+	SPUDFILE_LIBRARY_BINDING_LAZY = 2,
+} SPUDFILE_LIBRARY_BINDING;
+
+/** @brief Whether the library's exports are seen by libraries opened after
+ * it. */
+typedef enum SPUDFILE_LIBRARY_SCOPE {
+	/** Not chosen: refused. */
+	SPUDFILE_LIBRARY_SCOPE_NONE = 0,
+	/** Only through this handle (RTLD_LOCAL; every Windows module). */
+	SPUDFILE_LIBRARY_SCOPE_LOCAL = 1,
+	/** Also to libraries opened later (RTLD_GLOBAL). Not on Windows. */
+	SPUDFILE_LIBRARY_SCOPE_GLOBAL = 2,
+} SPUDFILE_LIBRARY_SCOPE;
+
+/** @brief Where the libraries it depends on (and, for a path with no
+ * directory, the library itself) are searched for. */
+typedef enum SPUDFILE_LIBRARY_DEPENDENCIES {
+	/** Not chosen: refused. */
+	SPUDFILE_LIBRARY_DEPENDENCIES_NONE = 0,
+	/** The platform's own order: LoadLibraryExW's standard search order
+	 * (no search flag); POSIX's loader rules, the library's own rpath and
+	 * runpath among them. */
+	SPUDFILE_LIBRARY_DEPENDENCIES_PLATFORM_ORDER = 1,
+	/** The library's own directory, then the application's and the
+	 * system's (LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
+	 * LOAD_LIBRARY_SEARCH_DEFAULT_DIRS); the path must be fully qualified.
+	 * Windows only: on POSIX the library chose this when it was linked
+	 * ($ORIGIN, \@loader_path). */
+	SPUDFILE_LIBRARY_DEPENDENCIES_LIBRARY_DIRECTORY_FIRST = 2,
+} SPUDFILE_LIBRARY_DEPENDENCIES;
+
+/** @brief What the caller decides when opening a library. No field has a
+ * default. */
+typedef struct spudfile_library_desc {
+	/** `type` is SPUD_STRUCT_TYPE_FILES_LIBRARY_DESC; `next` is NULL
+	 * (nothing is chained onto this struct yet). Set by the caller. See
+	 * SPUD_STRUCT_BASE. */
+	SPUD_STRUCT_BASE base;
+	/** The library: a path, or a name with no directory, which the
+	 * platform searches for by its own rules (#dependencies). Nothing is
+	 * added to it. Read during the call only. */
+	const char *path;
+	/** When references are bound. */
+	SPUDFILE_LIBRARY_BINDING binding;
+	/** Who sees its exports. */
+	SPUDFILE_LIBRARY_SCOPE scope;
+	/** Where dependencies are searched for. */
+	SPUDFILE_LIBRARY_DEPENDENCIES dependencies;
+	/** Name for debugging, or NULL. Copied; see spud_debug_name_set(). */
+	const char *debug_name;
+} spudfile_library_desc;
+
+/**
+ * @brief Opens a dynamic library: LoadLibraryExW, or dlopen. Runs its
+ * initializers, on this thread, before returning. Two opens of one path
+ * give two handles over one loaded image.
+ *
+ * Thread: may overlap any call on the same instance but
+ * spudfile_instance_destroy().
+ *
+ * @param[in]  instance    The instance the handle is made with.
+ * @param[in]  desc        What the caller decides.
+ * @param[out] out_library Receives the library; NULL on failure.
+ *
+ * @retval SPUD_SUCCESS The library is loaded.
+ * @retval SPUDRESULT_SPUDFILE_INVALID_INSTANCE `instance` is NULL.
+ * @retval SPUDRESULT_NULL_DESC `desc` is NULL.
+ * @retval SPUDRESULT_STRUCT_WRONG_TYPE `desc->base.type` is not
+ *         SPUD_STRUCT_TYPE_FILES_LIBRARY_DESC.
+ * @retval SPUDRESULT_STRUCT_UNKNOWN_IN_CHAIN `desc->base.next` is not NULL.
+ * @retval SPUDRESULT_NULL_OUTPUT_PARAMETER `out_library` is NULL.
+ * @retval SPUDRESULT_SPUDFILE_NULL_PATH `desc->path` is NULL or empty.
+ * @retval SPUDRESULT_DESC_INVALID_PARAMETERS `desc->binding`, `->scope` or
+ *         `->dependencies` is NONE or not one of its values, or
+ *         LIBRARY_DIRECTORY_FIRST with a path that isn't fully qualified.
+ * @retval SPUDRESULT_SPUDFILE_LIBRARY_OPTION_NOT_SUPPORTED The platform's
+ *         loader has no such choice: BINDING_LAZY or SCOPE_GLOBAL on
+ *         Windows, DEPENDENCIES_LIBRARY_DIRECTORY_FIRST on POSIX.
+ * @retval SPUDRESULT_SPUDFILE_LIBRARY_NOT_LOADED The loader refused, for
+ *         any reason (no file, a dependency missing, another architecture,
+ *         an initializer that failed, a signature refused); its words go to
+ *         the instance's message callback.
+ * @retval SPUDRESULT_OUT_OF_MEMORY The handle could not be allocated; the
+ *         library is not left loaded.
+ */
+SPUDRESULT spudfile_library_open(
+    spudfile_instance instance,
+    const spudfile_library_desc *desc,
+    spudfile_library *out_library);
+
+/** @brief A function a library exports, as found: cast to its own type
+ * before calling it. Valid until the library is closed. */
+typedef void (*spudfile_library_function)(void);
+
+/**
+ * @brief Finds a function the library itself exports, by name:
+ * GetProcAddress, or dlsym. What it finds in the library's dependencies is
+ * undefined (dlsym searches them; GetProcAddress doesn't).
+ *
+ * Thread: may overlap any call on the same library but
+ * spudfile_library_close() and spud_debug_name_set().
+ *
+ * @param[in]  library      The library.
+ * @param[in]  name         The exported name, as the library exports it,
+ *                          null-terminated. Nothing is added or removed.
+ * @param[out] out_function Receives the function; NULL on failure.
+ *
+ * @retval SPUD_SUCCESS `*out_function` is the function.
+ * @retval SPUDRESULT_SPUDFILE_INVALID_LIBRARY `library` is NULL.
+ * @retval SPUDRESULT_NULL_DESC `name` is NULL or empty.
+ * @retval SPUDRESULT_NULL_OUTPUT_PARAMETER `out_function` is NULL.
+ * @retval SPUDRESULT_SPUDFILE_SYMBOL_NOT_FOUND The library exports no
+ *         function of that name (also sent as a message, with the
+ *         loader's words).
+ */
+SPUDRESULT spudfile_library_find(
+    spudfile_library library,
+    const char *name,
+    spudfile_library_function *out_function);
+
+/**
+ * @brief Closes a library: FreeLibrary, or dlclose. The platform unloads
+ * the image when its last open is closed, if it unloads it at all; either
+ * way nothing found through this handle may be called after. A failure the
+ * platform reports goes to the instance's message callback.
+ *
+ * Thread: overlaps no other call on the same library.
+ *
+ * @param[in] library The library to close. NULL does nothing.
+ */
+void spudfile_library_close(spudfile_library library);
+
+/** @} */
 
 #ifdef __cplusplus
 }

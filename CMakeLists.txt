@@ -98,6 +98,7 @@ if(NOT TARGET spudlib)
         src/net/spudnetshared.h
         src/input/spudinputshared.h
         src/spudcore.c
+        src/spudmessage.h
         src/spudmemory.c
         src/memory/spudmemoryshared.h
         src/spudfiles.c
@@ -356,6 +357,9 @@ if(NOT TARGET spudlib)
         # consumers' final link line too - which is also why a sample or host
         # that calls libm itself doesn't have to repeat it.
         target_link_libraries(spudlib PRIVATE m)
+        # SpudFiles' library calls (dlopen, dlsym, dlclose, dlerror): in libc
+        # from glibc 2.34, in libdl before it; CMAKE_DL_LIBS names whichever.
+        target_link_libraries(spudlib PRIVATE ${CMAKE_DL_LIBS})
         if(CURL_VERSION_STRING VERSION_LESS "8.11")
             message(WARNING "SpudNet: libcurl ${CURL_VERSION_STRING} is older than 8.11 - spudnet_websocket_* will return SPUDRESULT_SPUDNET_UNSUPPORTED.")
         endif()
@@ -712,6 +716,47 @@ if(NOT TARGET spudlib)
         endif()
         add_test(NAME spudfiles_test COMMAND spudfiles_test)
         set_tests_properties(spudfiles_test PROPERTIES SKIP_RETURN_CODE 77)
+
+        # The dynamic libraries spudfiles_test opens (card S44), one source
+        # built several ways (tests/spudfiles_test_library.c says which).
+        # Their paths reach the test as definitions, so it needs no search.
+        foreach(_lib a b)
+            add_library(spudfiles_test_library_${_lib} SHARED tests/spudfiles_test_library.c)
+            set_target_properties(spudfiles_test_library_${_lib} PROPERTIES C_VISIBILITY_PRESET hidden)
+        endforeach()
+        target_compile_definitions(spudfiles_test_library_a PRIVATE SPUDFILES_TEST_LIBRARY_VALUE=1)
+        target_compile_definitions(spudfiles_test_library_b PRIVATE SPUDFILES_TEST_LIBRARY_VALUE=2)
+        # A dependency put where no search reaches it, and a library that
+        # imports it, which the loader then can't load.
+        add_library(spudfiles_test_dependency SHARED tests/spudfiles_test_library.c)
+        target_compile_definitions(spudfiles_test_dependency PRIVATE SPUDFILES_TEST_DEPENDENCY)
+        set_target_properties(spudfiles_test_dependency PROPERTIES
+            C_VISIBILITY_PRESET hidden
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/spudfiles_test_hidden/$<CONFIG>"
+            LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/spudfiles_test_hidden/$<CONFIG>")
+        add_library(spudfiles_test_library_dependent SHARED tests/spudfiles_test_library.c)
+        target_compile_definitions(spudfiles_test_library_dependent PRIVATE
+            SPUDFILES_TEST_LIBRARY_VALUE=3 SPUDFILES_TEST_LIBRARY_NEEDS_DEPENDENCY)
+        target_link_libraries(spudfiles_test_library_dependent PRIVATE spudfiles_test_dependency)
+        # No rpath to the dependency's directory: it stays out of reach.
+        set_target_properties(spudfiles_test_library_dependent PROPERTIES
+            C_VISIBILITY_PRESET hidden SKIP_BUILD_RPATH ON)
+        set(_spudfiles_test_libraries
+            SPUDFILES_TEST_LIBRARY_A="$<TARGET_FILE:spudfiles_test_library_a>"
+            SPUDFILES_TEST_LIBRARY_B="$<TARGET_FILE:spudfiles_test_library_b>"
+            SPUDFILES_TEST_LIBRARY_DEPENDENT="$<TARGET_FILE:spudfiles_test_library_dependent>")
+        # An initializer that fails: DllMain returning FALSE. A POSIX
+        # constructor can't fail, so Windows only.
+        if(WIN32)
+            add_library(spudfiles_test_library_failing SHARED tests/spudfiles_test_library.c)
+            target_compile_definitions(spudfiles_test_library_failing PRIVATE
+                SPUDFILES_TEST_LIBRARY_VALUE=4 SPUDFILES_TEST_LIBRARY_FAILS_INIT)
+            list(APPEND _spudfiles_test_libraries
+                SPUDFILES_TEST_LIBRARY_FAILING="$<TARGET_FILE:spudfiles_test_library_failing>")
+            add_dependencies(spudfiles_test spudfiles_test_library_failing)
+        endif()
+        target_compile_definitions(spudfiles_test PRIVATE ${_spudfiles_test_libraries})
+        add_dependencies(spudfiles_test spudfiles_test_library_a spudfiles_test_library_b spudfiles_test_library_dependent)
 
         # SpudMemory's virtual memory calls. Needs nothing, so a ctest.
         add_executable(spudmemory_test tests/spudmemory_test.c)

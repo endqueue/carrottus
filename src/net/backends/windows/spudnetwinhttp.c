@@ -99,7 +99,7 @@ static SPUDRESULT spudnet_win_result(DWORD error, SPUDRESULT otherwise) {
 /* A failed WinHTTP call as a record, and the SPUDRESULT it comes to
  * (`otherwise` where spudnet_win_result has nothing closer). */
 static SPUDRESULT spudnet_win_failed(spudnet_error *record, DWORD error, SPUDRESULT otherwise) {
-	return spudnet_error_record(record, spudnet_win_result(error, otherwise), SPUDNET_ERROR_SOURCE_WIN32, error, NULL);
+	return spudnet_error_record(record, spudnet_win_result(error, otherwise), SPUD_PLATFORM_ERROR_SOURCE_WIN32, error, NULL);
 }
 
 /* UTF-8 to a NUL-terminated wide string made through `allocator`, of
@@ -463,7 +463,7 @@ static bool spudnet_win_tls_accepts(HINTERNET request, const struct spudnet_win_
 		DWORD error = GetLastError();
 		if (error == ERROR_WINHTTP_INCORRECT_HANDLE_STATE)
 			return true; // what a plain connection answers
-		spudnet_error_record(out_reason, SPUDRESULT_SPUDNET_TLS_FAILED, SPUDNET_ERROR_SOURCE_WIN32, error, NULL);
+		spudnet_error_record(out_reason, SPUDRESULT_SPUDNET_TLS_FAILED, SPUD_PLATFORM_ERROR_SOURCE_WIN32, error, NULL);
 		return false;
 	}
 
@@ -473,12 +473,12 @@ static bool spudnet_win_tls_accepts(HINTERNET request, const struct spudnet_win_
 		if (error != ERROR_SUCCESS && tls->trust == SPUDNET_TLS_TRUST_SYSTEM_AND_ROOTS)
 			error = spudnet_win_chain_error(NULL, certificate);
 		if (error != ERROR_SUCCESS) {
-			spudnet_error_record(out_reason, SPUDRESULT_SPUDNET_TLS_FAILED, SPUDNET_ERROR_SOURCE_WIN32, error, NULL);
+			spudnet_error_record(out_reason, SPUDRESULT_SPUDNET_TLS_FAILED, SPUD_PLATFORM_ERROR_SOURCE_WIN32, error, NULL);
 			accepted = false;
 		}
 	}
 	if (accepted && tls->pin_count > 0 && !spudnet_win_pin_matches(tls, certificate)) {
-		spudnet_error_record(out_reason, SPUDRESULT_SPUDNET_TLS_FAILED, SPUDNET_ERROR_SOURCE_TLS_PIN, 0, NULL);
+		spudnet_error_record(out_reason, SPUDRESULT_SPUDNET_TLS_FAILED, SPUD_PLATFORM_ERROR_SOURCE_TLS_PIN, 0, NULL);
 		accepted = false;
 	}
 	CertFreeCertificateContext(certificate);
@@ -1621,7 +1621,7 @@ failed_locked:
 		result                                       = SPUDRESULT_SPUDNET_TLS_FAILED;
 		socket->errors[SPUDNET_ERROR_SIDE_RECEIVING] = socket->tls_reason;
 	} else if (error != ERROR_SUCCESS && result != SPUDRESULT_SPUDNET_TIMED_OUT && result != SPUDRESULT_SPUDNET_WS_UPGRADE_REFUSED) {
-		spudnet_error_record(&socket->errors[SPUDNET_ERROR_SIDE_RECEIVING], result, SPUDNET_ERROR_SOURCE_WIN32, error, NULL);
+		spudnet_error_record(&socket->errors[SPUDNET_ERROR_SIDE_RECEIVING], result, SPUD_PLATFORM_ERROR_SOURCE_WIN32, error, NULL);
 	}
 	LeaveCriticalSection(&socket->lock);
 	spudnet_win_websocket_kill(socket);
@@ -1671,7 +1671,7 @@ SPUDRESULT spudnet_websocket_send(
 		// Returns its error rather than leaving it for GetLastError.
 		DWORD started = WinHttpWebSocketSend(socket->websocket, buffer_type, size > 0 ? (PVOID)data : NULL, (DWORD)size);
 		if (started != ERROR_SUCCESS)
-			result = spudnet_error_record(record, SPUDRESULT_SPUDNET_SEND_FAILED, SPUDNET_ERROR_SOURCE_WIN32, started, NULL);
+			result = spudnet_error_record(record, SPUDRESULT_SPUDNET_SEND_FAILED, SPUD_PLATFORM_ERROR_SOURCE_WIN32, started, NULL);
 	}
 	LeaveCriticalSection(&socket->lock);
 	if (SPUDFAIL(result))
@@ -1682,7 +1682,7 @@ SPUDRESULT spudnet_websocket_send(
 	if (waited == WAIT_OBJECT_0 + 1) {
 		if (socket->send_error == ERROR_SUCCESS)
 			return SPUD_SUCCESS;
-		return spudnet_error_record(record, SPUDRESULT_SPUDNET_SEND_FAILED, SPUDNET_ERROR_SOURCE_WIN32, socket->send_error, NULL);
+		return spudnet_error_record(record, SPUDRESULT_SPUDNET_SEND_FAILED, SPUD_PLATFORM_ERROR_SOURCE_WIN32, socket->send_error, NULL);
 	}
 
 	// Aborted or out of time, with `data` still WinHTTP's to read. Part of
@@ -1851,7 +1851,7 @@ SPUDRESULT spudnet_websocket_recv(
 		if (socket->finished) {
 			result = spudnet_win_websocket_end_result(socket);
 			if (result == SPUDRESULT_SPUDNET_RECV_FAILED && socket->receive_error != ERROR_SUCCESS)
-				spudnet_error_record(&socket->errors[SPUDNET_ERROR_SIDE_RECEIVING], result, SPUDNET_ERROR_SOURCE_WIN32, socket->receive_error, NULL);
+				spudnet_error_record(&socket->errors[SPUDNET_ERROR_SIDE_RECEIVING], result, SPUD_PLATFORM_ERROR_SOURCE_WIN32, socket->receive_error, NULL);
 			break;
 		}
 
@@ -1904,7 +1904,7 @@ SPUDRESULT spudnet_websocket_close(
 		// and what WinHTTP delivers from now on is left where it lands.
 		DWORD started = WinHttpWebSocketShutdown(socket->websocket, code, reason_length > 0 ? (PVOID)reason : NULL, (DWORD)reason_length);
 		if (started != ERROR_SUCCESS) {
-			result = spudnet_error_record(&socket->errors[SPUDNET_ERROR_SIDE_SENDING], SPUDRESULT_SPUDNET_SEND_FAILED, SPUDNET_ERROR_SOURCE_WIN32, started, NULL);
+			result = spudnet_error_record(&socket->errors[SPUDNET_ERROR_SIDE_SENDING], SPUDRESULT_SPUDNET_SEND_FAILED, SPUD_PLATFORM_ERROR_SOURCE_WIN32, started, NULL);
 		} else {
 			socket->close_requested = true;
 			socket->finished        = true;

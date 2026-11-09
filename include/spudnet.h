@@ -266,40 +266,6 @@ extern "C" {
  * @{
  */
 
-/**
- * @brief Which of the platform's numberings spudnet_error::code is in.
- *
- * The number means nothing without it.
- */
-typedef enum SPUDNET_ERROR_SOURCE {
-	/** Nothing was recorded: no failure yet, or none that came from the
-	 * platform. */
-	SPUDNET_ERROR_SOURCE_NONE = 0,
-	/** GetLastError and WSAGetLastError values, ERROR_WINHTTP_* among them,
-	 * and the CERT_E_* / TRUST_E_* HRESULTs of a certificate chain SpudNet
-	 * had CryptoAPI check. FormatMessage reads all of them. */
-	SPUDNET_ERROR_SOURCE_WIN32 = 1,
-	/** errno, from BSD sockets or reported through NSPOSIXErrorDomain. */
-	SPUDNET_ERROR_SOURCE_ERRNO = 2,
-	/** getaddrinfo's EAI_* (Linux and Apple; Winsock's resolver reports
-	 * WSA* codes, which are SPUDNET_ERROR_SOURCE_WIN32). */
-	SPUDNET_ERROR_SOURCE_RESOLVER = 3,
-	/** A libcurl CURLcode. */
-	SPUDNET_ERROR_SOURCE_CURL = 4,
-	/** NSURLErrorDomain. */
-	SPUDNET_ERROR_SOURCE_NSURL = 5,
-	/** An OSStatus: NSOSStatusErrorDomain, which is how Security reports a
-	 * certificate it turned away. */
-	SPUDNET_ERROR_SOURCE_OSSTATUS = 6,
-	/** The stack had no complaint; the certificate matched none of the
-	 * spudnet_tls_desc's pins. spudnet_error::code is 0. (libcurl checks
-	 * pins itself and reports its own CURLcode for it instead.) */
-	SPUDNET_ERROR_SOURCE_TLS_PIN = 7,
-	/** An NSError from a domain not listed here; spudnet_error::text starts
-	 * with the domain's name. */
-	SPUDNET_ERROR_SOURCE_OTHER = 8,
-} SPUDNET_ERROR_SOURCE;
-
 /** @brief Size of spudnet_error::text in bytes, terminator included. */
 #define SPUDNET_ERROR_TEXT_SIZE 256
 
@@ -316,9 +282,9 @@ typedef enum SPUDNET_ERROR_SOURCE {
 typedef struct spudnet_error {
 	/** What the recorded call returned; SPUD_SUCCESS in an empty record. */
 	SPUDRESULT result;
-	/** Which numbering `code` is in; SPUDNET_ERROR_SOURCE_NONE in an empty
+	/** Which numbering `code` is in; SPUD_PLATFORM_ERROR_SOURCE_NONE in an empty
 	 * record. */
-	SPUDNET_ERROR_SOURCE source;
+	SPUD_PLATFORM_ERROR_SOURCE source;
 	/** The platform's number, as it gave it. */
 	int64_t code;
 	/** The stack's own wording, UTF-8, null-terminated and cut to fit, where

@@ -581,6 +581,32 @@ FACTORIES = {
 		why = "spudfile_listing_open failed on the working directory";
 	spudfile_instance_destroy(instance);
 	return listing;''',
+    'spudfile_library': r'''
+	/* A system library by name, there on every platform SpudFiles builds
+	 * for, searched for by the platform. */
+	spudfile_instance instance = make_file_instance();
+	if (!instance)
+		return NULL;
+	spudfile_library_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type = SPUD_STRUCT_TYPE_FILES_LIBRARY_DESC;
+#if SPUDLIB_PLATFORM_WIN32
+	desc.path = "kernel32.dll";
+#elif SPUDLIB_PLATFORM_APPLE
+	desc.path = "libSystem.B.dylib";
+#else
+	desc.path = "libc.so.6";
+#endif
+	desc.binding             = SPUDFILE_LIBRARY_BINDING_NOW;
+	desc.scope               = SPUDFILE_LIBRARY_SCOPE_LOCAL;
+	desc.dependencies        = SPUDFILE_LIBRARY_DEPENDENCIES_PLATFORM_ORDER;
+	spudfile_library library = NULL;
+	if (spudfile_library_open(instance, &desc, &library) == SPUD_SUCCESS)
+		spudfile_library_close(library);
+	else
+		why = "spudfile_library_open failed on the system's C library";
+	spudfile_instance_destroy(instance);
+	return library;''',
     # ---- SpudGPU
     'spudgpu_instance': r'''
 	spudgpu_instance instance = make_gpu_instance();

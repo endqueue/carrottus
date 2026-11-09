@@ -236,9 +236,10 @@ hasn't been compiled.
 
 Left:
 
-- The platform's own error number for a failure (as SpudNet's `_get_error`
-  keeps it): not built. Every failure is one of the results, and the rest
-  `SPUDRESULT_API_SPECIFIC_FAILURE`.
+- The platform's own error number for a failure: **built 2026-11-09** as
+  card S10's message callback, SpudFiles the first module to take it (see
+  "Opening a dynamic library" below). Every failure is still one of the
+  results, and the platform's number goes to the instance's callback.
 - Directory listing and the platform's known folders: only when a caller
   needs them.
 
@@ -386,6 +387,66 @@ links followed both ways with the links unchanged, and `/` onto itself
 refused when not root. Its first caller gives each Linux and macOS
 export's executable its template executable's permissions. Its caller's Linux and macOS exports, and the
 ctest that runs an exported game there, wait on it.
+
+## Opening a dynamic library (card S44, decided 2026-11-09 with you, the draft as written)
+
+Raised 2026-11-09: a caller loads a rebuilt shared library at run time and
+may reach the platform only through SpudLib, which had no loader.
+**Draft approved 2026-11-09 by you** (`spudfiles_library_draft.h`, its
+first version, Q1-Q6 a); it is the contract, and stays as the record:
+- In SpudFiles (Q1): `spudfile_library_open`, `_find` and `_close`, a
+  handle made from the instance and quarantined by it in Debug (X27).
+  `LoadLibraryExW`, `GetProcAddress` and `FreeLibrary`; `dlopen`, `dlsym`
+  and `dlclose`.
+- The loader's choices on the desc, none with a default (Q2): binding
+  (`NOW`, `LAZY`), scope (`LOCAL`, `GLOBAL`) and dependency search
+  (`PLATFORM_ORDER`, `LIBRARY_DIRECTORY_FIRST`, the last needing a fully
+  qualified path), each refused with
+  `SPUDRESULT_SPUDFILE_LIBRARY_OPTION_NOT_SUPPORTED` where the platform
+  has no such choice (`LAZY` and `GLOBAL` on Windows,
+  `LIBRARY_DIRECTORY_FIRST` on POSIX).
+- A bare name goes to the platform's own search (Q3).
+- A lookup returns `spudfile_library_function`, `void (*)(void)`; no data
+  symbols; a function the library itself exports, what is found in its
+  dependencies undefined (Q4).
+- On every platform, iOS included (Q5).
+- One code for a refused load, `SPUDRESULT_SPUDFILE_LIBRARY_NOT_LOADED`;
+  the loader's words through card S10's message callback, which SpudFiles
+  takes first: `spudfile_instance_desc` gains `message_callback` and
+  `message_user_data`, every SpudFiles platform failure is sent, and S10's
+  sources gain `DLERROR` (Q6). A listed break for every caller that fills
+  the instance desc.
+
+**Built 2026-11-09 on Windows 11** (the workspace's prompt for it,
+parts 2 and 3; ThinkPad P1 Gen 5, MSVC 14.51), with card S10's half it
+needs:
+- `spudcore.h`: S10's types as its draft writes them (`SPUD_PLATFORM_ERROR_SOURCE`
+  moved from SpudNet, every value kept, `VKRESULT` 9 and `DLERROR` 10 added;
+  `SPUD_MESSAGE_ORIGIN`, `SPUD_MESSAGE_SEVERITY`, `SPUD_MESSAGE` based as
+  `SPUD_STRUCT_TYPE_MESSAGE` 1, `SPUD_MESSAGE_CALLBACK`, `SPUD_PLATFORM_ERROR`)
+  and a "Messages" section with M1-M7. SpudNet's `spudnet_error` takes the
+  moved enum; its records stay.
+- SpudFiles' half of S10: `spudfile_instance_desc` gains `message_callback`
+  and `message_user_data`; every platform failure, on both backends, is
+  sent inside the failing call, naming the call and the object
+  (`src/files/spudfilesshared.h`'s `spudfile_report`, made per call by the
+  front end). The other modules keep their descs: S10 builds them later.
+- The loader: `spudfile_library_open`, `_find`, `_close`, results 1021-1024,
+  `SPUD_STRUCT_TYPE_FILES_LIBRARY_DESC` 5005, quarantined by its instance in
+  Debug, its factory in the misuse generator. Every check in the front end.
+- Tests in `spudfiles_test`; four test libraries from one source
+  (`tests/spudfiles_test_library.c`), built by the root `CMakeLists.txt`,
+  where spudlib's tests are (there is no `tests/CMakeLists.txt`).
+- Found: Windows' loader takes 250 characters where the file calls take
+  259 (ERROR_FILENAME_EXCED_RANGE from 251, both search modes); nothing is
+  added to the path, so the test loads 250 and sees 259 refused.
+- `SPUDLIB_VERSION_MINOR` 2.
+- Run: windows-d3d12 and windows-vulkan, Debug and Release, 15 ctests each passing, no warning; windows-d3d12-asan and windows-vulkan-asan (MSVC AddressSanitizer, Debug), 15 each passing; spud_misuse_tests ten times per backend in Debug, each run 280 calls with zeroes and 253 with a destroyed handle, 0 failures; spud_noalloc_tests passing in every configuration; spudnet_test 343 of 343 (D3D12, Debug).
+
+Left: the POSIX half (dlopen, dlsym, dlclose with dlerror's text, and
+errno's messages for every file call) is written, not compiled: compile and
+run it on Linux and the Mac, `-tsan` included, and the iOS simulator's
+framework test (Q5a).
 
 ## Breaks
 

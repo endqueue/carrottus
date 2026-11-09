@@ -112,7 +112,7 @@ SPUDRESULT spudnet_instance_create(
 	}
 	if (code != CURLE_OK) {
 		SPUD_DELETE(allocator, struct spudnet_instance_t, instance);
-		return spudnet_error_record(out_error, SPUDRESULT_SPUDNET_STARTUP_FAILED, SPUDNET_ERROR_SOURCE_CURL, code, curl_easy_strerror(code));
+		return spudnet_error_record(out_error, SPUDRESULT_SPUDNET_STARTUP_FAILED, SPUD_PLATFORM_ERROR_SOURCE_CURL, code, curl_easy_strerror(code));
 	}
 	*out_instance = instance;
 	return SPUD_SUCCESS;
@@ -174,7 +174,7 @@ static SPUDRESULT spudnet_curl_result(CURLcode code, SPUDRESULT otherwise) {
  * exactly went wrong, when it knows more than the code's general wording. */
 static SPUDRESULT spudnet_curl_failed(spudnet_error *record, CURLcode code, SPUDRESULT otherwise, const char *detail) {
 	const char *text = (detail && detail[0] != '\0') ? detail : curl_easy_strerror(code);
-	return spudnet_error_record(record, spudnet_curl_result(code, otherwise), SPUDNET_ERROR_SOURCE_CURL, code, text);
+	return spudnet_error_record(record, spudnet_curl_result(code, otherwise), SPUD_PLATFORM_ERROR_SOURCE_CURL, code, text);
 }
 
 /* The caller's headers as the list libcurl takes. A header with no name or

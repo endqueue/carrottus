@@ -6,6 +6,39 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* ---- Messages ---- */
+
+void spudfile_report_platform(const spudfile_report *report, SPUDRESULT result, SPUD_PLATFORM_ERROR_SOURCE source, int64_t code, const char *text) {
+	spud_message_platform(report->instance->message_callback, report->instance->message_user_data, &report->about, result, source, code, text);
+}
+
+/* The report of a call made on the instance; [subject] is the debug name a
+ * create's desc gives what it makes. */
+static spudfile_report spudfile_instance_report(spudfile_instance instance, const char *call, const char *subject) {
+	spudfile_report report;
+	report.instance                 = instance;
+	report.about.call               = call;
+	report.about.object             = instance;
+	report.about.object_debug_name  = NULL;
+	report.about.subject_debug_name = subject;
+	return report;
+}
+
+/* The report of a call made on [object], one of [instance]'s. */
+static spudfile_report spudfile_object_report(spudfile_instance instance, const char *call, const void *object, const char *name) {
+	spudfile_report report;
+	report.instance                 = instance;
+	report.about.call               = call;
+	report.about.object             = object;
+	report.about.object_debug_name  = name;
+	report.about.subject_debug_name = NULL;
+	return report;
+}
+
+static spudfile_report spudfile_file_report(spudfile_file file, const char *call) {
+	return spudfile_object_report(file->instance, call, file, file->head.debug_name);
+}
+
 /* ---- Instance ---- */
 
 SPUDRESULT spudfile_instance_create(
@@ -26,7 +59,9 @@ SPUDRESULT spudfile_instance_create(
 	spudfile_instance instance = SPUD_NEW_ZEROED(desc->allocator, struct spudfile_instance_t);
 	if (!instance)
 		return SPUDRESULT_OUT_OF_MEMORY;
-	instance->head.allocator = *desc->allocator;
+	instance->head.allocator     = *desc->allocator;
+	instance->message_callback  = desc->message_callback;
+	instance->message_user_data = desc->message_user_data;
 	SPUD_BIRTH(instance);
 	SPUD_QUARANTINE_INIT(&instance->quarantine, &instance->head.allocator);
 	*out_instance       = instance;
@@ -83,7 +118,8 @@ SPUDRESULT spudfile_file_open(
 	file->instance       = instance;
 	file->access         = desc->access;
 
-	const SPUDRESULT result = spudfile_backend_open(instance, desc, &file->native);
+	const spudfile_report report = spudfile_instance_report(instance, "spudfile_file_open", desc->debug_name);
+	const SPUDRESULT result      = spudfile_backend_open(&report, desc, &file->native);
 	if (result != SPUD_SUCCESS) {
 		const SPUD_ALLOCATOR allocator = file->head.allocator;
 		SPUD_DELETE(&allocator, struct spudfile_file_t, file);
@@ -102,11 +138,12 @@ void spudfile_file_close(spudfile_file file) {
 		return;
 	if (SPUD_STALE(file, "spudfile_file_close", "file"))
 		return;
+	const spudfile_report report = spudfile_file_report(file, "spudfile_file_close");
 	// Windows releases a closed handle's locks only when the system gets to
 	// it; let go first, so the next locker never waits on a closed file.
 	if (file->lock != SPUDFILE_LOCK_NONE)
-		spudfile_backend_unlock(file->native);
-	spudfile_backend_close(file->native);
+		spudfile_backend_unlock(&report, file->native);
+	spudfile_backend_close(&report, file->native);
 	SPUD_KILL(file);
 	const SPUD_ALLOCATOR allocator = file->head.allocator;
 	spud_string_free(&allocator, file->head.debug_name);
@@ -135,7 +172,8 @@ SPUDRESULT spudfile_file_read_at(
 		return SPUDRESULT_SPUDFILE_NOT_READABLE;
 	if (size == 0)
 		return SPUD_SUCCESS;
-	return spudfile_backend_read_at(file->native, offset, buffer, size, out_read);
+	const spudfile_report report = spudfile_file_report(file, "spudfile_file_read_at");
+	return spudfile_backend_read_at(&report, file->native, offset, buffer, size, out_read);
 }
 
 SPUDRESULT spudfile_file_write_at(
@@ -153,7 +191,8 @@ SPUDRESULT spudfile_file_write_at(
 		return SPUDRESULT_SPUDFILE_NOT_WRITABLE;
 	if (size == 0)
 		return SPUD_SUCCESS;
-	return spudfile_backend_write_at(file->native, offset, data, size);
+	const spudfile_report report = spudfile_file_report(file, "spudfile_file_write_at");
+	return spudfile_backend_write_at(&report, file->native, offset, data, size);
 }
 
 SPUDRESULT spudfile_file_get_size(
@@ -165,7 +204,8 @@ SPUDRESULT spudfile_file_get_size(
 		return SPUDRESULT_SPUDFILE_INVALID_FILE;
 	if (!out_size)
 		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
-	return spudfile_backend_get_size(file->native, out_size);
+	const spudfile_report report = spudfile_file_report(file, "spudfile_file_get_size");
+	return spudfile_backend_get_size(&report, file->native, out_size);
 }
 
 SPUDRESULT spudfile_file_set_size(
@@ -177,7 +217,8 @@ SPUDRESULT spudfile_file_set_size(
 		return SPUDRESULT_SPUDFILE_INVALID_FILE;
 	if (!spudfile_writable(file))
 		return SPUDRESULT_SPUDFILE_NOT_WRITABLE;
-	return spudfile_backend_set_size(file->native, size);
+	const spudfile_report report = spudfile_file_report(file, "spudfile_file_set_size");
+	return spudfile_backend_set_size(&report, file->native, size);
 }
 
 SPUDRESULT spudfile_file_flush(
@@ -191,7 +232,8 @@ SPUDRESULT spudfile_file_flush(
 		return SPUDRESULT_DESC_INVALID_PARAMETERS;
 	if (!spudfile_writable(file))
 		return SPUDRESULT_SPUDFILE_NOT_WRITABLE;
-	return spudfile_backend_flush(file->native, level);
+	const spudfile_report report = spudfile_file_report(file, "spudfile_file_flush");
+	return spudfile_backend_flush(&report, file->native, level);
 }
 
 /* ---- Mapping ---- */
@@ -212,8 +254,9 @@ SPUDRESULT spudfile_file_map(
 		return SPUDRESULT_ZERO_SIZE;
 	if (!spudfile_readable(file))
 		return SPUDRESULT_SPUDFILE_NOT_READABLE;
-	uint64_t file_size      = 0;
-	const SPUDRESULT sized  = spudfile_backend_get_size(file->native, &file_size);
+	const spudfile_report report = spudfile_file_report(file, "spudfile_file_map");
+	uint64_t file_size           = 0;
+	const SPUDRESULT sized       = spudfile_backend_get_size(&report, file->native, &file_size);
 	if (sized != SPUD_SUCCESS)
 		return sized;
 	if (offset > file_size || size > file_size - offset)
@@ -224,8 +267,9 @@ SPUDRESULT spudfile_file_map(
 		return SPUDRESULT_OUT_OF_MEMORY;
 	mapping->head.allocator = file->head.allocator;
 	SPUD_BIRTH_IN(mapping, &file->instance->quarantine);
+	mapping->instance       = file->instance;
 	uint64_t lead           = 0;
-	const SPUDRESULT result = spudfile_backend_map(file->native, offset, size, &mapping->base, &mapping->base_size, &lead);
+	const SPUDRESULT result = spudfile_backend_map(&report, file->native, offset, size, &mapping->base, &mapping->base_size, &lead);
 	if (result != SPUD_SUCCESS) {
 		const SPUD_ALLOCATOR allocator = mapping->head.allocator;
 		SPUD_DELETE(&allocator, struct spudfile_mapping_t, mapping);
@@ -252,7 +296,8 @@ void spudfile_mapping_release(spudfile_mapping mapping) {
 		return;
 	if (SPUD_STALE(mapping, "spudfile_mapping_release", "mapping"))
 		return;
-	spudfile_backend_unmap(mapping->base, mapping->base_size);
+	const spudfile_report report = spudfile_object_report(mapping->instance, "spudfile_mapping_release", mapping, mapping->head.debug_name);
+	spudfile_backend_unmap(&report, mapping->base, mapping->base_size);
 	SPUD_KILL(mapping);
 	const SPUD_ALLOCATOR allocator = mapping->head.allocator;
 	spud_string_free(&allocator, mapping->head.debug_name);
@@ -276,10 +321,11 @@ SPUDRESULT spudfile_path_get_info(
 	const SPUDRESULT base_result = spud_struct_out_check(&out_info->base, SPUD_STRUCT_TYPE_FILES_PATH_INFO);
 	if (base_result != SPUD_SUCCESS)
 		return base_result;
-	out_info->kind        = (SPUDFILE_PATH_KIND)0;
-	out_info->size        = 0;
-	out_info->modified_ns = 0;
-	return spudfile_backend_path_get_info(instance, path, out_info);
+	out_info->kind               = (SPUDFILE_PATH_KIND)0;
+	out_info->size               = 0;
+	out_info->modified_ns        = 0;
+	const spudfile_report report = spudfile_instance_report(instance, "spudfile_path_get_info", NULL);
+	return spudfile_backend_path_get_info(&report, path, out_info);
 }
 
 SPUDRESULT spudfile_path_replace(
@@ -297,7 +343,8 @@ SPUDRESULT spudfile_path_replace(
 		return SPUDRESULT_SPUDFILE_NULL_PATH;
 	if (level != SPUDFILE_FLUSH_LEVEL_NONE && level != SPUDFILE_FLUSH_LEVEL_DEVICE && level != SPUDFILE_FLUSH_LEVEL_MEDIA)
 		return SPUDRESULT_DESC_INVALID_PARAMETERS;
-	return spudfile_backend_path_replace(instance, source, target, level);
+	const spudfile_report report = spudfile_instance_report(instance, "spudfile_path_replace", NULL);
+	return spudfile_backend_path_replace(&report, source, target, level);
 }
 
 SPUDRESULT spudfile_path_remove(
@@ -309,7 +356,8 @@ SPUDRESULT spudfile_path_remove(
 		return SPUDRESULT_SPUDFILE_INVALID_INSTANCE;
 	if (!spudfile_path_given(path))
 		return SPUDRESULT_SPUDFILE_NULL_PATH;
-	return spudfile_backend_path_remove(instance, path);
+	const spudfile_report report = spudfile_instance_report(instance, "spudfile_path_remove", NULL);
+	return spudfile_backend_path_remove(&report, path);
 }
 
 SPUDRESULT spudfile_path_copy_mode(
@@ -324,7 +372,8 @@ SPUDRESULT spudfile_path_copy_mode(
 		return SPUDRESULT_SPUDFILE_NULL_PATH;
 	if (!spudfile_path_given(target))
 		return SPUDRESULT_SPUDFILE_NULL_PATH;
-	return spudfile_backend_path_copy_mode(instance, source, target);
+	const spudfile_report report = spudfile_instance_report(instance, "spudfile_path_copy_mode", NULL);
+	return spudfile_backend_path_copy_mode(&report, source, target);
 }
 
 SPUDRESULT spudfile_directory_create(
@@ -336,7 +385,8 @@ SPUDRESULT spudfile_directory_create(
 		return SPUDRESULT_SPUDFILE_INVALID_INSTANCE;
 	if (!spudfile_path_given(path))
 		return SPUDRESULT_SPUDFILE_NULL_PATH;
-	return spudfile_backend_directory_create(instance, path);
+	const spudfile_report report = spudfile_instance_report(instance, "spudfile_directory_create", NULL);
+	return spudfile_backend_directory_create(&report, path);
 }
 
 SPUDRESULT spudfile_directory_remove(
@@ -348,7 +398,8 @@ SPUDRESULT spudfile_directory_remove(
 		return SPUDRESULT_SPUDFILE_INVALID_INSTANCE;
 	if (!spudfile_path_given(path))
 		return SPUDRESULT_SPUDFILE_NULL_PATH;
-	return spudfile_backend_directory_remove(instance, path);
+	const spudfile_report report = spudfile_instance_report(instance, "spudfile_directory_remove", NULL);
+	return spudfile_backend_directory_remove(&report, path);
 }
 
 SPUDRESULT spudfile_directory_rename(
@@ -366,7 +417,8 @@ SPUDRESULT spudfile_directory_rename(
 		return SPUDRESULT_SPUDFILE_NULL_PATH;
 	if (level != SPUDFILE_FLUSH_LEVEL_NONE && level != SPUDFILE_FLUSH_LEVEL_DEVICE && level != SPUDFILE_FLUSH_LEVEL_MEDIA)
 		return SPUDRESULT_DESC_INVALID_PARAMETERS;
-	return spudfile_backend_directory_rename(instance, source, target, level);
+	const spudfile_report report = spudfile_instance_report(instance, "spudfile_directory_rename", NULL);
+	return spudfile_backend_directory_rename(&report, source, target, level);
 }
 
 /* ---- Listing a directory ---- */
@@ -397,7 +449,8 @@ SPUDRESULT spudfile_listing_open(
 	SPUD_BIRTH_IN(listing, &instance->quarantine);
 	listing->instance       = instance;
 
-	const SPUDRESULT result = spudfile_backend_listing_open(instance, desc->path, &listing->native);
+	const spudfile_report report = spudfile_instance_report(instance, "spudfile_listing_open", desc->debug_name);
+	const SPUDRESULT result      = spudfile_backend_listing_open(&report, desc->path, &listing->native);
 	if (result != SPUD_SUCCESS) {
 		const SPUD_ALLOCATOR allocator = listing->head.allocator;
 		SPUD_DELETE(&allocator, struct spudfile_listing_t, listing);
@@ -425,7 +478,8 @@ SPUDRESULT spudfile_listing_next(
 		return base_result;
 	if (listing->ended)
 		return SPUDRESULT_SPUDFILE_END_OF_LISTING;
-	const SPUDRESULT result = spudfile_backend_listing_next(listing->instance, listing->native, out_entry);
+	const spudfile_report report = spudfile_object_report(listing->instance, "spudfile_listing_next", listing, listing->head.debug_name);
+	const SPUDRESULT result      = spudfile_backend_listing_next(&report, listing->native, out_entry);
 	if (result == SPUDRESULT_SPUDFILE_END_OF_LISTING)
 		listing->ended = true;
 	return result;
@@ -436,7 +490,8 @@ void spudfile_listing_close(spudfile_listing listing) {
 		return;
 	if (SPUD_STALE(listing, "spudfile_listing_close", "listing"))
 		return;
-	spudfile_backend_listing_close(listing->instance, listing->native);
+	const spudfile_report report = spudfile_object_report(listing->instance, "spudfile_listing_close", listing, listing->head.debug_name);
+	spudfile_backend_listing_close(&report, listing->native);
 	SPUD_KILL(listing);
 	const SPUD_ALLOCATOR allocator = listing->head.allocator;
 	spud_string_free(&allocator, listing->head.debug_name);
@@ -499,7 +554,8 @@ SPUDRESULT spudfile_file_lock(
 		return SPUDRESULT_DESC_INVALID_PARAMETERS;
 	if (file->lock != SPUDFILE_LOCK_NONE)
 		return SPUDRESULT_SPUDFILE_ALREADY_LOCKED;
-	const SPUDRESULT result = spudfile_backend_lock(file->native, lock, wait);
+	const spudfile_report report = spudfile_file_report(file, "spudfile_file_lock");
+	const SPUDRESULT result      = spudfile_backend_lock(&report, file->native, lock, wait);
 	if (result == SPUD_SUCCESS)
 		file->lock = (uint8_t)lock;
 	return result;
@@ -512,8 +568,98 @@ SPUDRESULT spudfile_file_unlock(spudfile_file file) {
 		return SPUDRESULT_SPUDFILE_INVALID_FILE;
 	if (file->lock == SPUDFILE_LOCK_NONE)
 		return SPUDRESULT_SPUDFILE_NOT_LOCKED;
-	const SPUDRESULT result = spudfile_backend_unlock(file->native);
+	const spudfile_report report = spudfile_file_report(file, "spudfile_file_unlock");
+	const SPUDRESULT result      = spudfile_backend_unlock(&report, file->native);
 	if (result == SPUD_SUCCESS)
 		file->lock = SPUDFILE_LOCK_NONE;
 	return result;
+}
+
+/* ---- Dynamic libraries ---- */
+
+SPUDRESULT spudfile_library_open(
+    spudfile_instance instance,
+    const spudfile_library_desc *desc,
+    spudfile_library *out_library) {
+	if (!instance)
+		return SPUDRESULT_SPUDFILE_INVALID_INSTANCE;
+	if (SPUD_STALE(instance, "spudfile_library_open", "instance"))
+		return SPUDRESULT_SPUDFILE_INVALID_INSTANCE;
+	if (!desc)
+		return SPUDRESULT_NULL_DESC;
+	const SPUDRESULT base_result = spud_struct_check(&desc->base, SPUD_STRUCT_TYPE_FILES_LIBRARY_DESC);
+	if (base_result != SPUD_SUCCESS)
+		return base_result;
+	if (!out_library)
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+	*out_library = NULL;
+	if (!spudfile_path_given(desc->path))
+		return SPUDRESULT_SPUDFILE_NULL_PATH;
+	if (desc->binding != SPUDFILE_LIBRARY_BINDING_NOW && desc->binding != SPUDFILE_LIBRARY_BINDING_LAZY)
+		return SPUDRESULT_DESC_INVALID_PARAMETERS;
+	if (desc->scope != SPUDFILE_LIBRARY_SCOPE_LOCAL && desc->scope != SPUDFILE_LIBRARY_SCOPE_GLOBAL)
+		return SPUDRESULT_DESC_INVALID_PARAMETERS;
+	if (desc->dependencies != SPUDFILE_LIBRARY_DEPENDENCIES_PLATFORM_ORDER && desc->dependencies != SPUDFILE_LIBRARY_DEPENDENCIES_LIBRARY_DIRECTORY_FIRST)
+		return SPUDRESULT_DESC_INVALID_PARAMETERS;
+	if (!spudfile_backend_library_binding_supported(desc->binding))
+		return SPUDRESULT_SPUDFILE_LIBRARY_OPTION_NOT_SUPPORTED;
+	if (!spudfile_backend_library_scope_supported(desc->scope))
+		return SPUDRESULT_SPUDFILE_LIBRARY_OPTION_NOT_SUPPORTED;
+	if (!spudfile_backend_library_dependencies_supported(desc->dependencies))
+		return SPUDRESULT_SPUDFILE_LIBRARY_OPTION_NOT_SUPPORTED;
+	if (desc->dependencies == SPUDFILE_LIBRARY_DEPENDENCIES_LIBRARY_DIRECTORY_FIRST && !spudfile_backend_path_fully_qualified(desc->path))
+		return SPUDRESULT_DESC_INVALID_PARAMETERS;
+
+	spudfile_library library = SPUD_NEW_ZEROED(&instance->head.allocator, struct spudfile_library_t);
+	if (!library)
+		return SPUDRESULT_OUT_OF_MEMORY;
+	library->head.allocator = instance->head.allocator;
+	SPUD_BIRTH_IN(library, &instance->quarantine);
+	library->instance       = instance;
+
+	const spudfile_report report = spudfile_instance_report(instance, "spudfile_library_open", desc->debug_name);
+	const SPUDRESULT result      = spudfile_backend_library_open(&report, desc, &library->native);
+	if (result != SPUD_SUCCESS) {
+		const SPUD_ALLOCATOR allocator = library->head.allocator;
+		SPUD_DELETE(&allocator, struct spudfile_library_t, library);
+		return result;
+	}
+	// The last step: a failed copy closes the library, leaving it unloaded.
+	if (spud_debug_name_set(library, desc->debug_name) != SPUD_SUCCESS) {
+		spudfile_library_close(library);
+		return SPUDRESULT_OUT_OF_MEMORY;
+	}
+	*out_library = library;
+	return SPUD_SUCCESS;
+}
+
+SPUDRESULT spudfile_library_find(
+    spudfile_library library,
+    const char *name,
+    spudfile_library_function *out_function) {
+	if (!library)
+		return SPUDRESULT_SPUDFILE_INVALID_LIBRARY;
+	if (SPUD_STALE(library, "spudfile_library_find", "library"))
+		return SPUDRESULT_SPUDFILE_INVALID_LIBRARY;
+	// name null: stops at !name, name[0] is never read.
+	if (!name || !name[0])
+		return SPUDRESULT_NULL_DESC;
+	if (!out_function)
+		return SPUDRESULT_NULL_OUTPUT_PARAMETER;
+	*out_function                = NULL;
+	const spudfile_report report = spudfile_object_report(library->instance, "spudfile_library_find", library, library->head.debug_name);
+	return spudfile_backend_library_find(&report, library->native, name, out_function);
+}
+
+void spudfile_library_close(spudfile_library library) {
+	if (!library)
+		return;
+	if (SPUD_STALE(library, "spudfile_library_close", "library"))
+		return;
+	const spudfile_report report = spudfile_object_report(library->instance, "spudfile_library_close", library, library->head.debug_name);
+	spudfile_backend_library_close(&report, library->native);
+	SPUD_KILL(library);
+	const SPUD_ALLOCATOR allocator = library->head.allocator;
+	spud_string_free(&allocator, library->head.debug_name);
+	SPUD_RETIRE(SPUD_QUARANTINE_OF(library), &allocator, struct spudfile_library_t, library);
 }

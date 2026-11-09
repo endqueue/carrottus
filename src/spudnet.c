@@ -59,7 +59,7 @@ void spudnet_error_clear(spudnet_error *error) {
 SPUDRESULT spudnet_error_record(
     spudnet_error *error,
     SPUDRESULT result,
-    SPUDNET_ERROR_SOURCE source,
+    SPUD_PLATFORM_ERROR_SOURCE source,
     int64_t code,
     const char *text) {
 	if (!error)
@@ -97,11 +97,11 @@ void spudnet_error_get(const spudnet_error *record, spudnet_error *out_error) {
  * others return an EAI_* one, of which EAI_SYSTEM means "see errno". */
 static SPUDRESULT spudnet_resolver_failed(spudnet_error *out_error, int code) {
 #if SPUDLIB_PLATFORM_WIN32
-	return spudnet_error_record(out_error, SPUDRESULT_SPUDNET_RESOLVE_FAILED, SPUDNET_ERROR_SOURCE_WIN32, code, NULL);
+	return spudnet_error_record(out_error, SPUDRESULT_SPUDNET_RESOLVE_FAILED, SPUD_PLATFORM_ERROR_SOURCE_WIN32, code, NULL);
 #else
 	if (code == EAI_SYSTEM)
-		return spudnet_error_record(out_error, SPUDRESULT_SPUDNET_RESOLVE_FAILED, SPUDNET_ERROR_SOURCE_ERRNO, errno, NULL);
-	return spudnet_error_record(out_error, SPUDRESULT_SPUDNET_RESOLVE_FAILED, SPUDNET_ERROR_SOURCE_RESOLVER, code, NULL);
+		return spudnet_error_record(out_error, SPUDRESULT_SPUDNET_RESOLVE_FAILED, SPUD_PLATFORM_ERROR_SOURCE_ERRNO, errno, NULL);
+	return spudnet_error_record(out_error, SPUDRESULT_SPUDNET_RESOLVE_FAILED, SPUD_PLATFORM_ERROR_SOURCE_RESOLVER, code, NULL);
 #endif
 }
 
@@ -125,9 +125,9 @@ SPUDRESULT spudnet_get_local_ipv4_addresses(
 	char hostname[256];
 	if (gethostname(hostname, sizeof(hostname)) != 0) {
 #if SPUDLIB_PLATFORM_WIN32
-		return spudnet_error_record(out_error, SPUDRESULT_SPUDNET_RESOLVE_FAILED, SPUDNET_ERROR_SOURCE_WIN32, WSAGetLastError(), NULL);
+		return spudnet_error_record(out_error, SPUDRESULT_SPUDNET_RESOLVE_FAILED, SPUD_PLATFORM_ERROR_SOURCE_WIN32, WSAGetLastError(), NULL);
 #else
-		return spudnet_error_record(out_error, SPUDRESULT_SPUDNET_RESOLVE_FAILED, SPUDNET_ERROR_SOURCE_ERRNO, errno, NULL);
+		return spudnet_error_record(out_error, SPUDRESULT_SPUDNET_RESOLVE_FAILED, SPUD_PLATFORM_ERROR_SOURCE_ERRNO, errno, NULL);
 #endif
 	}
 

@@ -80,7 +80,7 @@ extern "C" {
 /** @brief The major version of these headers. */
 #define SPUDLIB_VERSION_MAJOR 0
 /** @brief The minor version of these headers. */
-#define SPUDLIB_VERSION_MINOR 1
+#define SPUDLIB_VERSION_MINOR 2
 /** @brief The patch version of these headers. */
 #define SPUDLIB_VERSION_PATCH 0
 
@@ -143,7 +143,7 @@ uint32_t spud_get_version(void);
  * spudresult_str().
  *
  * The values are grouped by module: 1-16 are general, 199-369 are SpudGPU
- * (`SPUDRESULT_GPU_*`), 1001-1020 SpudFiles (`SPUDRESULT_SPUDFILE_*`), 2027-2028
+ * (`SPUDRESULT_GPU_*`), 1001-1024 SpudFiles (`SPUDRESULT_SPUDFILE_*`), 2027-2028
  * SpudMemory (`SPUDRESULT_SPUDMEM_*`), 3001-3033 SpudNet (`SPUDRESULT_SPUDNET_*`),
  * 4001-4015 SpudAudio (`SPUDRESULT_SAUD_*`) and 5001-5005 SpudInput
  * (`SPUDRESULT_SPUDINPUT_*`). A value is never reused for
@@ -490,6 +490,10 @@ typedef enum SPUDRESULT {
 	SPUDRESULT_SPUDFILE_ALREADY_LOCKED = 1018, /**< The file holds a lock taken through it already. */
 	SPUDRESULT_SPUDFILE_NOT_LOCKED = 1019, /**< The file holds no lock taken through it. */
 	SPUDRESULT_SPUDFILE_NOT_EMPTY = 1020, /**< A directory to remove holds entries. */
+	SPUDRESULT_SPUDFILE_INVALID_LIBRARY = 1021, /**< A library argument is NULL. */
+	SPUDRESULT_SPUDFILE_LIBRARY_NOT_LOADED = 1022, /**< The platform's loader didn't load the library; the instance's message callback has its words. */
+	SPUDRESULT_SPUDFILE_SYMBOL_NOT_FOUND = 1023, /**< The library exports no function of that name. */
+	SPUDRESULT_SPUDFILE_LIBRARY_OPTION_NOT_SUPPORTED = 1024, /**< The platform's loader has no such choice. */
 
 	/* 2001-2003 and 2026 (ZERO_CAPACITY, INSUFFICIENT_CAPACITY,
 	 * PLAT_COMMIT_FAIL, INVALID_ARENA) went with SpudMemory's arena and are
@@ -603,13 +607,17 @@ typedef enum SPUDRESULT {
 /**
  * @brief Which struct a based struct is.
  *
- * Numbered in blocks per module, as SPUDRESULT is: 1000+ SpudGPU, 2000+
+ * Numbered in blocks per module, as SPUDRESULT is: 1-999 SpudCore, 1000+ SpudGPU, 2000+
  * SpudAudio, 3000+ SpudNet, 4000+ SpudInput, 5000+ SpudFiles. A value is
  * never renumbered or reused, a retired struct's included.
  */
 typedef enum SPUD_STRUCT_TYPE {
 	/** Never valid: a struct left zeroed is refused, not misread. */
 	SPUD_STRUCT_TYPE_UNKNOWN  = 0,
+
+	/* SpudCore: 1-999. */
+	/** SPUD_MESSAGE (SPUD_STRUCT_BASE). */
+	SPUD_STRUCT_TYPE_MESSAGE                        = 1,
 
 	/* SpudGPU. Retired, never reused: 1000 (SPUDGPU_DEVICE_PROPERTIES),
 	 * 1017 (spudgpu_bindless_capabilities), 1020
@@ -728,6 +736,8 @@ typedef enum SPUD_STRUCT_TYPE {
 	SPUD_STRUCT_TYPE_FILES_LISTING_DESC             = 5003,
 	/** SPUDFILE_LISTING_ENTRY (SPUD_STRUCT_BASE_OUT). */
 	SPUD_STRUCT_TYPE_FILES_LISTING_ENTRY            = 5004,
+	/** spudfile_library_desc (SPUD_STRUCT_BASE). */
+	SPUD_STRUCT_TYPE_FILES_LIBRARY_DESC             = 5005,
 
 	/** Keeps the enum 32 bits wide on every compiler. Never a valid type. */
 	SPUD_STRUCT_TYPE_MAX_ENUM = 0x7FFFFFFF
@@ -754,6 +764,189 @@ typedef struct SPUD_STRUCT_BASE_OUT {
 	/** The next struct in the chain, or NULL. */
 	struct SPUD_STRUCT_BASE_OUT *next;
 } SPUD_STRUCT_BASE_OUT;
+
+/** @} */
+
+/**
+ * @defgroup spud_messages Messages
+ * @brief What the platform said when it refused a call, delivered to the
+ * caller's callback.
+ *
+ * A SPUDRESULT is the same on every platform; the platform's own number
+ * behind a failure (a GetLastError value, an errno, a VkResult, an
+ * HRESULT, an OSStatus, a loader's words) is not. It reaches the caller as
+ * a message, through a callback the caller gives the module's instance.
+ * The rules, for every module whose instance desc takes one (SpudFiles'
+ * spudfile_instance_desc so far):
+ *
+ * - M1. A module's instance desc takes one message callback and its user
+ *   data. NULL means no messages. Every object made from the instance
+ *   reports to it.
+ * - M2. Every failure a platform call reports is a message
+ *   (SPUD_MESSAGE_ORIGIN_PLATFORM, severity ERROR), whatever SPUDRESULT the
+ *   call returns for it: SPUDRESULT_API_SPECIFIC_FAILURE, an out-of-memory
+ *   result, and equally a code of its own (SPUDRESULT_SPUDFILE_NOT_FOUND,
+ *   from ENOENT or ENOTDIR, which the message tells apart). A `void` call
+ *   sends the failure the platform reported to it. None is judged too
+ *   routine to send: the caller filters on `result` in its handler.
+ *   Nothing is sent for an answer the platform gives as an outcome
+ *   (would-block, the end of a listing, a wait's own timeout, a peer's
+ *   orderly close), for a time limit SpudLib keeps itself, or for a refused
+ *   argument or another check of SpudLib's own. At every validation level,
+ *   off included.
+ * - M3. The callback is called inside the call that failed, on the thread
+ *   that made it, before the call returns. Calls on different objects may
+ *   run at the same time (@ref spud_threads "Threads"), so the callback may
+ *   be called from several of the caller's threads at once, and must allow
+ *   it. SpudLib never calls it from a thread of its own or a platform's.
+ *
+ * Thread: a message callback is called on the thread of the call that
+ * failed, so on several of the caller's threads at once where the caller
+ * makes calls on different objects at once (M3).
+ *
+ * - M4. The callback makes no call into the module whose call is reporting
+ *   (a SpudFiles message's handler makes no SpudFiles call); another
+ *   module is fine. It returns normally: no C++ exception, Swift or C#
+ *   error, or longjmp unwinds through SpudLib. SpudLib holds no lock of its
+ *   own while calling it.
+ * - M5. Everything the message points to is valid only during the
+ *   callback: the caller copies what it keeps. Sending a message allocates
+ *   nothing.
+ * - M6. A call with no instance to report to takes a
+ *   SPUD_PLATFORM_ERROR *out_error instead, which may be NULL: the number
+ *   alone.
+ * - M7. Messages go to whoever created the instance. A caller that is only
+ *   handed an object made from it doesn't see them: the failing call's
+ *   SPUDRESULT is what it has.
+ * @{
+ */
+
+/** @brief Which of the platform's numberings a code is in. The number means
+ * nothing without it. */
+typedef enum SPUD_PLATFORM_ERROR_SOURCE {
+	/** No platform code: the message isn't a platform failure, or nothing
+	 * was recorded. */
+	SPUD_PLATFORM_ERROR_SOURCE_NONE = 0,
+	/** GetLastError and WSAGetLastError values, ERROR_WINHTTP_* among them,
+	 * and HRESULTs (D3D12, DXGI, WASAPI, GameInput, CryptoAPI's CERT_E_* and
+	 * TRUST_E_*). FormatMessage reads all of them. */
+	SPUD_PLATFORM_ERROR_SOURCE_WIN32 = 1,
+	/** errno, from POSIX calls, ALSA's negative returns (negated) and evdev,
+	 * or reported through NSPOSIXErrorDomain. */
+	SPUD_PLATFORM_ERROR_SOURCE_ERRNO = 2,
+	/** getaddrinfo's EAI_* (Linux and Apple; Winsock's resolver reports
+	 * WSA* codes, which are SPUD_PLATFORM_ERROR_SOURCE_WIN32). */
+	SPUD_PLATFORM_ERROR_SOURCE_RESOLVER = 3,
+	/** A libcurl CURLcode. */
+	SPUD_PLATFORM_ERROR_SOURCE_CURL = 4,
+	/** NSURLErrorDomain. */
+	SPUD_PLATFORM_ERROR_SOURCE_NSURL = 5,
+	/** An OSStatus: Core Audio, Security, NSOSStatusErrorDomain. */
+	SPUD_PLATFORM_ERROR_SOURCE_OSSTATUS = 6,
+	/** The network stack had no complaint; the certificate matched none of
+	 * the pins it was given. The code is 0. */
+	SPUD_PLATFORM_ERROR_SOURCE_TLS_PIN = 7,
+	/** An NSError from a domain not listed here; the text starts with the
+	 * domain's name. */
+	SPUD_PLATFORM_ERROR_SOURCE_OTHER = 8,
+	/** A VkResult. */
+	SPUD_PLATFORM_ERROR_SOURCE_VKRESULT = 9,
+	/** A dynamic loader's message with no number (dlerror on Linux and
+	 * Apple): the code is 0 and the text is the loader's. */
+	SPUD_PLATFORM_ERROR_SOURCE_DLERROR = 10,
+} SPUD_PLATFORM_ERROR_SOURCE;
+
+/** @brief Who a message comes from. */
+typedef enum SPUD_MESSAGE_ORIGIN {
+	/** The platform refused a call: `platform_source` and `platform_code`
+	 * say how. */
+	SPUD_MESSAGE_ORIGIN_PLATFORM = 1,
+	/** The module's own check layer. */
+	SPUD_MESSAGE_ORIGIN_CHECK = 2,
+	/** The platform's validation layer: D3D12's debug layer, Vulkan's
+	 * validation layers, Metal's API validation. */
+	SPUD_MESSAGE_ORIGIN_NATIVE_VALIDATION = 3,
+	/** GPU-based validation. */
+	SPUD_MESSAGE_ORIGIN_GPU_VALIDATION = 4,
+} SPUD_MESSAGE_ORIGIN;
+
+/** @brief How bad a message is: every level a platform's own layers report,
+ * so none is merged into another. */
+typedef enum SPUD_MESSAGE_SEVERITY {
+	/** Vulkan's VERBOSE, D3D12's MESSAGE. */
+	SPUD_MESSAGE_SEVERITY_VERBOSE = 1,
+	/** Information. */
+	SPUD_MESSAGE_SEVERITY_INFO = 2,
+	/** A warning. */
+	SPUD_MESSAGE_SEVERITY_WARNING = 3,
+	/** An error; every platform failure. */
+	SPUD_MESSAGE_SEVERITY_ERROR = 4,
+	/** D3D12's CORRUPTION: the layer judges the device's state corrupt. */
+	SPUD_MESSAGE_SEVERITY_CORRUPTION = 5,
+} SPUD_MESSAGE_SEVERITY;
+
+/** @brief One message, handed to the callback; read only during it (M5).
+ * Set by SpudLib: a newer SpudLib may chain more onto `base.next`, which a
+ * caller that doesn't know the type skips. */
+typedef struct SPUD_MESSAGE {
+	/** `type` is SPUD_STRUCT_TYPE_MESSAGE; `next` is NULL, or a struct a
+	 * later version chains. Set by SpudLib. See SPUD_STRUCT_BASE. */
+	SPUD_STRUCT_BASE base;
+	/** Who the message comes from. */
+	SPUD_MESSAGE_ORIGIN origin;
+	/** How bad it is; ERROR for every platform failure. */
+	SPUD_MESSAGE_SEVERITY severity;
+	/** For a platform failure, which numbering `platform_code` is in;
+	 * SPUD_PLATFORM_ERROR_SOURCE_NONE otherwise. */
+	SPUD_PLATFORM_ERROR_SOURCE platform_source;
+	/** For a platform failure, what the call returns for it (M2), or for a
+	 * `void` call what it would have returned; SPUD_SUCCESS for the other
+	 * origins. */
+	SPUDRESULT result;
+	/** The check's or layer's message id; 0 for a platform failure. */
+	uint32_t id;
+	/** For a failure sent from an object's pending slot, how many more the
+	 * slot overwrote since the last one sent; 0 otherwise. */
+	uint32_t dropped;
+	/** The platform's number, as it gave it; 0 otherwise. */
+	int64_t platform_code;
+	/** The call that was running, a literal ("spudfile_file_open"). */
+	const char *call;
+	/** The handle the call was made on (for a create, the handle it creates
+	 * from), or NULL for an instance create. */
+	const void *object;
+	/** `object`'s debug name, or NULL. */
+	const char *object_debug_name;
+	/** For a create, the debug name its desc gave the object it was making,
+	 * or NULL; NULL for other calls. */
+	const char *subject_debug_name;
+	/** The wording, UTF-8, null-terminated, whole. For a platform failure:
+	 * the platform's own where it has some (a loader's dlerror text, an
+	 * NSError's description); else, for a code no system function reads,
+	 * the code's name, a literal; else empty (errno and Win32 codes, which
+	 * strerror and FormatMessage read). For the other origins, the layer's
+	 * or check's message. In the system's language; not for parsing. Never
+	 * NULL. */
+	const char *text;
+} SPUD_MESSAGE;
+
+/** @brief A caller's handler for messages (M1-M7).
+ * @param[in] message   The message, valid only during the call.
+ * @param[in] user_data The instance desc's `message_user_data`. */
+typedef void (*SPUD_MESSAGE_CALLBACK)(const SPUD_MESSAGE *message, void *user_data);
+
+/** @brief The platform's error behind a failure, for a call with no
+ * instance to send a message to (M6). */
+/* Frozen: filled in per call, like every error struct. It never changes; a new need gets a new type. */
+typedef struct SPUD_PLATFORM_ERROR {
+	/** What the call returned; SPUD_SUCCESS if it didn't fail on the
+	 * platform. */
+	SPUDRESULT result;
+	/** Which numbering `code` is in; NONE when nothing is recorded. */
+	SPUD_PLATFORM_ERROR_SOURCE source;
+	/** The platform's number, as it gave it. */
+	int64_t code;
+} SPUD_PLATFORM_ERROR;
 
 /** @} */
 

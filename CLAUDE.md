@@ -1385,7 +1385,12 @@ evening on the Mac (Known gaps below, `SPUDGPU_DEVICE_TODO.md`).
   `src/files/spudfilesshared.h`: one POSIX file for Linux and Apple
   (`F_FULLFSYNC` where it exists) and Windows. Built and run on macOS,
   and on Windows 11 (MSVC, `windows-d3d12`, Debug, 2026-10-22); the Linux
-  build hasn't been compiled. The platform's own error number isn't kept yet.
+  build hasn't been compiled. The platform's own error number goes to the
+  instance's message callback since 2026-11-09 (card S10's rules M1-M7 in
+  `spudcore.h`, SpudFiles the first module built with them), and a
+  dynamic library is opened, searched and closed through SpudFiles (card
+  S44, `spudfile_library_*`; `SPUDFILES_TODO.md`), built and run on
+  Windows; the POSIX halves of both written, not compiled.
   Listing a directory and an advisory lock on an open file (card S39,
   `spudfiles_list_lock_draft.h`) were built on 2026-11-06 on Windows 11:
   `spudfile_listing_open`/`_next`/`_close` (no "." or "..", a reparse point

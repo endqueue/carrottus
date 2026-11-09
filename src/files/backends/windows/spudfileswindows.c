@@ -92,6 +92,14 @@ static void spudfile_windows_free_wide(spudfile_instance instance, wchar_t *wide
 		SPUD_DELETE_ARRAY(&instance->head.allocator, wchar_t, wide, (size_t)count);
 }
 
+/* Sends GetLastError's [error] for [report]'s call, and returns [result]
+ * (spudcore.h, "Messages", M2). Win32's numbers carry no text of their
+ * own: FormatMessage reads them. */
+static SPUDRESULT spudfile_windows_fail(const spudfile_report *report, DWORD error, SPUDRESULT result) {
+	spudfile_report_platform(report, result, SPUD_PLATFORM_ERROR_SOURCE_WIN32, (int64_t)error, NULL);
+	return result;
+}
+
 static bool spudfile_windows_is_directory(const wchar_t *path) {
 	const DWORD attributes = GetFileAttributesW(path);
 	return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY);
@@ -126,7 +134,12 @@ static SPUDRESULT spudfile_windows_result(DWORD error) {
 	}
 }
 
-SPUDRESULT spudfile_backend_open(spudfile_instance instance, const spudfile_open_desc *desc, intptr_t *out_native) {
+/* [error]'s result, sent. */
+static SPUDRESULT spudfile_windows_failed(const spudfile_report *report, DWORD error) {
+	return spudfile_windows_fail(report, error, spudfile_windows_result(error));
+}
+
+SPUDRESULT spudfile_backend_open(const spudfile_report *report, const spudfile_open_desc *desc, intptr_t *out_native) {
 	DWORD access = 0;
 	if (desc->access == SPUDFILE_ACCESS_READ || desc->access == SPUDFILE_ACCESS_READ_WRITE)
 		access |= GENERIC_READ;
@@ -157,9 +170,10 @@ SPUDRESULT spudfile_backend_open(spudfile_instance instance, const spudfile_open
 	if (desc->share & SPUDFILE_SHARE_DELETE)
 		share |= FILE_SHARE_DELETE;
 
-	wchar_t *path = NULL;
-	int count     = 0;
-	SPUDRESULT result = spudfile_windows_wide(instance, desc->path, &path, &count);
+	spudfile_instance instance = report->instance;
+	wchar_t *path              = NULL;
+	int count                  = 0;
+	SPUDRESULT result          = spudfile_windows_wide(instance, desc->path, &path, &count);
 	if (result != SPUD_SUCCESS)
 		return result;
 	HANDLE handle = CreateFileW(path, access, share, NULL, disposition, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -168,24 +182,28 @@ SPUDRESULT spudfile_backend_open(spudfile_instance instance, const spudfile_open
 		// A directory is refused as access denied.
 		result = error == ERROR_ACCESS_DENIED && spudfile_windows_is_directory(path) ? SPUDRESULT_SPUDFILE_NOT_A_FILE : spudfile_windows_result(error);
 		spudfile_windows_free_wide(instance, path, count);
-		return result;
+		return spudfile_windows_fail(report, error, result);
 	}
 	spudfile_windows_free_wide(instance, path, count);
 	// A device (CON, a pipe) opens too; a file is what is wanted.
 	if (GetFileType(handle) != FILE_TYPE_DISK) {
-		CloseHandle(handle);
+		if (!CloseHandle(handle))
+			spudfile_windows_fail(report, GetLastError(), SPUDRESULT_SPUDFILE_NOT_A_FILE);
 		return SPUDRESULT_SPUDFILE_NOT_A_FILE;
 	}
 	*out_native = (intptr_t)handle;
 	return SPUD_SUCCESS;
 }
 
-void spudfile_backend_close(intptr_t native) { CloseHandle((HANDLE)native); }
+void spudfile_backend_close(const spudfile_report *report, intptr_t native) {
+	if (!CloseHandle((HANDLE)native))
+		spudfile_windows_fail(report, GetLastError(), SPUDRESULT_API_SPECIFIC_FAILURE);
+}
 
 /* ReadFile and WriteFile take a DWORD count. */
 static const uint64_t SPUDFILE_WINDOWS_CHUNK = 1u << 30;
 
-SPUDRESULT spudfile_backend_read_at(intptr_t native, uint64_t offset, void *buffer, uint64_t size, uint64_t *out_read) {
+SPUDRESULT spudfile_backend_read_at(const spudfile_report *report, intptr_t native, uint64_t offset, void *buffer, uint64_t size, uint64_t *out_read) {
 	uint8_t *dst   = (uint8_t *)buffer;
 	uint64_t total = 0;
 	while (total < size) {
@@ -198,10 +216,11 @@ SPUDRESULT spudfile_backend_read_at(intptr_t native, uint64_t offset, void *buff
 		position.OffsetHigh = (DWORD)(at >> 32);
 		DWORD n             = 0;
 		if (!ReadFile((HANDLE)native, dst + total, chunk, &n, &position)) {
-			if (GetLastError() == ERROR_HANDLE_EOF)
-				break; // at or past the end
+			const DWORD error = GetLastError();
+			if (error == ERROR_HANDLE_EOF)
+				break; // at or past the end: an answer, not a failure
 			*out_read = total;
-			return SPUDRESULT_API_SPECIFIC_FAILURE;
+			return spudfile_windows_fail(report, error, SPUDRESULT_API_SPECIFIC_FAILURE);
 		}
 		if (n == 0)
 			break;
@@ -211,7 +230,7 @@ SPUDRESULT spudfile_backend_read_at(intptr_t native, uint64_t offset, void *buff
 	return SPUD_SUCCESS;
 }
 
-SPUDRESULT spudfile_backend_write_at(intptr_t native, uint64_t offset, const void *data, uint64_t size) {
+SPUDRESULT spudfile_backend_write_at(const spudfile_report *report, intptr_t native, uint64_t offset, const void *data, uint64_t size) {
 	const uint8_t *src = (const uint8_t *)data;
 	uint64_t total     = 0;
 	while (total < size) {
@@ -223,36 +242,41 @@ SPUDRESULT spudfile_backend_write_at(intptr_t native, uint64_t offset, const voi
 		position.Offset     = (DWORD)(at & 0xFFFFFFFFu);
 		position.OffsetHigh = (DWORD)(at >> 32);
 		DWORD n             = 0;
-		if (!WriteFile((HANDLE)native, src + total, chunk, &n, &position) || n == 0)
-			return SPUDRESULT_API_SPECIFIC_FAILURE;
+		if (!WriteFile((HANDLE)native, src + total, chunk, &n, &position))
+			return spudfile_windows_fail(report, GetLastError(), SPUDRESULT_API_SPECIFIC_FAILURE);
+		if (n == 0)
+			return SPUDRESULT_API_SPECIFIC_FAILURE; // written nothing, and said nothing
+
 		total += n;
 	}
 	return SPUD_SUCCESS;
 }
 
-SPUDRESULT spudfile_backend_get_size(intptr_t native, uint64_t *out_size) {
+SPUDRESULT spudfile_backend_get_size(const spudfile_report *report, intptr_t native, uint64_t *out_size) {
 	LARGE_INTEGER size;
 	if (!GetFileSizeEx((HANDLE)native, &size))
-		return SPUDRESULT_API_SPECIFIC_FAILURE;
+		return spudfile_windows_fail(report, GetLastError(), SPUDRESULT_API_SPECIFIC_FAILURE);
 	*out_size = (uint64_t)size.QuadPart;
 	return SPUD_SUCCESS;
 }
 
-SPUDRESULT spudfile_backend_set_size(intptr_t native, uint64_t size) {
+SPUDRESULT spudfile_backend_set_size(const spudfile_report *report, intptr_t native, uint64_t size) {
 	FILE_END_OF_FILE_INFO end;
 	end.EndOfFile.QuadPart = (LONGLONG)size;
 	if (!SetFileInformationByHandle((HANDLE)native, FileEndOfFileInfo, &end, sizeof(end)))
-		return SPUDRESULT_API_SPECIFIC_FAILURE;
+		return spudfile_windows_fail(report, GetLastError(), SPUDRESULT_API_SPECIFIC_FAILURE);
 	return SPUD_SUCCESS;
 }
 
-SPUDRESULT spudfile_backend_flush(intptr_t native, SPUDFILE_FLUSH_LEVEL level) {
+SPUDRESULT spudfile_backend_flush(const spudfile_report *report, intptr_t native, SPUDFILE_FLUSH_LEVEL level) {
 	// FlushFileBuffers reaches the media on Windows: DEVICE and MEDIA alike.
 	(void)level;
-	return FlushFileBuffers((HANDLE)native) ? SPUD_SUCCESS : SPUDRESULT_API_SPECIFIC_FAILURE;
+	if (!FlushFileBuffers((HANDLE)native))
+		return spudfile_windows_fail(report, GetLastError(), SPUDRESULT_API_SPECIFIC_FAILURE);
+	return SPUD_SUCCESS;
 }
 
-SPUDRESULT spudfile_backend_map(intptr_t native, uint64_t offset, uint64_t size, void **out_base, uint64_t *out_base_size, uint64_t *out_lead) {
+SPUDRESULT spudfile_backend_map(const spudfile_report *report, intptr_t native, uint64_t offset, uint64_t size, void **out_base, uint64_t *out_base_size, uint64_t *out_lead) {
 	// View offsets must be multiples of the allocation granularity (64 KiB),
 	// not just the page size: map from the granule holding [offset].
 	SYSTEM_INFO info;
@@ -265,22 +289,23 @@ SPUDRESULT spudfile_backend_map(intptr_t native, uint64_t offset, uint64_t size,
 
 	HANDLE section = CreateFileMappingW((HANDLE)native, NULL, PAGE_READONLY, 0, 0, NULL);
 	if (!section)
-		return spudfile_windows_result(GetLastError());
+		return spudfile_windows_failed(report, GetLastError());
 	void *base = MapViewOfFile(section, FILE_MAP_READ, (DWORD)(aligned >> 32), (DWORD)(aligned & 0xFFFFFFFFu), (SIZE_T)(lead + size));
 	// The view keeps the section, and through it the file, alive on its own.
 	const DWORD error = base ? 0 : GetLastError();
 	CloseHandle(section);
 	if (!base)
-		return spudfile_windows_result(error);
+		return spudfile_windows_failed(report, error);
 	*out_base      = base;
 	*out_base_size = lead + size;
 	*out_lead      = lead;
 	return SPUD_SUCCESS;
 }
 
-void spudfile_backend_unmap(void *base, uint64_t base_size) {
+void spudfile_backend_unmap(const spudfile_report *report, void *base, uint64_t base_size) {
 	(void)base_size;
-	UnmapViewOfFile(base);
+	if (!UnmapViewOfFile(base))
+		spudfile_windows_fail(report, GetLastError(), SPUDRESULT_API_SPECIFIC_FAILURE);
 }
 
 /* Nanoseconds since 1970 from a FILETIME's 100 ns since 1601. */
@@ -289,10 +314,11 @@ static int64_t spudfile_windows_unix_ns(FILETIME time) {
 	return ((int64_t)ticks - 116444736000000000LL) * 100;
 }
 
-SPUDRESULT spudfile_backend_path_get_info(spudfile_instance instance, const char *path, SPUDFILE_PATH_INFO *out_info) {
-	wchar_t *wide     = NULL;
-	int count         = 0;
-	SPUDRESULT result = spudfile_windows_wide(instance, path, &wide, &count);
+SPUDRESULT spudfile_backend_path_get_info(const spudfile_report *report, const char *path, SPUDFILE_PATH_INFO *out_info) {
+	spudfile_instance instance = report->instance;
+	wchar_t *wide              = NULL;
+	int count                  = 0;
+	SPUDRESULT result          = spudfile_windows_wide(instance, path, &wide, &count);
 	if (result != SPUD_SUCCESS)
 		return result;
 	// Opened for nothing but its attributes, with backup semantics so that a
@@ -302,11 +328,12 @@ SPUDRESULT spudfile_backend_path_get_info(spudfile_instance instance, const char
 	const DWORD error = handle == INVALID_HANDLE_VALUE ? GetLastError() : 0;
 	spudfile_windows_free_wide(instance, wide, count);
 	if (handle == INVALID_HANDLE_VALUE)
-		return spudfile_windows_result(error);
+		return spudfile_windows_failed(report, error);
 	BY_HANDLE_FILE_INFORMATION information;
 	if (!GetFileInformationByHandle(handle, &information)) {
+		const DWORD failed = GetLastError();
 		CloseHandle(handle);
-		return SPUDRESULT_API_SPECIFIC_FAILURE;
+		return spudfile_windows_fail(report, failed, SPUDRESULT_API_SPECIFIC_FAILURE);
 	}
 	const DWORD type = GetFileType(handle);
 	CloseHandle(handle);
@@ -324,12 +351,13 @@ SPUDRESULT spudfile_backend_path_get_info(spudfile_instance instance, const char
 	return SPUD_SUCCESS;
 }
 
-SPUDRESULT spudfile_backend_path_replace(spudfile_instance instance, const char *source, const char *target, SPUDFILE_FLUSH_LEVEL level) {
-	wchar_t *wide_source = NULL;
-	wchar_t *wide_target = NULL;
-	int source_count     = 0;
-	int target_count     = 0;
-	SPUDRESULT result    = spudfile_windows_wide(instance, source, &wide_source, &source_count);
+SPUDRESULT spudfile_backend_path_replace(const spudfile_report *report, const char *source, const char *target, SPUDFILE_FLUSH_LEVEL level) {
+	spudfile_instance instance = report->instance;
+	wchar_t *wide_source       = NULL;
+	wchar_t *wide_target       = NULL;
+	int source_count           = 0;
+	int target_count           = 0;
+	SPUDRESULT result          = spudfile_windows_wide(instance, source, &wide_source, &source_count);
 	if (result == SPUD_SUCCESS)
 		result = spudfile_windows_wide(instance, target, &wide_target, &target_count);
 	if (result == SPUD_SUCCESS) {
@@ -344,6 +372,7 @@ SPUDRESULT spudfile_backend_path_replace(spudfile_instance instance, const char 
 				result = spudfile_windows_is_directory(wide_target) ? SPUDRESULT_SPUDFILE_NOT_A_FILE : SPUDRESULT_SPUDFILE_IN_USE;
 			else
 				result = spudfile_windows_result(error);
+			spudfile_windows_fail(report, error, result);
 		}
 	}
 	spudfile_windows_free_wide(instance, wide_source, source_count);
@@ -351,10 +380,11 @@ SPUDRESULT spudfile_backend_path_replace(spudfile_instance instance, const char 
 	return result;
 }
 
-SPUDRESULT spudfile_backend_path_remove(spudfile_instance instance, const char *path) {
-	wchar_t *wide     = NULL;
-	int count         = 0;
-	SPUDRESULT result = spudfile_windows_wide(instance, path, &wide, &count);
+SPUDRESULT spudfile_backend_path_remove(const spudfile_report *report, const char *path) {
+	spudfile_instance instance = report->instance;
+	wchar_t *wide              = NULL;
+	int count                  = 0;
+	SPUDRESULT result          = spudfile_windows_wide(instance, path, &wide, &count);
 	if (result != SPUD_SUCCESS)
 		return result;
 	if (!DeleteFileW(wide)) {
@@ -365,6 +395,7 @@ SPUDRESULT spudfile_backend_path_remove(spudfile_instance instance, const char *
 			result = spudfile_windows_is_directory(wide) ? SPUDRESULT_SPUDFILE_NOT_A_FILE : SPUDRESULT_SPUDFILE_IN_USE;
 		else
 			result = spudfile_windows_result(error);
+		spudfile_windows_fail(report, error, result);
 	}
 	spudfile_windows_free_wide(instance, wide, count);
 	return result;
@@ -373,36 +404,39 @@ SPUDRESULT spudfile_backend_path_remove(spudfile_instance instance, const char *
 /* What is at [path], a link followed, opened for [access] to its attributes
  * alone (no sharing check), with backup semantics so a directory opens too;
  * INVALID_HANDLE_VALUE with *out_result set otherwise. */
-static HANDLE spudfile_windows_open_attributes(spudfile_instance instance, const char *path, DWORD access, SPUDRESULT *out_result) {
-	wchar_t *wide = NULL;
-	int count     = 0;
-	*out_result   = spudfile_windows_wide(instance, path, &wide, &count);
+static HANDLE spudfile_windows_open_attributes(const spudfile_report *report, const char *path, DWORD access, SPUDRESULT *out_result) {
+	spudfile_instance instance = report->instance;
+	wchar_t *wide              = NULL;
+	int count                  = 0;
+	*out_result                = spudfile_windows_wide(instance, path, &wide, &count);
 	if (*out_result != SPUD_SUCCESS)
 		return INVALID_HANDLE_VALUE;
 	HANDLE handle = CreateFileW(wide, access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
 	if (handle == INVALID_HANDLE_VALUE)
-		*out_result = spudfile_windows_result(GetLastError());
+		*out_result = spudfile_windows_failed(report, GetLastError());
 	spudfile_windows_free_wide(instance, wide, count);
 	return handle;
 }
 
-SPUDRESULT spudfile_backend_path_copy_mode(spudfile_instance instance, const char *source, const char *target) {
+SPUDRESULT spudfile_backend_path_copy_mode(const spudfile_report *report, const char *source, const char *target) {
 	SPUDRESULT result = SPUD_SUCCESS;
-	HANDLE from       = spudfile_windows_open_attributes(instance, source, FILE_READ_ATTRIBUTES, &result);
+	HANDLE from       = spudfile_windows_open_attributes(report, source, FILE_READ_ATTRIBUTES, &result);
 	if (from == INVALID_HANDLE_VALUE)
 		return result;
 	FILE_BASIC_INFO source_info;
-	const BOOL read = GetFileInformationByHandleEx(from, FileBasicInfo, &source_info, sizeof(source_info));
+	const BOOL read         = GetFileInformationByHandleEx(from, FileBasicInfo, &source_info, sizeof(source_info));
+	const DWORD read_error  = read ? 0 : GetLastError();
 	CloseHandle(from);
 	if (!read)
-		return SPUDRESULT_API_SPECIFIC_FAILURE;
-	HANDLE to = spudfile_windows_open_attributes(instance, target, FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES, &result);
+		return spudfile_windows_fail(report, read_error, SPUDRESULT_API_SPECIFIC_FAILURE);
+	HANDLE to = spudfile_windows_open_attributes(report, target, FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES, &result);
 	if (to == INVALID_HANDLE_VALUE)
 		return result;
 	FILE_BASIC_INFO info;
 	if (!GetFileInformationByHandleEx(to, FileBasicInfo, &info, sizeof(info))) {
+		const DWORD error = GetLastError();
 		CloseHandle(to);
-		return SPUDRESULT_API_SPECIFIC_FAILURE;
+		return spudfile_windows_fail(report, error, SPUDRESULT_API_SPECIFIC_FAILURE);
 	}
 	// Only the read-only attribute is the source's; the target keeps every
 	// other, and its times (zero leaves a time as it is).
@@ -417,20 +451,22 @@ SPUDRESULT spudfile_backend_path_copy_mode(spudfile_instance instance, const cha
 			const DWORD error = GetLastError();
 			// A read-only volume is the platform's refusal, not a permission.
 			result = error == ERROR_WRITE_PROTECT ? SPUDRESULT_API_SPECIFIC_FAILURE : spudfile_windows_result(error);
+			spudfile_windows_fail(report, error, result);
 		}
 	}
 	CloseHandle(to);
 	return result;
 }
 
-SPUDRESULT spudfile_backend_directory_create(spudfile_instance instance, const char *path) {
-	wchar_t *wide     = NULL;
-	int count         = 0;
-	SPUDRESULT result = spudfile_windows_wide(instance, path, &wide, &count);
+SPUDRESULT spudfile_backend_directory_create(const spudfile_report *report, const char *path) {
+	spudfile_instance instance = report->instance;
+	wchar_t *wide              = NULL;
+	int count                  = 0;
+	SPUDRESULT result          = spudfile_windows_wide(instance, path, &wide, &count);
 	if (result != SPUD_SUCCESS)
 		return result;
 	if (!CreateDirectoryW(wide, NULL))
-		result = spudfile_windows_result(GetLastError());
+		result = spudfile_windows_failed(report, GetLastError());
 	spudfile_windows_free_wide(instance, wide, count);
 	return result;
 }
@@ -438,20 +474,21 @@ SPUDRESULT spudfile_backend_directory_create(spudfile_instance instance, const c
 /* What is at [path] itself, a link not followed: a symbolic link to a
  * directory, or a junction, carries the directory attribute and is removed
  * or renamed as one, itself. */
-static SPUDRESULT spudfile_windows_directory_at(const wchar_t *path) {
+static SPUDRESULT spudfile_windows_directory_at(const spudfile_report *report, const wchar_t *path) {
 	const DWORD attributes = GetFileAttributesW(path);
 	if (attributes == INVALID_FILE_ATTRIBUTES)
-		return spudfile_windows_result(GetLastError());
+		return spudfile_windows_failed(report, GetLastError());
 	return (attributes & FILE_ATTRIBUTE_DIRECTORY) ? SPUD_SUCCESS : SPUDRESULT_SPUDFILE_NOT_A_DIRECTORY;
 }
 
-SPUDRESULT spudfile_backend_directory_remove(spudfile_instance instance, const char *path) {
-	wchar_t *wide     = NULL;
-	int count         = 0;
-	SPUDRESULT result = spudfile_windows_wide(instance, path, &wide, &count);
+SPUDRESULT spudfile_backend_directory_remove(const spudfile_report *report, const char *path) {
+	spudfile_instance instance = report->instance;
+	wchar_t *wide              = NULL;
+	int count                  = 0;
+	SPUDRESULT result          = spudfile_windows_wide(instance, path, &wide, &count);
 	if (result != SPUD_SUCCESS)
 		return result;
-	result = spudfile_windows_directory_at(wide);
+	result = spudfile_windows_directory_at(report, wide);
 	if (result == SPUD_SUCCESS && !RemoveDirectoryW(wide)) {
 		const DWORD error = GetLastError();
 		if (error == ERROR_DIR_NOT_EMPTY)
@@ -460,21 +497,23 @@ SPUDRESULT spudfile_backend_directory_remove(spudfile_instance instance, const c
 			result = SPUDRESULT_SPUDFILE_NOT_A_DIRECTORY;
 		else
 			result = spudfile_windows_result(error);
+		spudfile_windows_fail(report, error, result);
 	}
 	spudfile_windows_free_wide(instance, wide, count);
 	return result;
 }
 
-SPUDRESULT spudfile_backend_directory_rename(spudfile_instance instance, const char *source, const char *target, SPUDFILE_FLUSH_LEVEL level) {
-	wchar_t *wide_source = NULL;
-	wchar_t *wide_target = NULL;
-	int source_count     = 0;
-	int target_count     = 0;
-	SPUDRESULT result    = spudfile_windows_wide(instance, source, &wide_source, &source_count);
+SPUDRESULT spudfile_backend_directory_rename(const spudfile_report *report, const char *source, const char *target, SPUDFILE_FLUSH_LEVEL level) {
+	spudfile_instance instance = report->instance;
+	wchar_t *wide_source       = NULL;
+	wchar_t *wide_target       = NULL;
+	int source_count           = 0;
+	int target_count           = 0;
+	SPUDRESULT result          = spudfile_windows_wide(instance, source, &wide_source, &source_count);
 	if (result == SPUD_SUCCESS)
 		result = spudfile_windows_wide(instance, target, &wide_target, &target_count);
 	if (result == SPUD_SUCCESS)
-		result = spudfile_windows_directory_at(wide_source);
+		result = spudfile_windows_directory_at(report, wide_source);
 	if (result == SPUD_SUCCESS) {
 		// No MOVEFILE_REPLACE_EXISTING: anything at the target refuses the
 		// move, as a directory can't replace anything on Windows; no
@@ -488,6 +527,7 @@ SPUDRESULT spudfile_backend_directory_rename(spudfile_instance instance, const c
 				result = GetFileAttributesW(wide_target) != INVALID_FILE_ATTRIBUTES ? SPUDRESULT_SPUDFILE_ALREADY_EXISTS : SPUDRESULT_SPUDFILE_IN_USE;
 			else
 				result = spudfile_windows_result(error);
+			spudfile_windows_fail(report, error, result);
 		}
 	}
 	spudfile_windows_free_wide(instance, wide_source, source_count);
@@ -505,10 +545,11 @@ typedef struct spudfile_windows_listing {
 	bool pending;
 } spudfile_windows_listing;
 
-SPUDRESULT spudfile_backend_listing_open(spudfile_instance instance, const char *path, void **out_native) {
-	wchar_t *wide     = NULL;
-	int count         = 0;
-	SPUDRESULT result = spudfile_windows_wide(instance, path, &wide, &count);
+SPUDRESULT spudfile_backend_listing_open(const spudfile_report *report, const char *path, void **out_native) {
+	spudfile_instance instance = report->instance;
+	wchar_t *wide              = NULL;
+	int count                  = 0;
+	SPUDRESULT result          = spudfile_windows_wide(instance, path, &wide, &count);
 	if (result != SPUD_SUCCESS)
 		return result;
 	// The pattern: the path, a separator unless it ends in one, and "*".
@@ -556,6 +597,7 @@ SPUDRESULT spudfile_backend_listing_open(spudfile_instance instance, const char 
 	else
 		result = spudfile_windows_result(error);
 	if (result != SPUD_SUCCESS) {
+		spudfile_windows_fail(report, error, result);
 		SPUD_DELETE(&instance->head.allocator, spudfile_windows_listing, listing);
 		return result;
 	}
@@ -626,8 +668,7 @@ static SPUDFILE_ENTRY_KIND spudfile_windows_kind(const WIN32_FIND_DATAW *data) {
 	return SPUDFILE_ENTRY_KIND_FILE;
 }
 
-SPUDRESULT spudfile_backend_listing_next(spudfile_instance instance, void *native, SPUDFILE_LISTING_ENTRY *out_entry) {
-	(void)instance;
+SPUDRESULT spudfile_backend_listing_next(const spudfile_report *report, void *native, SPUDFILE_LISTING_ENTRY *out_entry) {
 	spudfile_windows_listing *listing = (spudfile_windows_listing *)native;
 	if (listing->find == INVALID_HANDLE_VALUE)
 		return SPUDRESULT_SPUDFILE_END_OF_LISTING;
@@ -635,7 +676,10 @@ SPUDRESULT spudfile_backend_listing_next(spudfile_instance instance, void *nativ
 		if (listing->pending) {
 			listing->pending = false;
 		} else if (!FindNextFileW(listing->find, &listing->data)) {
-			return GetLastError() == ERROR_NO_MORE_FILES ? SPUDRESULT_SPUDFILE_END_OF_LISTING : SPUDRESULT_API_SPECIFIC_FAILURE;
+			const DWORD error = GetLastError();
+			if (error == ERROR_NO_MORE_FILES)
+				return SPUDRESULT_SPUDFILE_END_OF_LISTING; // an answer, not a failure
+			return spudfile_windows_fail(report, error, SPUDRESULT_API_SPECIFIC_FAILURE);
 		}
 		const wchar_t *name = listing->data.cFileName;
 		if (name[0] == L'.' && (name[1] == 0 || (name[1] == L'.' && name[2] == 0)))
@@ -652,11 +696,11 @@ SPUDRESULT spudfile_backend_listing_next(spudfile_instance instance, void *nativ
 	}
 }
 
-void spudfile_backend_listing_close(spudfile_instance instance, void *native) {
+void spudfile_backend_listing_close(const spudfile_report *report, void *native) {
 	spudfile_windows_listing *listing = (spudfile_windows_listing *)native;
-	if (listing->find != INVALID_HANDLE_VALUE)
-		FindClose(listing->find);
-	SPUD_DELETE(&instance->head.allocator, spudfile_windows_listing, listing);
+	if (listing->find != INVALID_HANDLE_VALUE && !FindClose(listing->find))
+		spudfile_windows_fail(report, GetLastError(), SPUDRESULT_API_SPECIFIC_FAILURE);
+	SPUD_DELETE(&report->instance->head.allocator, spudfile_windows_listing, listing);
 }
 
 /* ---- Locking a file ---- */
@@ -672,7 +716,7 @@ static OVERLAPPED spudfile_windows_lock_byte(void) {
 	return position;
 }
 
-SPUDRESULT spudfile_backend_lock(intptr_t native, SPUDFILE_LOCK lock, bool wait) {
+SPUDRESULT spudfile_backend_lock(const spudfile_report *report, intptr_t native, SPUDFILE_LOCK lock, bool wait) {
 	DWORD flags = 0;
 	if (lock == SPUDFILE_LOCK_EXCLUSIVE)
 		flags |= LOCKFILE_EXCLUSIVE_LOCK;
@@ -683,13 +727,75 @@ SPUDRESULT spudfile_backend_lock(intptr_t native, SPUDFILE_LOCK lock, bool wait)
 		return SPUD_SUCCESS;
 	const DWORD error = GetLastError();
 	if (error == ERROR_LOCK_VIOLATION || error == ERROR_IO_PENDING)
-		return SPUDRESULT_SPUDFILE_LOCKED;
-	return SPUDRESULT_API_SPECIFIC_FAILURE;
+		return SPUDRESULT_SPUDFILE_LOCKED; // held elsewhere, not waiting: an answer
+	return spudfile_windows_fail(report, error, SPUDRESULT_API_SPECIFIC_FAILURE);
 }
 
-SPUDRESULT spudfile_backend_unlock(intptr_t native) {
+SPUDRESULT spudfile_backend_unlock(const spudfile_report *report, intptr_t native) {
 	OVERLAPPED position = spudfile_windows_lock_byte();
-	return UnlockFileEx((HANDLE)native, 0, 1, 0, &position) ? SPUD_SUCCESS : SPUDRESULT_API_SPECIFIC_FAILURE;
+	if (!UnlockFileEx((HANDLE)native, 0, 1, 0, &position))
+		return spudfile_windows_fail(report, GetLastError(), SPUDRESULT_API_SPECIFIC_FAILURE);
+	return SPUD_SUCCESS;
+}
+
+/* ---- Dynamic libraries ---- */
+
+/* Windows binds a module's imports at load and keeps each module's exports
+ * its own: NOW and LOCAL are its only behaviour. */
+bool spudfile_backend_library_binding_supported(SPUDFILE_LIBRARY_BINDING binding) { return binding == SPUDFILE_LIBRARY_BINDING_NOW; }
+bool spudfile_backend_library_scope_supported(SPUDFILE_LIBRARY_SCOPE scope) { return scope == SPUDFILE_LIBRARY_SCOPE_LOCAL; }
+bool spudfile_backend_library_dependencies_supported(SPUDFILE_LIBRARY_DEPENDENCIES dependencies) {
+	(void)dependencies;
+	return true;
+}
+
+static bool spudfile_windows_separator(char c) { return c == '\\' || c == '/'; }
+
+/* A drive letter, a colon and a separator, or two separators (a UNC or
+ * device path): what LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR takes. A drive and a
+ * name with no separator, or one separator first, is relative to a drive's
+ * current directory or to the current drive. */
+bool spudfile_backend_path_fully_qualified(const char *path) {
+	const char letter = path[0];
+	if (((letter >= 'A' && letter <= 'Z') || (letter >= 'a' && letter <= 'z')) && path[1] == ':' && spudfile_windows_separator(path[2]))
+		return true;
+	return spudfile_windows_separator(path[0]) && spudfile_windows_separator(path[1]);
+}
+
+SPUDRESULT spudfile_backend_library_open(const spudfile_report *report, const spudfile_library_desc *desc, void **out_native) {
+	spudfile_instance instance = report->instance;
+	wchar_t *wide              = NULL;
+	int count                  = 0;
+	const SPUDRESULT converted = spudfile_windows_wide(instance, desc->path, &wide, &count);
+	if (converted == SPUDRESULT_SPUDFILE_NOT_FOUND)
+		return SPUDRESULT_SPUDFILE_LIBRARY_NOT_LOADED; // not WTF-8: no file has that name
+	if (converted != SPUD_SUCCESS)
+		return converted;
+	// No search flag is the standard search order; the library's own
+	// directory first takes the two flags that make it so.
+	const DWORD flags =
+	    desc->dependencies == SPUDFILE_LIBRARY_DEPENDENCIES_LIBRARY_DIRECTORY_FIRST ? LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS : 0;
+	HMODULE module    = LoadLibraryExW(wide, NULL, flags);
+	const DWORD error = module ? 0 : GetLastError();
+	spudfile_windows_free_wide(instance, wide, count);
+	if (!module)
+		return spudfile_windows_fail(report, error, SPUDRESULT_SPUDFILE_LIBRARY_NOT_LOADED);
+	*out_native = (void *)module;
+	return SPUD_SUCCESS;
+}
+
+SPUDRESULT spudfile_backend_library_find(const spudfile_report *report, void *native, const char *name, spudfile_library_function *out_function) {
+	const FARPROC found = GetProcAddress((HMODULE)native, name);
+	if (!found)
+		return spudfile_windows_fail(report, GetLastError(), SPUDRESULT_SPUDFILE_SYMBOL_NOT_FOUND);
+	// One function pointer type to another, which C allows.
+	*out_function = (spudfile_library_function)found;
+	return SPUD_SUCCESS;
+}
+
+void spudfile_backend_library_close(const spudfile_report *report, void *native) {
+	if (!FreeLibrary((HMODULE)native))
+		spudfile_windows_fail(report, GetLastError(), SPUDRESULT_API_SPECIFIC_FAILURE);
 }
 
 #endif // SPUDLIB_PLATFORM_WIN32

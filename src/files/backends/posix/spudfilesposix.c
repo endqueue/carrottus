@@ -7,6 +7,7 @@
 #include "../../spudfilesshared.h"
 
 #include <dirent.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -43,8 +44,18 @@ static SPUDRESULT spudfile_posix_result(int error) {
 	}
 }
 
-SPUDRESULT spudfile_backend_open(spudfile_instance instance, const spudfile_open_desc *desc, intptr_t *out_native) {
-	(void)instance;
+/* Sends errno's [error] for [report]'s call, and returns [result]
+ * (spudcore.h, "Messages", M2). An errno carries no text of its own:
+ * strerror reads it. */
+static SPUDRESULT spudfile_posix_fail(const spudfile_report *report, int error, SPUDRESULT result) {
+	spudfile_report_platform(report, result, SPUD_PLATFORM_ERROR_SOURCE_ERRNO, (int64_t)error, NULL);
+	return result;
+}
+
+/* [error]'s result, sent. */
+static SPUDRESULT spudfile_posix_failed(const spudfile_report *report, int error) { return spudfile_posix_fail(report, error, spudfile_posix_result(error)); }
+
+SPUDRESULT spudfile_backend_open(const spudfile_report *report, const spudfile_open_desc *desc, intptr_t *out_native) {
 	int flags = desc->access == SPUDFILE_ACCESS_READ ? O_RDONLY : desc->access == SPUDFILE_ACCESS_WRITE ? O_WRONLY : O_RDWR;
 	switch (desc->create) {
 	case SPUDFILE_CREATE_OPEN_EXISTING:
@@ -69,13 +80,13 @@ SPUDRESULT spudfile_backend_open(spudfile_instance instance, const spudfile_open
 		fd = open(desc->path, flags, 0666);
 	} while (fd < 0 && errno == EINTR);
 	if (fd < 0)
-		return spudfile_posix_result(errno);
+		return spudfile_posix_failed(report, errno);
 	// open() takes a directory for reading; a file is what is wanted.
 	struct stat st;
 	if (fstat(fd, &st) != 0) {
 		const int error = errno;
 		close(fd);
-		return spudfile_posix_result(error);
+		return spudfile_posix_failed(report, error);
 	}
 	if (!S_ISREG(st.st_mode)) {
 		close(fd);
@@ -85,9 +96,13 @@ SPUDRESULT spudfile_backend_open(spudfile_instance instance, const spudfile_open
 	return SPUD_SUCCESS;
 }
 
-void spudfile_backend_close(intptr_t native) { close((int)native); }
+void spudfile_backend_close(const spudfile_report *report, intptr_t native) {
+	// Never retried, EINTR included: the descriptor is gone either way.
+	if (close((int)native) != 0)
+		spudfile_posix_fail(report, errno, SPUDRESULT_API_SPECIFIC_FAILURE);
+}
 
-SPUDRESULT spudfile_backend_read_at(intptr_t native, uint64_t offset, void *buffer, uint64_t size, uint64_t *out_read) {
+SPUDRESULT spudfile_backend_read_at(const spudfile_report *report, intptr_t native, uint64_t offset, void *buffer, uint64_t size, uint64_t *out_read) {
 	uint8_t *dst   = (uint8_t *)buffer;
 	uint64_t total = 0;
 	while (total < size) {
@@ -98,7 +113,7 @@ SPUDRESULT spudfile_backend_read_at(intptr_t native, uint64_t offset, void *buff
 			if (errno == EINTR)
 				continue;
 			*out_read = total;
-			return SPUDRESULT_API_SPECIFIC_FAILURE;
+			return spudfile_posix_fail(report, errno, SPUDRESULT_API_SPECIFIC_FAILURE);
 		}
 		if (n == 0)
 			break; // the end of the file
@@ -108,7 +123,7 @@ SPUDRESULT spudfile_backend_read_at(intptr_t native, uint64_t offset, void *buff
 	return SPUD_SUCCESS;
 }
 
-SPUDRESULT spudfile_backend_write_at(intptr_t native, uint64_t offset, const void *data, uint64_t size) {
+SPUDRESULT spudfile_backend_write_at(const spudfile_report *report, intptr_t native, uint64_t offset, const void *data, uint64_t size) {
 	const uint8_t *src = (const uint8_t *)data;
 	uint64_t total     = 0;
 	while (total < size) {
@@ -118,39 +133,43 @@ SPUDRESULT spudfile_backend_write_at(intptr_t native, uint64_t offset, const voi
 		if (n < 0) {
 			if (errno == EINTR)
 				continue;
-			return SPUDRESULT_API_SPECIFIC_FAILURE;
+			return spudfile_posix_fail(report, errno, SPUDRESULT_API_SPECIFIC_FAILURE);
 		}
 		total += (uint64_t)n;
 	}
 	return SPUD_SUCCESS;
 }
 
-SPUDRESULT spudfile_backend_get_size(intptr_t native, uint64_t *out_size) {
+SPUDRESULT spudfile_backend_get_size(const spudfile_report *report, intptr_t native, uint64_t *out_size) {
 	struct stat st;
 	if (fstat((int)native, &st) != 0)
-		return SPUDRESULT_API_SPECIFIC_FAILURE;
+		return spudfile_posix_fail(report, errno, SPUDRESULT_API_SPECIFIC_FAILURE);
 	*out_size = (uint64_t)st.st_size;
 	return SPUD_SUCCESS;
 }
 
-SPUDRESULT spudfile_backend_set_size(intptr_t native, uint64_t size) {
+SPUDRESULT spudfile_backend_set_size(const spudfile_report *report, intptr_t native, uint64_t size) {
 	int r;
 	do {
 		r = ftruncate((int)native, (off_t)size);
 	} while (r != 0 && errno == EINTR);
-	return r == 0 ? SPUD_SUCCESS : SPUDRESULT_API_SPECIFIC_FAILURE;
+	if (r != 0)
+		return spudfile_posix_fail(report, errno, SPUDRESULT_API_SPECIFIC_FAILURE);
+	return SPUD_SUCCESS;
 }
 
 /* Flushes [fd] to [level] (DEVICE or MEDIA). fsync only hands data to the
  * drive, which may keep it in a volatile cache; F_FULLFSYNC asks the drive
  * to write it to the media. Linux's fsync already flushes the drive cache. */
-static SPUDRESULT spudfile_posix_sync(int fd, SPUDFILE_FLUSH_LEVEL level) {
+static SPUDRESULT spudfile_posix_sync(const spudfile_report *report, int fd, SPUDFILE_FLUSH_LEVEL level) {
 #if defined(F_FULLFSYNC)
 	if (level == SPUDFILE_FLUSH_LEVEL_MEDIA) {
 		if (fcntl(fd, F_FULLFSYNC) == 0)
 			return SPUD_SUCCESS;
-		return (errno == ENOTSUP || errno == EINVAL || errno == ENOTTY) ? SPUDRESULT_SPUDFILE_FLUSH_LEVEL_NOT_SUPPORTED
-		                                                               : SPUDRESULT_API_SPECIFIC_FAILURE;
+		const int error = errno;
+		return spudfile_posix_fail(report, error,
+		                           (error == ENOTSUP || error == EINVAL || error == ENOTTY) ? SPUDRESULT_SPUDFILE_FLUSH_LEVEL_NOT_SUPPORTED
+		                                                                                   : SPUDRESULT_API_SPECIFIC_FAILURE);
 	}
 #else
 	(void)level;
@@ -159,12 +178,16 @@ static SPUDRESULT spudfile_posix_sync(int fd, SPUDFILE_FLUSH_LEVEL level) {
 	do {
 		r = fsync(fd);
 	} while (r != 0 && errno == EINTR);
-	return r == 0 ? SPUD_SUCCESS : SPUDRESULT_API_SPECIFIC_FAILURE;
+	if (r != 0)
+		return spudfile_posix_fail(report, errno, SPUDRESULT_API_SPECIFIC_FAILURE);
+	return SPUD_SUCCESS;
 }
 
-SPUDRESULT spudfile_backend_flush(intptr_t native, SPUDFILE_FLUSH_LEVEL level) { return spudfile_posix_sync((int)native, level); }
+SPUDRESULT spudfile_backend_flush(const spudfile_report *report, intptr_t native, SPUDFILE_FLUSH_LEVEL level) {
+	return spudfile_posix_sync(report, (int)native, level);
+}
 
-SPUDRESULT spudfile_backend_map(intptr_t native, uint64_t offset, uint64_t size, void **out_base, uint64_t *out_base_size, uint64_t *out_lead) {
+SPUDRESULT spudfile_backend_map(const spudfile_report *report, intptr_t native, uint64_t offset, uint64_t size, void **out_base, uint64_t *out_base_size, uint64_t *out_lead) {
 	// mmap offsets must be page-aligned: map from the page holding [offset].
 	const uint64_t page    = (uint64_t)sysconf(_SC_PAGESIZE);
 	const uint64_t aligned = offset - offset % page;
@@ -172,21 +195,25 @@ SPUDRESULT spudfile_backend_map(intptr_t native, uint64_t offset, uint64_t size,
 	if (size > (uint64_t)SIZE_MAX - lead)
 		return SPUDRESULT_INDEX_OUT_OF_RANGE; // more than the address space
 	void *base = mmap(NULL, (size_t)(lead + size), PROT_READ, MAP_SHARED, (int)native, (off_t)aligned);
-	if (base == MAP_FAILED)
-		return errno == ENOMEM ? SPUDRESULT_OUT_OF_MEMORY : SPUDRESULT_API_SPECIFIC_FAILURE;
+	if (base == MAP_FAILED) {
+		const int error = errno;
+		return spudfile_posix_fail(report, error, error == ENOMEM ? SPUDRESULT_OUT_OF_MEMORY : SPUDRESULT_API_SPECIFIC_FAILURE);
+	}
 	*out_base      = base;
 	*out_base_size = lead + size;
 	*out_lead      = lead;
 	return SPUD_SUCCESS;
 }
 
-void spudfile_backend_unmap(void *base, uint64_t base_size) { munmap(base, (size_t)base_size); }
+void spudfile_backend_unmap(const spudfile_report *report, void *base, uint64_t base_size) {
+	if (munmap(base, (size_t)base_size) != 0)
+		spudfile_posix_fail(report, errno, SPUDRESULT_API_SPECIFIC_FAILURE);
+}
 
-SPUDRESULT spudfile_backend_path_get_info(spudfile_instance instance, const char *path, SPUDFILE_PATH_INFO *out_info) {
-	(void)instance;
+SPUDRESULT spudfile_backend_path_get_info(const spudfile_report *report, const char *path, SPUDFILE_PATH_INFO *out_info) {
 	struct stat st;
 	if (stat(path, &st) != 0)
-		return spudfile_posix_result(errno);
+		return spudfile_posix_failed(report, errno);
 	if (S_ISREG(st.st_mode)) {
 		out_info->kind = SPUDFILE_PATH_KIND_FILE;
 		out_info->size = (uint64_t)st.st_size;
@@ -204,7 +231,7 @@ SPUDRESULT spudfile_backend_path_get_info(spudfile_instance instance, const char
 
 /* Makes a rename in [path]'s directory durable: the directory entry lives in
  * the directory, not the file, so it's the directory that's synced. */
-static SPUDRESULT spudfile_posix_flush_parent(const char *path, SPUDFILE_FLUSH_LEVEL level) {
+static SPUDRESULT spudfile_posix_flush_parent(const spudfile_report *report, const char *path, SPUDFILE_FLUSH_LEVEL level) {
 	char dir[PATH_MAX];
 	const size_t len = strlen(path);
 	if (len >= sizeof(dir))
@@ -221,27 +248,25 @@ static SPUDRESULT spudfile_posix_flush_parent(const char *path, SPUDFILE_FLUSH_L
 	}
 	const int fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
 	if (fd < 0)
-		return SPUDRESULT_API_SPECIFIC_FAILURE;
-	const SPUDRESULT result = spudfile_posix_sync(fd, level);
+		return spudfile_posix_fail(report, errno, SPUDRESULT_API_SPECIFIC_FAILURE);
+	const SPUDRESULT result = spudfile_posix_sync(report, fd, level);
 	close(fd);
 	return result;
 }
 
-SPUDRESULT spudfile_backend_path_replace(spudfile_instance instance, const char *source, const char *target, SPUDFILE_FLUSH_LEVEL level) {
-	(void)instance;
+SPUDRESULT spudfile_backend_path_replace(const spudfile_report *report, const char *source, const char *target, SPUDFILE_FLUSH_LEVEL level) {
 	if (rename(source, target) != 0) {
 		const int error = errno;
 		// A directory in the way of the rename is still not a file to
 		// replace; anything else follows the common table.
-		return error == EISDIR ? SPUDRESULT_SPUDFILE_NOT_A_FILE : spudfile_posix_result(error);
+		return spudfile_posix_fail(report, error, error == EISDIR ? SPUDRESULT_SPUDFILE_NOT_A_FILE : spudfile_posix_result(error));
 	}
 	if (level != SPUDFILE_FLUSH_LEVEL_NONE)
-		return spudfile_posix_flush_parent(target, level);
+		return spudfile_posix_flush_parent(report, target, level);
 	return SPUD_SUCCESS;
 }
 
-SPUDRESULT spudfile_backend_path_remove(spudfile_instance instance, const char *path) {
-	(void)instance;
+SPUDRESULT spudfile_backend_path_remove(const spudfile_report *report, const char *path) {
 	if (unlink(path) == 0)
 		return SPUD_SUCCESS;
 	const int error = errno;
@@ -250,46 +275,43 @@ SPUDRESULT spudfile_backend_path_remove(spudfile_instance instance, const char *
 	if (error == EISDIR || error == EPERM) {
 		struct stat st;
 		if (stat(path, &st) == 0 && S_ISDIR(st.st_mode))
-			return SPUDRESULT_SPUDFILE_NOT_A_FILE;
+			return spudfile_posix_fail(report, error, SPUDRESULT_SPUDFILE_NOT_A_FILE);
 	}
-	return spudfile_posix_result(error);
+	return spudfile_posix_failed(report, error);
 }
 
-SPUDRESULT spudfile_backend_path_copy_mode(spudfile_instance instance, const char *source, const char *target) {
-	(void)instance;
+SPUDRESULT spudfile_backend_path_copy_mode(const spudfile_report *report, const char *source, const char *target) {
 	struct stat st;
 	if (stat(source, &st) != 0)
-		return spudfile_posix_result(errno);
+		return spudfile_posix_failed(report, errno);
 	// The nine permission bits only: what set-user-ID, set-group-ID and
 	// sticky grant depends on an owner a copy doesn't carry.
 	if (chmod(target, st.st_mode & 0777) == 0)
 		return SPUD_SUCCESS;
 	const int error = errno;
 	// A read-only file system is the platform's refusal, not a permission.
-	return error == EROFS ? SPUDRESULT_API_SPECIFIC_FAILURE : spudfile_posix_result(error);
+	return spudfile_posix_fail(report, error, error == EROFS ? SPUDRESULT_API_SPECIFIC_FAILURE : spudfile_posix_result(error));
 }
 
-SPUDRESULT spudfile_backend_directory_create(spudfile_instance instance, const char *path) {
-	(void)instance;
+SPUDRESULT spudfile_backend_directory_create(const spudfile_report *report, const char *path) {
 	if (mkdir(path, 0777) == 0)
 		return SPUD_SUCCESS;
-	return spudfile_posix_result(errno);
+	return spudfile_posix_failed(report, errno);
 }
 
-SPUDRESULT spudfile_backend_directory_remove(spudfile_instance instance, const char *path) {
-	(void)instance;
+SPUDRESULT spudfile_backend_directory_remove(const spudfile_report *report, const char *path) {
 	struct stat entry;
 	if (lstat(path, &entry) != 0)
-		return spudfile_posix_result(errno);
+		return spudfile_posix_failed(report, errno);
 	if (S_ISLNK(entry.st_mode)) {
 		// rmdir of a link is ENOTDIR: a link to a directory is unlink's,
 		// and goes itself; a link to anything else isn't a directory.
 		struct stat target;
 		if (stat(path, &target) != 0)
-			return spudfile_posix_result(errno);
+			return spudfile_posix_failed(report, errno);
 		if (!S_ISDIR(target.st_mode))
 			return SPUDRESULT_SPUDFILE_NOT_A_DIRECTORY;
-		return unlink(path) == 0 ? SPUD_SUCCESS : spudfile_posix_result(errno);
+		return unlink(path) == 0 ? SPUD_SUCCESS : spudfile_posix_failed(report, errno);
 	}
 	if (!S_ISDIR(entry.st_mode))
 		return SPUDRESULT_SPUDFILE_NOT_A_DIRECTORY;
@@ -298,17 +320,16 @@ SPUDRESULT spudfile_backend_directory_remove(spudfile_instance instance, const c
 	const int error = errno;
 	// A directory with entries is ENOTEMPTY, or EEXIST where POSIX allows it.
 	if (error == ENOTEMPTY || error == EEXIST)
-		return SPUDRESULT_SPUDFILE_NOT_EMPTY;
-	return spudfile_posix_result(error);
+		return spudfile_posix_fail(report, error, SPUDRESULT_SPUDFILE_NOT_EMPTY);
+	return spudfile_posix_failed(report, error);
 }
 
-SPUDRESULT spudfile_backend_directory_rename(spudfile_instance instance, const char *source, const char *target, SPUDFILE_FLUSH_LEVEL level) {
-	(void)instance;
+SPUDRESULT spudfile_backend_directory_rename(const spudfile_report *report, const char *source, const char *target, SPUDFILE_FLUSH_LEVEL level) {
 	// What source leads to must be a directory; a link to one is renamed
 	// itself, as rename does.
 	struct stat st;
 	if (stat(source, &st) != 0)
-		return spudfile_posix_result(errno);
+		return spudfile_posix_failed(report, errno);
 	if (!S_ISDIR(st.st_mode))
 		return SPUDRESULT_SPUDFILE_NOT_A_DIRECTORY;
 	// rename replaces an empty directory; nothing may be there, so the
@@ -325,17 +346,17 @@ SPUDRESULT spudfile_backend_directory_rename(spudfile_instance instance, const c
 		if (lstat(target, &st) == 0)
 			return SPUDRESULT_SPUDFILE_ALREADY_EXISTS;
 		if (errno != ENOENT)
-			return spudfile_posix_result(errno);
+			return spudfile_posix_failed(report, errno);
 		r = rename(source, target);
 	}
 	if (r != 0) {
 		const int error = errno;
 		if (error == ENOTEMPTY || error == EEXIST)
-			return SPUDRESULT_SPUDFILE_ALREADY_EXISTS;
-		return spudfile_posix_result(error);
+			return spudfile_posix_fail(report, error, SPUDRESULT_SPUDFILE_ALREADY_EXISTS);
+		return spudfile_posix_failed(report, error);
 	}
 	if (level != SPUDFILE_FLUSH_LEVEL_NONE)
-		return spudfile_posix_flush_parent(target, level);
+		return spudfile_posix_flush_parent(report, target, level);
 	return SPUD_SUCCESS;
 }
 
@@ -346,7 +367,8 @@ typedef struct spudfile_posix_listing {
 	DIR *dir;
 } spudfile_posix_listing;
 
-SPUDRESULT spudfile_backend_listing_open(spudfile_instance instance, const char *path, void **out_native) {
+SPUDRESULT spudfile_backend_listing_open(const spudfile_report *report, const char *path, void **out_native) {
+	spudfile_instance instance      = report->instance;
 	spudfile_posix_listing *listing = SPUD_NEW_ZEROED(&instance->head.allocator, spudfile_posix_listing);
 	if (!listing)
 		return SPUDRESULT_OUT_OF_MEMORY;
@@ -359,23 +381,26 @@ SPUDRESULT spudfile_backend_listing_open(spudfile_instance instance, const char 
 		if (error == ENOTDIR) {
 			struct stat status;
 			if (stat(path, &status) == 0 && !S_ISDIR(status.st_mode))
-				return SPUDRESULT_SPUDFILE_NOT_A_DIRECTORY;
-			return SPUDRESULT_SPUDFILE_NOT_FOUND;
+				return spudfile_posix_fail(report, error, SPUDRESULT_SPUDFILE_NOT_A_DIRECTORY);
+			return spudfile_posix_fail(report, error, SPUDRESULT_SPUDFILE_NOT_FOUND);
 		}
-		return spudfile_posix_result(error);
+		return spudfile_posix_failed(report, error);
 	}
 	*out_native = listing;
 	return SPUD_SUCCESS;
 }
 
-SPUDRESULT spudfile_backend_listing_next(spudfile_instance instance, void *native, SPUDFILE_LISTING_ENTRY *out_entry) {
-	(void)instance;
+SPUDRESULT spudfile_backend_listing_next(const spudfile_report *report, void *native, SPUDFILE_LISTING_ENTRY *out_entry) {
 	spudfile_posix_listing *listing = (spudfile_posix_listing *)native;
 	for (;;) {
 		errno                       = 0;
 		const struct dirent *found = readdir(listing->dir);
-		if (!found)
-			return errno == 0 ? SPUDRESULT_SPUDFILE_END_OF_LISTING : SPUDRESULT_API_SPECIFIC_FAILURE;
+		if (!found) {
+			const int error = errno;
+			if (error == 0)
+				return SPUDRESULT_SPUDFILE_END_OF_LISTING; // an answer, not a failure
+			return spudfile_posix_fail(report, error, SPUDRESULT_API_SPECIFIC_FAILURE);
+		}
 		const char *name = found->d_name;
 		if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0)))
 			continue;
@@ -397,7 +422,7 @@ SPUDRESULT spudfile_backend_listing_next(spudfile_instance instance, void *nativ
 			if (fstatat(dirfd(listing->dir), name, &status, AT_SYMLINK_NOFOLLOW) != 0) {
 				if (errno == ENOENT)
 					continue;
-				return SPUDRESULT_API_SPECIFIC_FAILURE;
+				return spudfile_posix_fail(report, errno, SPUDRESULT_API_SPECIFIC_FAILURE);
 			}
 			if (S_ISREG(status.st_mode))
 				kind = SPUDFILE_ENTRY_KIND_FILE;
@@ -421,15 +446,16 @@ SPUDRESULT spudfile_backend_listing_next(spudfile_instance instance, void *nativ
 	}
 }
 
-void spudfile_backend_listing_close(spudfile_instance instance, void *native) {
+void spudfile_backend_listing_close(const spudfile_report *report, void *native) {
 	spudfile_posix_listing *listing = (spudfile_posix_listing *)native;
-	closedir(listing->dir);
-	SPUD_DELETE(&instance->head.allocator, spudfile_posix_listing, listing);
+	if (closedir(listing->dir) != 0)
+		spudfile_posix_fail(report, errno, SPUDRESULT_API_SPECIFIC_FAILURE);
+	SPUD_DELETE(&report->instance->head.allocator, spudfile_posix_listing, listing);
 }
 
 /* ---- Locking a file ---- */
 
-SPUDRESULT spudfile_backend_lock(intptr_t native, SPUDFILE_LOCK lock, bool wait) {
+SPUDRESULT spudfile_backend_lock(const spudfile_report *report, intptr_t native, SPUDFILE_LOCK lock, bool wait) {
 	int operation = lock == SPUDFILE_LOCK_EXCLUSIVE ? LOCK_EX : LOCK_SH;
 	if (!wait)
 		operation |= LOCK_NB;
@@ -439,11 +465,73 @@ SPUDRESULT spudfile_backend_lock(intptr_t native, SPUDFILE_LOCK lock, bool wait)
 		if (errno == EINTR)
 			continue; // a signal while waiting: still waiting
 		if (errno == EWOULDBLOCK)
-			return SPUDRESULT_SPUDFILE_LOCKED;
-		return SPUDRESULT_API_SPECIFIC_FAILURE;
+			return SPUDRESULT_SPUDFILE_LOCKED; // held elsewhere, not waiting: an answer
+		return spudfile_posix_fail(report, errno, SPUDRESULT_API_SPECIFIC_FAILURE);
 	}
 }
 
-SPUDRESULT spudfile_backend_unlock(intptr_t native) { return flock((int)native, LOCK_UN) == 0 ? SPUD_SUCCESS : SPUDRESULT_API_SPECIFIC_FAILURE; }
+SPUDRESULT spudfile_backend_unlock(const spudfile_report *report, intptr_t native) {
+	if (flock((int)native, LOCK_UN) != 0)
+		return spudfile_posix_fail(report, errno, SPUDRESULT_API_SPECIFIC_FAILURE);
+	return SPUD_SUCCESS;
+}
+
+/* ---- Dynamic libraries ---- */
+
+/* dlopen has both bindings and both scopes; where dependencies are found
+ * the library chose when it was linked ($ORIGIN, @loader_path). */
+bool spudfile_backend_library_binding_supported(SPUDFILE_LIBRARY_BINDING binding) {
+	(void)binding;
+	return true;
+}
+bool spudfile_backend_library_scope_supported(SPUDFILE_LIBRARY_SCOPE scope) {
+	(void)scope;
+	return true;
+}
+bool spudfile_backend_library_dependencies_supported(SPUDFILE_LIBRARY_DEPENDENCIES dependencies) {
+	return dependencies == SPUDFILE_LIBRARY_DEPENDENCIES_PLATFORM_ORDER;
+}
+bool spudfile_backend_path_fully_qualified(const char *path) { return path[0] == '/'; }
+
+/* Sends the loader's words for [report]'s call: dlerror's text, which has
+ * no number. dlerror is the calling thread's, on glibc and on Apple, and is
+ * read right after the call that failed. */
+static SPUDRESULT spudfile_posix_loader_fail(const spudfile_report *report, SPUDRESULT result) {
+	spudfile_report_platform(report, result, SPUD_PLATFORM_ERROR_SOURCE_DLERROR, 0, dlerror());
+	return result;
+}
+
+SPUDRESULT spudfile_backend_library_open(const spudfile_report *report, const spudfile_library_desc *desc, void **out_native) {
+	int flags = desc->binding == SPUDFILE_LIBRARY_BINDING_NOW ? RTLD_NOW : RTLD_LAZY;
+	flags |= desc->scope == SPUDFILE_LIBRARY_SCOPE_LOCAL ? RTLD_LOCAL : RTLD_GLOBAL;
+	(void)dlerror(); // an earlier call's message is not this one's
+	void *handle = dlopen(desc->path, flags);
+	if (!handle)
+		return spudfile_posix_loader_fail(report, SPUDRESULT_SPUDFILE_LIBRARY_NOT_LOADED);
+	*out_native = handle;
+	return SPUD_SUCCESS;
+}
+
+SPUDRESULT spudfile_backend_library_find(const spudfile_report *report, void *native, const char *name, spudfile_library_function *out_function) {
+	(void)dlerror();
+	void *found = dlsym(native, name);
+	// A function's address is never NULL: NULL is a symbol not found (or
+	// one whose value is NULL, which is no function).
+	if (!found)
+		return spudfile_posix_loader_fail(report, SPUDRESULT_SPUDFILE_SYMBOL_NOT_FOUND);
+	// POSIX makes dlsym's object pointer a function's; copied, not cast,
+	// as ISO C has no conversion between the two.
+	_Static_assert(sizeof(spudfile_library_function) == sizeof(void *), "a function pointer is an object pointer's size");
+	spudfile_library_function function;
+	memcpy(&function, &found, sizeof(function));
+	*out_function = function;
+	return SPUD_SUCCESS;
+}
+
+void spudfile_backend_library_close(const spudfile_report *report, void *native) {
+	(void)dlerror();
+	if (dlclose(native) != 0)
+		spudfile_posix_loader_fail(report, SPUDRESULT_API_SPECIFIC_FAILURE);
+}
 
 #endif // SPUDLIB_PLATFORM_LINUX || SPUDLIB_PLATFORM_APPLE

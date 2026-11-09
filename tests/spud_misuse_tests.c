@@ -598,6 +598,46 @@ static spudfile_file dead_spudfile_file(void) {
 	return handle;
 }
 
+/* A spudfile_library just destroyed, or NULL with `why` set. */
+static spudfile_library make_dead_spudfile_library(void) {
+	/* A system library by name, there on every platform SpudFiles builds
+	 * for, searched for by the platform. */
+	spudfile_instance instance = make_file_instance();
+	if (!instance)
+		return NULL;
+	spudfile_library_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type = SPUD_STRUCT_TYPE_FILES_LIBRARY_DESC;
+#if SPUDLIB_PLATFORM_WIN32
+	desc.path = "kernel32.dll";
+#elif SPUDLIB_PLATFORM_APPLE
+	desc.path = "libSystem.B.dylib";
+#else
+	desc.path = "libc.so.6";
+#endif
+	desc.binding             = SPUDFILE_LIBRARY_BINDING_NOW;
+	desc.scope               = SPUDFILE_LIBRARY_SCOPE_LOCAL;
+	desc.dependencies        = SPUDFILE_LIBRARY_DEPENDENCIES_PLATFORM_ORDER;
+	spudfile_library library = NULL;
+	if (spudfile_library_open(instance, &desc, &library) == SPUD_SUCCESS)
+		spudfile_library_close(library);
+	else
+		why = "spudfile_library_open failed on the system's C library";
+	spudfile_instance_destroy(instance);
+	return library;
+}
+
+static spudfile_library dead_spudfile_library(void) {
+	static bool told = false;
+	why = "";
+	spudfile_library handle = make_dead_spudfile_library();
+	if (!handle && !told) {
+		printf("spud_misuse_tests: not covered: spudfile_library: %s\n", why);
+		told = true;
+	}
+	return handle;
+}
+
 /* A spudfile_listing just destroyed, or NULL with `why` set. */
 static spudfile_listing make_dead_spudfile_listing(void) {
 	spudfile_instance instance = make_file_instance();
@@ -1893,6 +1933,34 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 		if (dead) {
 			spudfile_instance_destroy(dead);
 			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		spudfile_library dead = dead_spudfile_library();
+		if (dead) {
+			spudfile_library_close(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		spudfile_library dead = dead_spudfile_library();
+		if (dead) {
+			expect_refused("spudfile_library_find", spudfile_library_find(dead, (const char *){0}, (spudfile_library_function *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		spudfile_instance dead = dead_spudfile_instance();
+		if (dead) {
+			expect_refused("spudfile_library_open", spudfile_library_open(dead, (const spudfile_library_desc *){0}, (spudfile_library *){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -4109,6 +4177,13 @@ int main(void)
 	calls++;
 	spudfile_instance_destroy((spudfile_instance){0});
 	unchecked++;
+	calls++;
+	spudfile_library_close((spudfile_library){0});
+	unchecked++;
+	calls++;
+	expect_error("spudfile_library_find", spudfile_library_find((spudfile_library){0}, (const char *){0}, (spudfile_library_function *){0}));
+	calls++;
+	expect_error("spudfile_library_open", spudfile_library_open((spudfile_instance){0}, (const spudfile_library_desc *){0}, (spudfile_library *){0}));
 	calls++;
 	spudfile_listing_close((spudfile_listing){0});
 	unchecked++;

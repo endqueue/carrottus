@@ -141,7 +141,7 @@ struct spudnet_wait_set_t {
 
 /* The error a failed socket call left, as the record takes it. */
 static SPUDRESULT spudnet_wait_failed(spudnet_error *record, SPUDRESULT result) {
-	return spudnet_error_record(record, result, SPUDNET_ERROR_SOURCE_WIN32, WSAGetLastError(), NULL);
+	return spudnet_error_record(record, result, SPUD_PLATFORM_ERROR_SOURCE_WIN32, WSAGetLastError(), NULL);
 }
 
 static void spudnet_wait_wake_reset(struct spudnet_wait_set_t *set) {
@@ -206,7 +206,7 @@ static int spudnet_wait_poll(spudnet_poll_entry *entries, uint32_t count, int ti
 #else
 
 static SPUDRESULT spudnet_wait_failed(spudnet_error *record, SPUDRESULT result) {
-	return spudnet_error_record(record, result, SPUDNET_ERROR_SOURCE_ERRNO, errno, NULL);
+	return spudnet_error_record(record, result, SPUD_PLATFORM_ERROR_SOURCE_ERRNO, errno, NULL);
 }
 
 static void spudnet_wait_wake_reset(struct spudnet_wait_set_t *set) {

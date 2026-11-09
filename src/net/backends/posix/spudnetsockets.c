@@ -156,7 +156,7 @@ static SPUDRESULT spudnet_posix_wait(int fd, short events, struct spudnet_posix_
 /* A failed system call as a record: `error` is the errno it left. Returns
  * `result`. */
 static SPUDRESULT spudnet_posix_failed(spudnet_error *record, SPUDRESULT result, int error) {
-	return spudnet_error_record(record, result, SPUDNET_ERROR_SOURCE_ERRNO, error, NULL);
+	return spudnet_error_record(record, result, SPUD_PLATFORM_ERROR_SOURCE_ERRNO, error, NULL);
 }
 
 /* The same for a call on a connection, where one errno is a result of its
@@ -918,7 +918,7 @@ SPUDRESULT spudnet_resolver_run(spudnet_resolver resolver) {
 		if (failed == EAI_SYSTEM) {
 			result = spudnet_posix_failed(&error, SPUDRESULT_SPUDNET_RESOLVE_FAILED, errno);
 		} else if (failed != 0) {
-			result = spudnet_error_record(&error, SPUDRESULT_SPUDNET_RESOLVE_FAILED, SPUDNET_ERROR_SOURCE_RESOLVER, failed, NULL);
+			result = spudnet_error_record(&error, SPUDRESULT_SPUDNET_RESOLVE_FAILED, SPUD_PLATFORM_ERROR_SOURCE_RESOLVER, failed, NULL);
 		} else {
 			uint32_t entries = 0;
 			for (struct addrinfo *entry = found; entry != NULL; entry = entry->ai_next)

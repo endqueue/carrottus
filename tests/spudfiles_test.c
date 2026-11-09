@@ -14,7 +14,10 @@
  * a file's permissions copied to another (Windows' read-only attribute,
  * POSIX's nine bits whatever the umask, never the set-ID bits; links
  * followed; directories); and locking a file between two files opened on one path, one waiting on
- * a second thread. Every block
+ * a second thread; the instance's messages for platform failures (each
+ * with its number, none for a refused argument, from two threads at once,
+ * nothing allocated to send one); and dynamic libraries opened, searched
+ * and closed (card S44). Every block
  * goes through a counting allocator, checked at the end. Needs nothing but
  * a writable temporary directory.
  *
@@ -26,6 +29,7 @@
 
 #include "spudtest_allocator.h"
 
+#include <errno.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1551,8 +1555,817 @@ static void test_locks(void) {
 	}
 }
 
+/* ---- Messages (card S10, SpudFiles' half) ---- */
+
+/* What one message held, copied in the callback (M5: nothing it points to
+ * outlives the call). One thread's: the threaded test counts elsewhere. */
+typedef struct recorded_message {
+	SPUD_STRUCT_TYPE type;
+	const SPUD_STRUCT_BASE *next;
+	SPUD_MESSAGE_ORIGIN origin;
+	SPUD_MESSAGE_SEVERITY severity;
+	SPUD_PLATFORM_ERROR_SOURCE source;
+	SPUDRESULT result;
+	uint32_t id;
+	uint32_t dropped;
+	int64_t code;
+	const char *call;
+	const void *object;
+	char object_name[64];
+	char subject_name[64];
+	bool text_null;
+	char text[1024];
+} recorded_message;
+
+typedef struct recorder {
+	int count;
+	recorded_message last;
+} recorder;
+
+static void copy_text(
+    char *out,
+    size_t capacity,
+    const char *text) {
+	if (!text) {
+		out[0] = 0;
+		return;
+	}
+	snprintf(out, capacity, "%s", text);
+}
+
+static void record_message(
+    const SPUD_MESSAGE *message,
+    void *user_data) {
+	recorder *into         = (recorder *)user_data;
+	recorded_message *last = &into->last;
+	++into->count;
+	last->type      = message->base.type;
+	last->next      = message->base.next;
+	last->origin    = message->origin;
+	last->severity  = message->severity;
+	last->source    = message->platform_source;
+	last->result    = message->result;
+	last->id        = message->id;
+	last->dropped   = message->dropped;
+	last->code      = message->platform_code;
+	last->call      = message->call;
+	last->object    = message->object;
+	last->text_null = message->text == NULL;
+	copy_text(last->object_name, sizeof(last->object_name), message->object_debug_name);
+	copy_text(last->subject_name, sizeof(last->subject_name), message->subject_debug_name);
+	copy_text(last->text, sizeof(last->text), message->text);
+}
+
+static spudfile_instance make_messaged_instance(
+    const SPUD_ALLOCATOR *allocator,
+    SPUD_MESSAGE_CALLBACK callback,
+    void *user_data) {
+	spudfile_instance_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type          = SPUD_STRUCT_TYPE_FILES_INSTANCE_DESC;
+	desc.allocator          = allocator;
+	desc.message_callback   = callback;
+	desc.message_user_data  = user_data;
+	spudfile_instance files = NULL;
+	CHECK_RESULT(spudfile_instance_create(&desc, &files), SPUD_SUCCESS);
+	return files;
+}
+
+/* One platform failure's message, as M2 has it. */
+static void check_platform_message(
+    const recorder *seen,
+    const char *call,
+    const void *object,
+    SPUDRESULT result,
+    SPUD_PLATFORM_ERROR_SOURCE source) {
+	CHECK(seen->count == 1);
+	CHECK(seen->last.type == SPUD_STRUCT_TYPE_MESSAGE);
+	CHECK(seen->last.next == NULL);
+	CHECK(seen->last.origin == SPUD_MESSAGE_ORIGIN_PLATFORM);
+	CHECK(seen->last.severity == SPUD_MESSAGE_SEVERITY_ERROR);
+	CHECK(seen->last.source == source);
+	CHECK(seen->last.result == result);
+	CHECK(seen->last.id == 0);
+	CHECK(seen->last.dropped == 0);
+	CHECK(seen->last.call && strcmp(seen->last.call, call) == 0);
+	CHECK(seen->last.object == object);
+	CHECK(!seen->last.text_null);
+}
+
+#if SPUDLIB_PLATFORM_WIN32
+#define PLATFORM_SOURCE SPUD_PLATFORM_ERROR_SOURCE_WIN32
+#define CODE_NOT_FOUND ERROR_FILE_NOT_FOUND
+#define CODE_THROUGH_FILE ERROR_PATH_NOT_FOUND
+#define CODE_ACCESS_DENIED ERROR_ACCESS_DENIED
+#else
+#define PLATFORM_SOURCE SPUD_PLATFORM_ERROR_SOURCE_ERRNO
+#define CODE_NOT_FOUND ENOENT
+#define CODE_THROUGH_FILE ENOTDIR
+#define CODE_ACCESS_DENIED EACCES
+#endif
+
+static void test_messages(void) {
+	spudtest_allocator tracker;
+	SPUD_ALLOCATOR allocator = spudtest_allocator_make(&tracker);
+	recorder seen;
+	memset(&seen, 0, sizeof(seen));
+	spudfile_instance files = make_messaged_instance(&allocator, record_message, &seen);
+	spudfile_instance quiet = make_messaged_instance(&allocator, NULL, NULL);
+	if (!files || !quiet) {
+		spudfile_instance_destroy(files);
+		spudfile_instance_destroy(quiet);
+		return;
+	}
+
+	// A missing file: NOT_FOUND, its message the platform's number, the
+	// instance the object and the desc's name the subject.
+	char missing[1100];
+	path_in(missing, sizeof(missing), "no such file.txt");
+	spudfile_open_desc open = open_desc(missing, SPUDFILE_ACCESS_READ, SPUDFILE_CREATE_OPEN_EXISTING);
+	open.debug_name         = "the missing one";
+	spudfile_file file      = NULL;
+	CHECK_RESULT(spudfile_file_open(files, &open, &file), SPUDRESULT_SPUDFILE_NOT_FOUND);
+	check_platform_message(&seen, "spudfile_file_open", files, SPUDRESULT_SPUDFILE_NOT_FOUND, PLATFORM_SOURCE);
+	CHECK(seen.last.code == CODE_NOT_FOUND);
+	CHECK(strcmp(seen.last.subject_name, "the missing one") == 0);
+	CHECK(seen.last.object_name[0] == 0);
+
+	// What is at a missing path, and at a path through a file: both
+	// NOT_FOUND, told apart by the message's number.
+	SPUDFILE_PATH_INFO info;
+	memset(&info, 0, sizeof(info));
+	info.base.type = SPUD_STRUCT_TYPE_FILES_PATH_INFO;
+	seen.count     = 0;
+	CHECK_RESULT(spudfile_path_get_info(files, missing, &info), SPUDRESULT_SPUDFILE_NOT_FOUND);
+	check_platform_message(&seen, "spudfile_path_get_info", files, SPUDRESULT_SPUDFILE_NOT_FOUND, PLATFORM_SOURCE);
+	CHECK(seen.last.code == CODE_NOT_FOUND);
+	CHECK(seen.last.subject_name[0] == 0);
+	char plain[1100];
+	char through[1300];
+	path_in(plain, sizeof(plain), "plain.txt");
+	write_whole(plain, "plain");
+	snprintf(through, sizeof(through), "%s" SLASH "inside", plain);
+	seen.count = 0;
+	CHECK_RESULT(spudfile_path_get_info(files, through, &info), SPUDRESULT_SPUDFILE_NOT_FOUND);
+	check_platform_message(&seen, "spudfile_path_get_info", files, SPUDRESULT_SPUDFILE_NOT_FOUND, PLATFORM_SOURCE);
+	CHECK(seen.last.code == CODE_THROUGH_FILE);
+
+	// Access denied: a read-only file opened for writing.
+#if SPUDLIB_PLATFORM_WIN32
+	set_attributes(plain, FILE_ATTRIBUTE_READONLY);
+	const bool denies = true;
+#else
+	CHECK(chmod(plain, 0444) == 0);
+	const bool denies = geteuid() != 0; // root writes anything
+#endif
+	if (denies) {
+		spudfile_open_desc write = open_desc(plain, SPUDFILE_ACCESS_WRITE, SPUDFILE_CREATE_OPEN_EXISTING);
+		seen.count               = 0;
+		CHECK_RESULT(spudfile_file_open(files, &write, &file), SPUDRESULT_SPUDFILE_ACCESS_DENIED);
+		check_platform_message(&seen, "spudfile_file_open", files, SPUDRESULT_SPUDFILE_ACCESS_DENIED, PLATFORM_SOURCE);
+		CHECK(seen.last.code == CODE_ACCESS_DENIED);
+	}
+#if SPUDLIB_PLATFORM_WIN32
+	set_attributes(plain, FILE_ATTRIBUTE_NORMAL);
+#else
+	CHECK(chmod(plain, 0644) == 0);
+#endif
+
+	// Nothing for a refused argument, a check of SpudFiles' own, or an
+	// answer the platform gives as an outcome.
+	seen.count = 0;
+	CHECK_RESULT(spudfile_path_get_info(files, NULL, &info), SPUDRESULT_SPUDFILE_NULL_PATH);
+	spudfile_open_desc bad = open_desc(missing, SPUDFILE_ACCESS_NONE, SPUDFILE_CREATE_OPEN_EXISTING);
+	CHECK_RESULT(spudfile_file_open(files, &bad, &file), SPUDRESULT_DESC_INVALID_PARAMETERS);
+	file = NULL;
+	spudfile_open_desc reading = open_desc(plain, SPUDFILE_ACCESS_READ, SPUDFILE_CREATE_OPEN_EXISTING);
+	CHECK_RESULT(spudfile_file_open(files, &reading, &file), SPUD_SUCCESS);
+	if (file) {
+		CHECK_RESULT(spudfile_file_write_at(file, 0, "x", 1), SPUDRESULT_SPUDFILE_NOT_WRITABLE);
+		char buf[16];
+		uint64_t count = 0;
+		CHECK_RESULT(spudfile_file_read_at(file, 1000, buf, sizeof(buf), &count), SPUD_SUCCESS);
+		CHECK(count == 0);
+		CHECK_RESULT(spudfile_file_lock(file, SPUDFILE_LOCK_EXCLUSIVE, false), SPUD_SUCCESS);
+		spudfile_file other = NULL;
+		CHECK_RESULT(spudfile_file_open(files, &reading, &other), SPUD_SUCCESS);
+		if (other) {
+			CHECK_RESULT(spudfile_file_lock(other, SPUDFILE_LOCK_EXCLUSIVE, false), SPUDRESULT_SPUDFILE_LOCKED);
+			spudfile_file_close(other);
+		}
+		spudfile_file_close(file);
+	}
+	spudfile_listing_desc list;
+	memset(&list, 0, sizeof(list));
+	list.base.type           = SPUD_STRUCT_TYPE_FILES_LISTING_DESC;
+	list.path                = g_dir;
+	spudfile_listing listing = NULL;
+	CHECK_RESULT(spudfile_listing_open(files, &list, &listing), SPUD_SUCCESS);
+	if (listing) {
+		SPUDFILE_LISTING_ENTRY entry;
+		memset(&entry, 0, sizeof(entry));
+		entry.base.type = SPUD_STRUCT_TYPE_FILES_LISTING_ENTRY;
+		SPUDRESULT r    = SPUD_SUCCESS;
+		while ((r = spudfile_listing_next(listing, &entry)) == SPUD_SUCCESS)
+			continue;
+		CHECK(r == SPUDRESULT_SPUDFILE_END_OF_LISTING);
+		spudfile_listing_close(listing);
+	}
+#if SPUDLIB_PLATFORM_WIN32
+	// Not WTF-8 (a lone continuation byte): no file can have that name, a
+	// check of SpudFiles' own, no platform call made.
+	char not_wtf8[1100];
+	path_in(not_wtf8, sizeof(not_wtf8), "bad\x80name");
+	CHECK_RESULT(spudfile_path_get_info(files, not_wtf8, &info), SPUDRESULT_SPUDFILE_NOT_FOUND);
+#endif
+	CHECK(seen.count == 0);
+
+	// A file's call names the file, and its debug name.
+	spudfile_open_desc named = open_desc(plain, SPUDFILE_ACCESS_READ, SPUDFILE_CREATE_OPEN_EXISTING);
+	named.debug_name         = "plain file";
+	CHECK_RESULT(spudfile_file_open(files, &named, &file), SPUD_SUCCESS);
+	CHECK(seen.count == 0);
+	if (file)
+		spudfile_file_close(file);
+
+	// Sending allocates nothing: the same failing call costs the same
+	// allocations with a callback and without.
+	size_t before = tracker.asked;
+	CHECK_RESULT(spudfile_path_get_info(quiet, missing, &info), SPUDRESULT_SPUDFILE_NOT_FOUND);
+	const size_t without = tracker.asked - before;
+	seen.count           = 0;
+	before               = tracker.asked;
+	CHECK_RESULT(spudfile_path_get_info(files, missing, &info), SPUDRESULT_SPUDFILE_NOT_FOUND);
+	const size_t with = tracker.asked - before;
+	CHECK(seen.count == 1);
+	CHECK(with == without);
+
+	// No callback: the same failures, the same results.
+	CHECK_RESULT(spudfile_file_open(quiet, &open, &file), SPUDRESULT_SPUDFILE_NOT_FOUND);
+
+	CHECK_RESULT(spudfile_path_remove(files, plain), SPUD_SUCCESS);
+	spudfile_instance_destroy(files);
+	spudfile_instance_destroy(quiet);
+	CHECK(spudtest_allocator_clean(&tracker));
+}
+
+/* The callback from two threads at once (M3): each thread's failures sent
+ * on its own thread, none lost. */
+enum { THREADED_FAILURES = 200 };
+
+typedef struct threaded_count {
+	atomic_int sent;
+	atomic_int wrong;
+} threaded_count;
+
+static void count_message(
+    const SPUD_MESSAGE *message,
+    void *user_data) {
+	threaded_count *count = (threaded_count *)user_data;
+	atomic_fetch_add(&count->sent, 1);
+	if (message->result != SPUDRESULT_SPUDFILE_NOT_FOUND || !message->call || strcmp(message->call, "spudfile_path_get_info") != 0)
+		atomic_fetch_add(&count->wrong, 1);
+}
+
+struct failer {
+	spudfile_instance files;
+	const char *path;
+	int refused;
+};
+
+#if SPUDLIB_PLATFORM_WIN32
+static unsigned __stdcall fail_many(void *argument)
+#else
+static void *fail_many(void *argument)
+#endif
+{
+	struct failer *f = (struct failer *)argument;
+	for (int i = 0; i < THREADED_FAILURES; ++i) {
+		SPUDFILE_PATH_INFO info;
+		memset(&info, 0, sizeof(info));
+		info.base.type = SPUD_STRUCT_TYPE_FILES_PATH_INFO;
+		if (spudfile_path_get_info(f->files, f->path, &info) == SPUDRESULT_SPUDFILE_NOT_FOUND)
+			++f->refused;
+	}
+	return 0;
+}
+
+static void test_messages_two_threads(void) {
+	threaded_count count;
+	atomic_init(&count.sent, 0);
+	atomic_init(&count.wrong, 0);
+	SPUD_ALLOCATOR system   = spud_allocator_system();
+	spudfile_instance files = make_messaged_instance(&system, count_message, &count);
+	if (!files)
+		return;
+	char a_path[1100];
+	char b_path[1100];
+	struct failer a = {files, path_in(a_path, sizeof(a_path), "missing a"), 0};
+	struct failer b = {files, path_in(b_path, sizeof(b_path), "missing b"), 0};
+#if SPUDLIB_PLATFORM_WIN32
+	HANDLE ta = (HANDLE)_beginthreadex(NULL, 0, fail_many, &a, 0, NULL);
+	HANDLE tb = (HANDLE)_beginthreadex(NULL, 0, fail_many, &b, 0, NULL);
+	WaitForSingleObject(ta, INFINITE);
+	WaitForSingleObject(tb, INFINITE);
+	CloseHandle(ta);
+	CloseHandle(tb);
+#else
+	pthread_t ta;
+	pthread_t tb;
+	pthread_create(&ta, NULL, fail_many, &a);
+	pthread_create(&tb, NULL, fail_many, &b);
+	pthread_join(ta, NULL);
+	pthread_join(tb, NULL);
+#endif
+	CHECK(a.refused == THREADED_FAILURES);
+	CHECK(b.refused == THREADED_FAILURES);
+	CHECK(atomic_load(&count.sent) == 2 * THREADED_FAILURES);
+	CHECK(atomic_load(&count.wrong) == 0);
+	spudfile_instance_destroy(files);
+}
+
+/* ---- Dynamic libraries (card S44) ---- */
+
+typedef int (*test_int_function)(void);
+
+static spudfile_library_desc library_desc(const char *path) {
+	spudfile_library_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type    = SPUD_STRUCT_TYPE_FILES_LIBRARY_DESC;
+	desc.path         = path;
+	desc.binding      = SPUDFILE_LIBRARY_BINDING_NOW;
+	desc.scope        = SPUDFILE_LIBRARY_SCOPE_LOCAL;
+	desc.dependencies = SPUDFILE_LIBRARY_DEPENDENCIES_PLATFORM_ORDER;
+	return desc;
+}
+
+/* [path] as the platform writes it: CMake's paths use '/', which
+ * LoadLibraryExW reads as a relative name. */
+static const char *native_path(
+    char *buf,
+    size_t cap,
+    const char *path) {
+	snprintf(buf, cap, "%s", path);
+#if SPUDLIB_PLATFORM_WIN32
+	for (char *at = buf; *at; ++at)
+		if (*at == '/')
+			*at = '\\';
+#endif
+	return buf;
+}
+
+static spudfile_library open_library(
+    spudfile_instance files,
+    const char *path) {
+	const spudfile_library_desc desc = library_desc(path);
+	spudfile_library library         = NULL;
+	CHECK_RESULT(spudfile_library_open(files, &desc, &library), SPUD_SUCCESS);
+	return library;
+}
+
+static int call_int(
+    spudfile_library library,
+    const char *name) {
+	spudfile_library_function function = NULL;
+	CHECK_RESULT(spudfile_library_find(library, name, &function), SPUD_SUCCESS);
+	if (!function)
+		return -1;
+	return ((test_int_function)function)();
+}
+
+/* Copies the file at [from] to [to], whole, through SpudFiles. */
+static void copy_file(
+    const char *from,
+    const char *to) {
+	spudfile_file in  = open_file(from, SPUDFILE_ACCESS_READ, SPUDFILE_CREATE_OPEN_EXISTING);
+	spudfile_file out = open_file(to, SPUDFILE_ACCESS_WRITE, SPUDFILE_CREATE_TRUNCATE);
+	if (in && out) {
+		static uint8_t buffer[1 << 16];
+		uint64_t at = 0;
+		for (;;) {
+			uint64_t count = 0;
+			CHECK_RESULT(spudfile_file_read_at(in, at, buffer, sizeof(buffer), &count), SPUD_SUCCESS);
+			if (count == 0)
+				break;
+			CHECK_RESULT(spudfile_file_write_at(out, at, buffer, count), SPUD_SUCCESS);
+			at += count;
+		}
+	}
+	if (in)
+		spudfile_file_close(in);
+	if (out)
+		spudfile_file_close(out);
+}
+
+#if SPUDLIB_PLATFORM_WIN32
+#define LIBRARY_SUFFIX ".dll"
+#define SYSTEM_LIBRARY "kernel32.dll"
+#define SYSTEM_FUNCTION "GetCurrentProcessId"
+#elif SPUDLIB_PLATFORM_APPLE
+#define LIBRARY_SUFFIX ".dylib"
+#define SYSTEM_LIBRARY "libSystem.B.dylib"
+#define SYSTEM_FUNCTION "getpid"
+#else
+#define LIBRARY_SUFFIX ".so"
+#define SYSTEM_LIBRARY "libc.so.6"
+#define SYSTEM_FUNCTION "getpid"
+#endif
+
+#if SPUDLIB_PLATFORM_WIN32
+#define LOADER_SOURCE SPUD_PLATFORM_ERROR_SOURCE_WIN32
+#else
+#define LOADER_SOURCE SPUD_PLATFORM_ERROR_SOURCE_DLERROR
+#endif
+
+/* A refused open: NOT_LOADED, nothing handed out, one message from the
+ * loader. On POSIX its words name the file (dlerror's); on Windows the
+ * number is GetLastError's [win32_code] and the text empty (S10's rule:
+ * FormatMessage reads it). */
+static void check_not_loaded(
+    spudfile_instance files,
+    recorder *seen,
+    const char *path,
+    const char *named,
+    long win32_code) {
+	spudfile_library_desc desc = library_desc(path);
+	desc.debug_name            = "refused";
+	spudfile_library library   = (spudfile_library)(uintptr_t)1;
+	seen->count                = 0;
+	CHECK_RESULT(spudfile_library_open(files, &desc, &library), SPUDRESULT_SPUDFILE_LIBRARY_NOT_LOADED);
+	CHECK(library == NULL);
+	check_platform_message(seen, "spudfile_library_open", files, SPUDRESULT_SPUDFILE_LIBRARY_NOT_LOADED, LOADER_SOURCE);
+	CHECK(strcmp(seen->last.subject_name, "refused") == 0);
+#if SPUDLIB_PLATFORM_WIN32
+	(void)named;
+	CHECK(seen->last.code == win32_code);
+	CHECK(seen->last.text[0] == 0);
+#else
+	(void)win32_code;
+	CHECK(seen->last.code == 0);
+	CHECK(strstr(seen->last.text, named) != NULL);
+#endif
+}
+
+static void test_library_checks(spudfile_instance files) {
+	char a[1100];
+	native_path(a, sizeof(a), SPUDFILES_TEST_LIBRARY_A);
+	spudfile_library_desc desc = library_desc(a);
+	spudfile_library library   = (spudfile_library)(uintptr_t)1;
+	CHECK_RESULT(spudfile_library_open(NULL, &desc, &library), SPUDRESULT_SPUDFILE_INVALID_INSTANCE);
+	CHECK_RESULT(spudfile_library_open(files, NULL, &library), SPUDRESULT_NULL_DESC);
+	desc.base.type = SPUD_STRUCT_TYPE_FILES_OPEN_DESC;
+	CHECK_RESULT(spudfile_library_open(files, &desc, &library), SPUDRESULT_STRUCT_WRONG_TYPE);
+	desc.base.type = SPUD_STRUCT_TYPE_FILES_LIBRARY_DESC;
+	desc.base.next = (const SPUD_STRUCT_BASE *)&desc;
+	CHECK_RESULT(spudfile_library_open(files, &desc, &library), SPUDRESULT_STRUCT_UNKNOWN_IN_CHAIN);
+	desc.base.next = NULL;
+	CHECK_RESULT(spudfile_library_open(files, &desc, NULL), SPUDRESULT_NULL_OUTPUT_PARAMETER);
+	desc.path = NULL;
+	CHECK_RESULT(spudfile_library_open(files, &desc, &library), SPUDRESULT_SPUDFILE_NULL_PATH);
+	CHECK(library == NULL);
+	desc.path = "";
+	CHECK_RESULT(spudfile_library_open(files, &desc, &library), SPUDRESULT_SPUDFILE_NULL_PATH);
+	desc.path = a;
+	// Each enum's zero and a value past its last.
+	const uint32_t wrong[2] = {0, 3};
+	for (int i = 0; i < 2; ++i) {
+		desc         = library_desc(a);
+		desc.binding = (SPUDFILE_LIBRARY_BINDING)wrong[i];
+		CHECK_RESULT(spudfile_library_open(files, &desc, &library), SPUDRESULT_DESC_INVALID_PARAMETERS);
+		desc       = library_desc(a);
+		desc.scope = (SPUDFILE_LIBRARY_SCOPE)wrong[i];
+		CHECK_RESULT(spudfile_library_open(files, &desc, &library), SPUDRESULT_DESC_INVALID_PARAMETERS);
+		desc              = library_desc(a);
+		desc.dependencies = (SPUDFILE_LIBRARY_DEPENDENCIES)wrong[i];
+		CHECK_RESULT(spudfile_library_open(files, &desc, &library), SPUDRESULT_DESC_INVALID_PARAMETERS);
+	}
+	// What the platform's loader has no choice of.
+#if SPUDLIB_PLATFORM_WIN32
+	desc         = library_desc(a);
+	desc.binding = SPUDFILE_LIBRARY_BINDING_LAZY;
+	CHECK_RESULT(spudfile_library_open(files, &desc, &library), SPUDRESULT_SPUDFILE_LIBRARY_OPTION_NOT_SUPPORTED);
+	desc       = library_desc(a);
+	desc.scope = SPUDFILE_LIBRARY_SCOPE_GLOBAL;
+	CHECK_RESULT(spudfile_library_open(files, &desc, &library), SPUDRESULT_SPUDFILE_LIBRARY_OPTION_NOT_SUPPORTED);
+	// The library's directory first needs a fully qualified path.
+	desc              = library_desc("spudfiles_test_library_a.dll");
+	desc.dependencies = SPUDFILE_LIBRARY_DEPENDENCIES_LIBRARY_DIRECTORY_FIRST;
+	CHECK_RESULT(spudfile_library_open(files, &desc, &library), SPUDRESULT_DESC_INVALID_PARAMETERS);
+	desc.path = "sub\\spudfiles_test_library_a.dll";
+	CHECK_RESULT(spudfile_library_open(files, &desc, &library), SPUDRESULT_DESC_INVALID_PARAMETERS);
+	desc.path = "C:spudfiles_test_library_a.dll";
+	CHECK_RESULT(spudfile_library_open(files, &desc, &library), SPUDRESULT_DESC_INVALID_PARAMETERS);
+	desc.path = "\\spudfiles_test_library_a.dll";
+	CHECK_RESULT(spudfile_library_open(files, &desc, &library), SPUDRESULT_DESC_INVALID_PARAMETERS);
+	// Fully qualified, it opens, its dependencies searched from its own
+	// directory.
+	desc.path = a;
+	CHECK_RESULT(spudfile_library_open(files, &desc, &library), SPUD_SUCCESS);
+	if (library) {
+		CHECK(call_int(library, "spudfiles_test_value") == 1);
+		spudfile_library_close(library);
+	}
+#else
+	desc              = library_desc(a);
+	desc.dependencies = SPUDFILE_LIBRARY_DEPENDENCIES_LIBRARY_DIRECTORY_FIRST;
+	CHECK_RESULT(spudfile_library_open(files, &desc, &library), SPUDRESULT_SPUDFILE_LIBRARY_OPTION_NOT_SUPPORTED);
+#endif
+	CHECK(library == NULL || library != (spudfile_library)(uintptr_t)1);
+
+	// find's arguments.
+	library = open_library(files, a);
+	if (!library)
+		return;
+	spudfile_library_function function = (spudfile_library_function)(uintptr_t)1;
+	CHECK_RESULT(spudfile_library_find(NULL, "spudfiles_test_value", &function), SPUDRESULT_SPUDFILE_INVALID_LIBRARY);
+	CHECK_RESULT(spudfile_library_find(library, NULL, &function), SPUDRESULT_NULL_DESC);
+	CHECK_RESULT(spudfile_library_find(library, "", &function), SPUDRESULT_NULL_DESC);
+	CHECK_RESULT(spudfile_library_find(library, "spudfiles_test_value", NULL), SPUDRESULT_NULL_OUTPUT_PARAMETER);
+	spudfile_library_close(library);
+	spudfile_library_close(NULL);
+}
+
+static void test_libraries(void) {
+	spudtest_allocator tracker;
+	SPUD_ALLOCATOR allocator = spudtest_allocator_make(&tracker);
+	recorder seen;
+	memset(&seen, 0, sizeof(seen));
+	spudfile_instance files = make_messaged_instance(&allocator, record_message, &seen);
+	if (!files)
+		return;
+	test_library_checks(files);
+	CHECK(seen.count == 0);
+
+	char a[1100];
+	char b[1100];
+	native_path(a, sizeof(a), SPUDFILES_TEST_LIBRARY_A);
+	native_path(b, sizeof(b), SPUDFILES_TEST_LIBRARY_B);
+
+	// Opened, found, called; the initializer ran once; closed.
+	spudfile_library_desc desc = library_desc(a);
+	desc.debug_name            = "library a";
+	spudfile_library library   = NULL;
+	CHECK_RESULT(spudfile_library_open(files, &desc, &library), SPUD_SUCCESS);
+	if (library) {
+		CHECK(strcmp(spud_debug_name_get(library), "library a") == 0);
+		CHECK(call_int(library, "spudfiles_test_value") == 1);
+		CHECK(call_int(library, "spudfiles_test_initialized") == 1);
+		// A name it doesn't export: refused, with the loader's message.
+		spudfile_library_function function = (spudfile_library_function)(uintptr_t)1;
+		seen.count                         = 0;
+		CHECK_RESULT(spudfile_library_find(library, "spudfiles_test_nothing", &function), SPUDRESULT_SPUDFILE_SYMBOL_NOT_FOUND);
+		CHECK(function == NULL);
+		check_platform_message(&seen, "spudfile_library_find", library, SPUDRESULT_SPUDFILE_SYMBOL_NOT_FOUND, LOADER_SOURCE);
+		CHECK(strcmp(seen.last.object_name, "library a") == 0);
+#if SPUDLIB_PLATFORM_WIN32
+		CHECK(seen.last.code == ERROR_PROC_NOT_FOUND);
+#else
+		CHECK(strstr(seen.last.text, "spudfiles_test_nothing") != NULL);
+#endif
+		spudfile_library_close(library);
+	}
+
+	// One path opened twice: two handles over one image, each closed on its
+	// own.
+	spudfile_library first  = open_library(files, a);
+	spudfile_library second = open_library(files, a);
+	if (first && second) {
+		CHECK(first != second);
+		CHECK(call_int(first, "spudfiles_test_bump") == 1);
+		CHECK(call_int(second, "spudfiles_test_bump") == 2);
+		CHECK(call_int(second, "spudfiles_test_initialized") == 1);
+		spudfile_library_close(first);
+		first = NULL;
+		CHECK(call_int(second, "spudfiles_test_bump") == 3);
+	}
+	spudfile_library_close(first);
+	spudfile_library_close(second);
+
+	// Two copies under two paths: two images; a copy of b beside a.
+	char copy_one[1100];
+	char copy_two[1100];
+	char copy_b[1100];
+	path_in(copy_one, sizeof(copy_one), "copy one" LIBRARY_SUFFIX);
+	path_in(copy_two, sizeof(copy_two), "copy two" LIBRARY_SUFFIX);
+	path_in(copy_b, sizeof(copy_b), "copy b" LIBRARY_SUFFIX);
+	copy_file(a, copy_one);
+	copy_file(a, copy_two);
+	copy_file(b, copy_b);
+	first                   = open_library(files, copy_one);
+	second                  = open_library(files, copy_two);
+	spudfile_library beside = open_library(files, copy_b);
+	if (first && second && beside) {
+		CHECK(call_int(first, "spudfiles_test_bump") == 1);
+		CHECK(call_int(second, "spudfiles_test_bump") == 1);
+		CHECK(call_int(first, "spudfiles_test_bump") == 2);
+		CHECK(call_int(first, "spudfiles_test_value") == 1);
+		CHECK(call_int(beside, "spudfiles_test_value") == 2);
+		CHECK(call_int(second, "spudfiles_test_initialized") == 1);
+	}
+	spudfile_library_close(first);
+	spudfile_library_close(second);
+	spudfile_library_close(beside);
+
+#if SPUDLIB_PLATFORM_WIN32
+	// The original replaced while its copy is loaded: the copy holds only
+	// its own path.
+	char original[1100];
+	char live[1100];
+	path_in(original, sizeof(original), "original" LIBRARY_SUFFIX);
+	path_in(live, sizeof(live), "live" LIBRARY_SUFFIX);
+	copy_file(a, original);
+	copy_file(original, live);
+	library = open_library(files, live);
+	if (library) {
+		char staged[1100];
+		path_in(staged, sizeof(staged), "staged" LIBRARY_SUFFIX);
+		copy_file(b, staged);
+		CHECK_RESULT(spudfile_path_replace(files, staged, original, SPUDFILE_FLUSH_LEVEL_NONE), SPUD_SUCCESS);
+		CHECK(call_int(library, "spudfiles_test_value") == 1);
+		spudfile_library rebuilt = open_library(files, original);
+		if (rebuilt) {
+			CHECK(call_int(rebuilt, "spudfiles_test_value") == 2);
+			spudfile_library_close(rebuilt);
+		}
+		// The loaded copy's own file is held while it is loaded.
+		CHECK_RESULT(spudfile_path_remove(files, live), SPUDRESULT_SPUDFILE_IN_USE);
+		spudfile_library_close(library);
+	}
+	CHECK_RESULT(spudfile_path_remove(files, live), SPUD_SUCCESS);
+	CHECK_RESULT(spudfile_path_remove(files, original), SPUD_SUCCESS);
+#endif
+
+	// Refusals, each NOT_LOADED with one message.
+	char missing[1100];
+	path_in(missing, sizeof(missing), "missing" LIBRARY_SUFFIX);
+	check_not_loaded(files, &seen, missing, "missing", 126 /* ERROR_MOD_NOT_FOUND */);
+	char text[1100];
+	path_in(text, sizeof(text), "text" LIBRARY_SUFFIX);
+	write_whole(text, "not a library, only text with the library's extension\n");
+	check_not_loaded(files, &seen, text, "text", 193 /* ERROR_BAD_EXE_FORMAT */);
+	CHECK_RESULT(spudfile_path_remove(files, text), SPUD_SUCCESS);
+	char dependent[1100];
+	native_path(dependent, sizeof(dependent), SPUDFILES_TEST_LIBRARY_DEPENDENT);
+	check_not_loaded(files, &seen, dependent, "spudfiles_test_dependency", 126 /* ERROR_MOD_NOT_FOUND */);
+#if SPUDLIB_PLATFORM_WIN32
+	char failing[1100];
+	native_path(failing, sizeof(failing), SPUDFILES_TEST_LIBRARY_FAILING);
+	check_not_loaded(files, &seen, failing, "failing", 1114 /* ERROR_DLL_INIT_FAILED */);
+#endif
+
+	// A name with no directory, searched for by the platform.
+	library = open_library(files, SYSTEM_LIBRARY);
+	if (library) {
+		spudfile_library_function function = NULL;
+		CHECK_RESULT(spudfile_library_find(library, SYSTEM_FUNCTION, &function), SPUD_SUCCESS);
+		CHECK(function != NULL);
+		spudfile_library_close(library);
+	}
+
+	// A non-ASCII directory and file name.
+	char dir[1100];
+	char unicode[1300];
+	path_in(dir, sizeof(dir), "d\xC3\xAFr \xE5\x9B\xB3"); // "dïr 図"
+	CHECK_RESULT(spudfile_directory_create(files, dir), SPUD_SUCCESS);
+	snprintf(unicode, sizeof(unicode), "%s" SLASH "l\xC3\xAF" "b" LIBRARY_SUFFIX, dir);
+	copy_file(b, unicode);
+	library = open_library(files, unicode);
+	if (library) {
+		CHECK(call_int(library, "spudfiles_test_value") == 2);
+		spudfile_library_close(library);
+	}
+	CHECK_RESULT(spudfile_path_remove(files, unicode), SPUD_SUCCESS);
+	CHECK_RESULT(spudfile_directory_remove(files, dir), SPUD_SUCCESS);
+
+#if SPUDLIB_PLATFORM_WIN32
+	// Long paths. SpudFiles takes 259 characters, MAX_PATH's most, and the
+	// file calls do; Windows' loader stops at 250 (ERROR_FILENAME_EXCED_RANGE
+	// from 251, with either search), and nothing is added to the path to get
+	// past it, so 250 loads and 259 is the loader's refusal.
+	const size_t lengths[2] = {250, 259};
+	for (int i = 0; i < 2; ++i) {
+		char longest[300];
+		const size_t base = strlen(g_dir) + 1;
+		if (base + strlen(LIBRARY_SUFFIX) + 1 >= lengths[i])
+			break;
+		const size_t name = lengths[i] - base - strlen(LIBRARY_SUFFIX);
+		snprintf(longest, sizeof(longest), "%s" SLASH, g_dir);
+		memset(longest + base, 'l', name);
+		snprintf(longest + base + name, sizeof(longest) - base - name, "%s", LIBRARY_SUFFIX);
+		CHECK(strlen(longest) == lengths[i]);
+		copy_file(a, longest);
+		if (lengths[i] == 250) {
+			library = open_library(files, longest);
+			if (library) {
+				CHECK(call_int(library, "spudfiles_test_value") == 1);
+				spudfile_library_close(library);
+			}
+		} else {
+			check_not_loaded(files, &seen, longest, "", 206 /* ERROR_FILENAME_EXCED_RANGE */);
+		}
+		CHECK_RESULT(spudfile_path_remove(files, longest), SPUD_SUCCESS);
+	}
+#endif
+
+	// Out of memory at each allocation: refused, the library not left
+	// loaded (its counter starts again at the next open that succeeds).
+	desc            = library_desc(copy_one);
+	desc.debug_name = "counted";
+	for (size_t point = 0;; ++point) {
+		tracker.refuse_after    = tracker.given + point;
+		library                 = (spudfile_library)(uintptr_t)1;
+		const SPUDRESULT result = spudfile_library_open(files, &desc, &library);
+		tracker.refuse_after    = SIZE_MAX;
+		if (result == SPUD_SUCCESS) {
+			CHECK(point > 0);
+			CHECK(call_int(library, "spudfiles_test_bump") == 1);
+			spudfile_library_close(library);
+			break;
+		}
+		CHECK(result == SPUDRESULT_OUT_OF_MEMORY);
+		CHECK(library == NULL);
+		if (point > 16) {
+			CHECK(!"open never succeeded");
+			break;
+		}
+	}
+
+	CHECK_RESULT(spudfile_path_remove(files, copy_one), SPUD_SUCCESS);
+	CHECK_RESULT(spudfile_path_remove(files, copy_two), SPUD_SUCCESS);
+	CHECK_RESULT(spudfile_path_remove(files, copy_b), SPUD_SUCCESS);
+	spudfile_instance_destroy(files);
+	CHECK(spudtest_allocator_clean(&tracker));
+}
+
+/* Two threads opening, finding, calling and closing at once. */
+enum { LIBRARY_ROUNDS = 50 };
+
+struct library_user {
+	spudfile_instance files;
+	const char *path;
+	int value;
+	int ok;
+};
+
+#if SPUDLIB_PLATFORM_WIN32
+static unsigned __stdcall use_library(void *argument)
+#else
+static void *use_library(void *argument)
+#endif
+{
+	struct library_user *user = (struct library_user *)argument;
+	for (int i = 0; i < LIBRARY_ROUNDS; ++i) {
+		const spudfile_library_desc desc = library_desc(user->path);
+		spudfile_library library         = NULL;
+		if (spudfile_library_open(user->files, &desc, &library) != SPUD_SUCCESS)
+			continue;
+		spudfile_library_function function = NULL;
+		if (spudfile_library_find(library, "spudfiles_test_value", &function) == SPUD_SUCCESS && ((test_int_function)function)() == user->value)
+			++user->ok;
+		spudfile_library_close(library);
+	}
+	return 0;
+}
+
+static void test_libraries_two_threads(void) {
+	char a[1100];
+	char b[1100];
+	native_path(a, sizeof(a), SPUDFILES_TEST_LIBRARY_A);
+	native_path(b, sizeof(b), SPUDFILES_TEST_LIBRARY_B);
+	// The system's allocator: the counting one takes one thread at a time.
+	SPUD_ALLOCATOR system   = spud_allocator_system();
+	spudfile_instance files = make_messaged_instance(&system, NULL, NULL);
+	if (!files)
+		return;
+	struct library_user one = {files, a, 1, 0};
+	struct library_user two = {files, b, 2, 0};
+#if SPUDLIB_PLATFORM_WIN32
+	HANDLE ta = (HANDLE)_beginthreadex(NULL, 0, use_library, &one, 0, NULL);
+	HANDLE tb = (HANDLE)_beginthreadex(NULL, 0, use_library, &two, 0, NULL);
+	WaitForSingleObject(ta, INFINITE);
+	WaitForSingleObject(tb, INFINITE);
+	CloseHandle(ta);
+	CloseHandle(tb);
+#else
+	pthread_t ta;
+	pthread_t tb;
+	pthread_create(&ta, NULL, use_library, &one);
+	pthread_create(&tb, NULL, use_library, &two);
+	pthread_join(ta, NULL);
+	pthread_join(tb, NULL);
+#endif
+	CHECK(one.ok == LIBRARY_ROUNDS);
+	CHECK(two.ok == LIBRARY_ROUNDS);
+	spudfile_instance_destroy(files);
+}
+
 int main(void) {
 #if SPUDLIB_PLATFORM_WIN32
+	// A library whose dependency is missing would otherwise put up the
+	// system's modal "not found" box and wait for someone to close it: the
+	// error mode is the caller's (spudfiles.h, "Dynamic libraries"), and a
+	// test has no one to click.
+	SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);
 	const char *tmp = getenv("TEMP");
 	if (!tmp)
 		tmp = ".";
@@ -1598,6 +2411,10 @@ int main(void) {
 		test_directory_tree();
 		test_copy_mode();
 		test_locks();
+		test_messages();
+		test_messages_two_threads();
+		test_libraries();
+		test_libraries_two_threads();
 		spudfile_instance_destroy(g_files);
 	}
 	CHECK(spudtest_allocator_clean(&tracker));

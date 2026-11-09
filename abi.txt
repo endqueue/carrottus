@@ -99,6 +99,15 @@ const SPUDFILE_ENTRY_KIND_SYMBOLIC_LINK = 3
 const SPUDFILE_FLUSH_LEVEL_DEVICE = 1
 const SPUDFILE_FLUSH_LEVEL_MEDIA = 2
 const SPUDFILE_FLUSH_LEVEL_NONE = 0
+const SPUDFILE_LIBRARY_BINDING_LAZY = 2
+const SPUDFILE_LIBRARY_BINDING_NONE = 0
+const SPUDFILE_LIBRARY_BINDING_NOW = 1
+const SPUDFILE_LIBRARY_DEPENDENCIES_LIBRARY_DIRECTORY_FIRST = 2
+const SPUDFILE_LIBRARY_DEPENDENCIES_NONE = 0
+const SPUDFILE_LIBRARY_DEPENDENCIES_PLATFORM_ORDER = 1
+const SPUDFILE_LIBRARY_SCOPE_GLOBAL = 2
+const SPUDFILE_LIBRARY_SCOPE_LOCAL = 1
+const SPUDFILE_LIBRARY_SCOPE_NONE = 0
 const SPUDFILE_LOCK_EXCLUSIVE = 2
 const SPUDFILE_LOCK_NONE = 0
 const SPUDFILE_LOCK_SHARED = 1
@@ -477,15 +486,6 @@ const SPUDNET_ADDRESS_FAMILY_IPV4 = 1
 const SPUDNET_ADDRESS_FAMILY_IPV6 = 2
 const SPUDNET_ERROR_SIDE_RECEIVING = 0
 const SPUDNET_ERROR_SIDE_SENDING = 1
-const SPUDNET_ERROR_SOURCE_CURL = 4
-const SPUDNET_ERROR_SOURCE_ERRNO = 2
-const SPUDNET_ERROR_SOURCE_NONE = 0
-const SPUDNET_ERROR_SOURCE_NSURL = 5
-const SPUDNET_ERROR_SOURCE_OSSTATUS = 6
-const SPUDNET_ERROR_SOURCE_OTHER = 8
-const SPUDNET_ERROR_SOURCE_RESOLVER = 3
-const SPUDNET_ERROR_SOURCE_TLS_PIN = 7
-const SPUDNET_ERROR_SOURCE_WIN32 = 1
 const SPUDNET_HTTP_BODY_NONE = 0
 const SPUDNET_HTTP_BODY_SIZED = 1
 const SPUDNET_HTTP_BODY_UNSIZED = 2
@@ -641,9 +641,12 @@ const SPUDRESULT_SPUDFILE_END_OF_LISTING = 1014
 const SPUDRESULT_SPUDFILE_FLUSH_LEVEL_NOT_SUPPORTED = 1007
 const SPUDRESULT_SPUDFILE_INVALID_FILE = 1002
 const SPUDRESULT_SPUDFILE_INVALID_INSTANCE = 1008
+const SPUDRESULT_SPUDFILE_INVALID_LIBRARY = 1021
 const SPUDRESULT_SPUDFILE_INVALID_LISTING = 1017
 const SPUDRESULT_SPUDFILE_INVALID_MAPPING = 1003
 const SPUDRESULT_SPUDFILE_IN_USE = 1006
+const SPUDRESULT_SPUDFILE_LIBRARY_NOT_LOADED = 1022
+const SPUDRESULT_SPUDFILE_LIBRARY_OPTION_NOT_SUPPORTED = 1024
 const SPUDRESULT_SPUDFILE_LOCKED = 1016
 const SPUDRESULT_SPUDFILE_NOT_A_DIRECTORY = 1015
 const SPUDRESULT_SPUDFILE_NOT_A_FILE = 1012
@@ -653,6 +656,7 @@ const SPUDRESULT_SPUDFILE_NOT_LOCKED = 1019
 const SPUDRESULT_SPUDFILE_NOT_READABLE = 1004
 const SPUDRESULT_SPUDFILE_NOT_WRITABLE = 1013
 const SPUDRESULT_SPUDFILE_NULL_PATH = 1001
+const SPUDRESULT_SPUDFILE_SYMBOL_NOT_FOUND = 1023
 const SPUDRESULT_SPUDINPUT_ACCESS_DENIED = 5005
 const SPUDRESULT_SPUDINPUT_FEATURE_NOT_PRESENT = 5004
 const SPUDRESULT_SPUDINPUT_GAMEPAD_NOT_CONNECTED = 5002
@@ -693,12 +697,33 @@ const SPUDRESULT_STRUCT_DUPLICATE_IN_CHAIN = 14
 const SPUDRESULT_STRUCT_UNKNOWN_IN_CHAIN = 13
 const SPUDRESULT_STRUCT_WRONG_TYPE = 12
 const SPUDRESULT_ZERO_SIZE = 8
+const SPUD_MESSAGE_ORIGIN_CHECK = 2
+const SPUD_MESSAGE_ORIGIN_GPU_VALIDATION = 4
+const SPUD_MESSAGE_ORIGIN_NATIVE_VALIDATION = 3
+const SPUD_MESSAGE_ORIGIN_PLATFORM = 1
+const SPUD_MESSAGE_SEVERITY_CORRUPTION = 5
+const SPUD_MESSAGE_SEVERITY_ERROR = 4
+const SPUD_MESSAGE_SEVERITY_INFO = 2
+const SPUD_MESSAGE_SEVERITY_VERBOSE = 1
+const SPUD_MESSAGE_SEVERITY_WARNING = 3
+const SPUD_PLATFORM_ERROR_SOURCE_CURL = 4
+const SPUD_PLATFORM_ERROR_SOURCE_DLERROR = 10
+const SPUD_PLATFORM_ERROR_SOURCE_ERRNO = 2
+const SPUD_PLATFORM_ERROR_SOURCE_NONE = 0
+const SPUD_PLATFORM_ERROR_SOURCE_NSURL = 5
+const SPUD_PLATFORM_ERROR_SOURCE_OSSTATUS = 6
+const SPUD_PLATFORM_ERROR_SOURCE_OTHER = 8
+const SPUD_PLATFORM_ERROR_SOURCE_RESOLVER = 3
+const SPUD_PLATFORM_ERROR_SOURCE_TLS_PIN = 7
+const SPUD_PLATFORM_ERROR_SOURCE_VKRESULT = 9
+const SPUD_PLATFORM_ERROR_SOURCE_WIN32 = 1
 const SPUD_STRUCT_TYPE_AUDIO_DEVICE_PROPERTIES = 2000
 const SPUD_STRUCT_TYPE_AUDIO_INSTANCE_DESC = 2004
 const SPUD_STRUCT_TYPE_AUDIO_STREAM_CONFIG = 2003
 const SPUD_STRUCT_TYPE_AUDIO_STREAM_DESC = 2002
 const SPUD_STRUCT_TYPE_AUDIO_TIMING_CAPS = 2001
 const SPUD_STRUCT_TYPE_FILES_INSTANCE_DESC = 5001
+const SPUD_STRUCT_TYPE_FILES_LIBRARY_DESC = 5005
 const SPUD_STRUCT_TYPE_FILES_LISTING_DESC = 5003
 const SPUD_STRUCT_TYPE_FILES_LISTING_ENTRY = 5004
 const SPUD_STRUCT_TYPE_FILES_OPEN_DESC = 5000
@@ -738,6 +763,7 @@ const SPUD_STRUCT_TYPE_GPU_WRITE_DESCRIPTOR_SET = 1016
 const SPUD_STRUCT_TYPE_INPUT_GAMEPAD_PROPERTIES = 4001
 const SPUD_STRUCT_TYPE_INPUT_INSTANCE_DESC = 4000
 const SPUD_STRUCT_TYPE_MAX_ENUM = 2147483647
+const SPUD_STRUCT_TYPE_MESSAGE = 1
 const SPUD_STRUCT_TYPE_NET_HTTP_CLIENT_DESC = 3003
 const SPUD_STRUCT_TYPE_NET_HTTP_TRANSFER_DESC = 3004
 const SPUD_STRUCT_TYPE_NET_INSTANCE_DESC = 3006
@@ -783,6 +809,9 @@ fn spudfile_file_unlock SPUDRESULT (spudfile_file)
 fn spudfile_file_write_at SPUDRESULT (spudfile_file, uint64_t, const void *, uint64_t)
 fn spudfile_instance_create SPUDRESULT (const spudfile_instance_desc *, spudfile_instance *)
 fn spudfile_instance_destroy void (spudfile_instance)
+fn spudfile_library_close void (spudfile_library)
+fn spudfile_library_find SPUDRESULT (spudfile_library, const char *, spudfile_library_function *)
+fn spudfile_library_open SPUDRESULT (spudfile_instance, const spudfile_library_desc *, spudfile_library *)
 fn spudfile_listing_close void (spudfile_listing)
 fn spudfile_listing_next SPUDRESULT (spudfile_listing, SPUDFILE_LISTING_ENTRY *)
 fn spudfile_listing_open SPUDRESULT (spudfile_instance, const spudfile_listing_desc *, spudfile_listing *)
@@ -1120,7 +1149,7 @@ macro SPUDLIB_VERSION_GET_MAJOR(version) ((uint32_t)(version) >> 22U)
 macro SPUDLIB_VERSION_GET_MINOR(version) (((uint32_t)(version) >> 12U) & 0x3FFU)
 macro SPUDLIB_VERSION_GET_PATCH(version) ((uint32_t)(version) & 0xFFFU)
 macro SPUDLIB_VERSION_MAJOR 0
-macro SPUDLIB_VERSION_MINOR 1
+macro SPUDLIB_VERSION_MINOR 2
 macro SPUDLIB_VERSION_PATCH 0
 macro SPUDMEM_GiB(n) ((uint64_t)(n) << 30)
 macro SPUDMEM_KiB(n) ((uint64_t)(n) << 10)
@@ -1144,6 +1173,7 @@ opaque spudaudio_instance_t
 opaque spudaudio_stream_t
 opaque spudfile_file_t
 opaque spudfile_instance_t
+opaque spudfile_library_t
 opaque spudfile_listing_t
 opaque spudfile_mapping_t
 opaque spudgpu_acceleration_structure_t
@@ -1366,15 +1396,42 @@ struct SPUD_ALLOCATOR size=24 align=8
 field SPUD_ALLOCATOR.user_data @0 void *
 field SPUD_ALLOCATOR.allocate @8 SPUD_ALLOCATE_FUNCTION
 field SPUD_ALLOCATOR.free @16 SPUD_FREE_FUNCTION
+struct SPUD_MESSAGE size=88 align=8
+field SPUD_MESSAGE.base @0 SPUD_STRUCT_BASE
+field SPUD_MESSAGE.origin @16 SPUD_MESSAGE_ORIGIN
+field SPUD_MESSAGE.severity @20 SPUD_MESSAGE_SEVERITY
+field SPUD_MESSAGE.platform_source @24 SPUD_PLATFORM_ERROR_SOURCE
+field SPUD_MESSAGE.result @28 SPUDRESULT
+field SPUD_MESSAGE.id @32 uint32_t
+field SPUD_MESSAGE.dropped @36 uint32_t
+field SPUD_MESSAGE.platform_code @40 int64_t
+field SPUD_MESSAGE.call @48 const char *
+field SPUD_MESSAGE.object @56 const void *
+field SPUD_MESSAGE.object_debug_name @64 const char *
+field SPUD_MESSAGE.subject_debug_name @72 const char *
+field SPUD_MESSAGE.text @80 const char *
+struct SPUD_PLATFORM_ERROR size=16 align=8
+field SPUD_PLATFORM_ERROR.result @0 SPUDRESULT
+field SPUD_PLATFORM_ERROR.source @4 SPUD_PLATFORM_ERROR_SOURCE
+field SPUD_PLATFORM_ERROR.code @8 int64_t
 struct SPUD_STRUCT_BASE size=16 align=8
 field SPUD_STRUCT_BASE.type @0 SPUD_STRUCT_TYPE
 field SPUD_STRUCT_BASE.next @8 const struct SPUD_STRUCT_BASE *
 struct SPUD_STRUCT_BASE_OUT size=16 align=8
 field SPUD_STRUCT_BASE_OUT.type @0 SPUD_STRUCT_TYPE
 field SPUD_STRUCT_BASE_OUT.next @8 struct SPUD_STRUCT_BASE_OUT *
-struct spudfile_instance_desc size=24 align=8
+struct spudfile_instance_desc size=40 align=8
 field spudfile_instance_desc.base @0 SPUD_STRUCT_BASE
 field spudfile_instance_desc.allocator @16 const SPUD_ALLOCATOR *
+field spudfile_instance_desc.message_callback @24 SPUD_MESSAGE_CALLBACK
+field spudfile_instance_desc.message_user_data @32 void *
+struct spudfile_library_desc size=48 align=8
+field spudfile_library_desc.base @0 SPUD_STRUCT_BASE
+field spudfile_library_desc.path @16 const char *
+field spudfile_library_desc.binding @24 SPUDFILE_LIBRARY_BINDING
+field spudfile_library_desc.scope @28 SPUDFILE_LIBRARY_SCOPE
+field spudfile_library_desc.dependencies @32 SPUDFILE_LIBRARY_DEPENDENCIES
+field spudfile_library_desc.debug_name @40 const char *
 struct spudfile_listing_desc size=32 align=8
 field spudfile_listing_desc.base @0 SPUD_STRUCT_BASE
 field spudfile_listing_desc.path @16 const char *
@@ -1753,7 +1810,7 @@ field spudgpu_write_descriptor_set.sampler @56 spudgpu_sampler
 field spudgpu_write_descriptor_set.acceleration_structures @64 const spudgpu_acceleration_structure *
 struct spudnet_error size=272 align=8
 field spudnet_error.result @0 SPUDRESULT
-field spudnet_error.source @4 SPUDNET_ERROR_SOURCE
+field spudnet_error.source @4 SPUD_PLATFORM_ERROR_SOURCE
 field spudnet_error.code @8 int64_t
 field spudnet_error.text @16 char[256]
 struct spudnet_header size=16 align=8
@@ -1844,6 +1901,9 @@ typedef SPUDFILE_ACCESS = enum SPUDFILE_ACCESS
 typedef SPUDFILE_CREATE = enum SPUDFILE_CREATE
 typedef SPUDFILE_ENTRY_KIND = enum SPUDFILE_ENTRY_KIND
 typedef SPUDFILE_FLUSH_LEVEL = enum SPUDFILE_FLUSH_LEVEL
+typedef SPUDFILE_LIBRARY_BINDING = enum SPUDFILE_LIBRARY_BINDING
+typedef SPUDFILE_LIBRARY_DEPENDENCIES = enum SPUDFILE_LIBRARY_DEPENDENCIES
+typedef SPUDFILE_LIBRARY_SCOPE = enum SPUDFILE_LIBRARY_SCOPE
 typedef SPUDFILE_LISTING_ENTRY = struct SPUDFILE_LISTING_ENTRY
 typedef SPUDFILE_LOCK = enum SPUDFILE_LOCK
 typedef SPUDFILE_PATH_INFO = struct SPUDFILE_PATH_INFO
@@ -1917,7 +1977,6 @@ typedef SPUDINPUT_INSTANCE_DESC = struct SPUDINPUT_INSTANCE_DESC
 typedef SPUDINPUT_NATIVE_API = uint32_t
 typedef SPUDNET_ADDRESS_FAMILY = enum SPUDNET_ADDRESS_FAMILY
 typedef SPUDNET_ERROR_SIDE = enum SPUDNET_ERROR_SIDE
-typedef SPUDNET_ERROR_SOURCE = enum SPUDNET_ERROR_SOURCE
 typedef SPUDNET_HTTP_BODY = enum SPUDNET_HTTP_BODY
 typedef SPUDNET_PROXY = enum SPUDNET_PROXY
 typedef SPUDNET_TLS_TRUST = enum SPUDNET_TLS_TRUST
@@ -1927,6 +1986,12 @@ typedef SPUDRESULT = enum SPUDRESULT
 typedef SPUD_ALLOCATE_FUNCTION = void *(*)(void *, size_t, size_t)
 typedef SPUD_ALLOCATOR = struct SPUD_ALLOCATOR
 typedef SPUD_FREE_FUNCTION = void (*)(void *, void *, size_t, size_t)
+typedef SPUD_MESSAGE = struct SPUD_MESSAGE
+typedef SPUD_MESSAGE_CALLBACK = void (*)(const SPUD_MESSAGE *, void *)
+typedef SPUD_MESSAGE_ORIGIN = enum SPUD_MESSAGE_ORIGIN
+typedef SPUD_MESSAGE_SEVERITY = enum SPUD_MESSAGE_SEVERITY
+typedef SPUD_PLATFORM_ERROR = struct SPUD_PLATFORM_ERROR
+typedef SPUD_PLATFORM_ERROR_SOURCE = enum SPUD_PLATFORM_ERROR_SOURCE
 typedef SPUD_STRUCT_BASE = struct SPUD_STRUCT_BASE
 typedef SPUD_STRUCT_BASE_OUT = struct SPUD_STRUCT_BASE_OUT
 typedef SPUD_STRUCT_TYPE = enum SPUD_STRUCT_TYPE
@@ -1936,6 +2001,9 @@ typedef spudaudio_stream = struct spudaudio_stream_t *
 typedef spudfile_file = struct spudfile_file_t *
 typedef spudfile_instance = struct spudfile_instance_t *
 typedef spudfile_instance_desc = struct spudfile_instance_desc
+typedef spudfile_library = struct spudfile_library_t *
+typedef spudfile_library_desc = struct spudfile_library_desc
+typedef spudfile_library_function = void (*)(void)
 typedef spudfile_listing = struct spudfile_listing_t *
 typedef spudfile_listing_desc = struct spudfile_listing_desc
 typedef spudfile_mapping = struct spudfile_mapping_t *

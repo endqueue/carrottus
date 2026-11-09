@@ -105,23 +105,23 @@ static void part(const char *name) {
 	fflush(stdout);
 }
 
-static const char *source_name(SPUDNET_ERROR_SOURCE source) {
+static const char *source_name(SPUD_PLATFORM_ERROR_SOURCE source) {
 	switch (source) {
-	case SPUDNET_ERROR_SOURCE_NONE:
+	case SPUD_PLATFORM_ERROR_SOURCE_NONE:
 		return "none";
-	case SPUDNET_ERROR_SOURCE_WIN32:
+	case SPUD_PLATFORM_ERROR_SOURCE_WIN32:
 		return "win32";
-	case SPUDNET_ERROR_SOURCE_ERRNO:
+	case SPUD_PLATFORM_ERROR_SOURCE_ERRNO:
 		return "errno";
-	case SPUDNET_ERROR_SOURCE_RESOLVER:
+	case SPUD_PLATFORM_ERROR_SOURCE_RESOLVER:
 		return "resolver";
-	case SPUDNET_ERROR_SOURCE_CURL:
+	case SPUD_PLATFORM_ERROR_SOURCE_CURL:
 		return "curl";
-	case SPUDNET_ERROR_SOURCE_NSURL:
+	case SPUD_PLATFORM_ERROR_SOURCE_NSURL:
 		return "nsurl";
-	case SPUDNET_ERROR_SOURCE_OSSTATUS:
+	case SPUD_PLATFORM_ERROR_SOURCE_OSSTATUS:
 		return "osstatus";
-	case SPUDNET_ERROR_SOURCE_TLS_PIN:
+	case SPUD_PLATFORM_ERROR_SOURCE_TLS_PIN:
 		return "tls-pin";
 	default:
 		return "other";
@@ -498,7 +498,7 @@ static void test_tcp(void) {
 		spudnet_tcp_socket_create(g_instance, &refused);
 		expect(spudnet_tcp_socket_connect(refused, &connect_desc), SPUDRESULT_SPUDNET_CONNECT_FAILED, "connect to a port nobody listens on");
 		spudnet_tcp_socket_get_error(refused, SPUDNET_ERROR_SIDE_RECEIVING, &error);
-		check(error.result == SPUDRESULT_SPUDNET_CONNECT_FAILED && error.source != SPUDNET_ERROR_SOURCE_NONE, "get_error has the system's code for it");
+		check(error.result == SPUDRESULT_SPUDNET_CONNECT_FAILED && error.source != SPUD_PLATFORM_ERROR_SOURCE_NONE, "get_error has the system's code for it");
 		note_error("connection refused", &error);
 		spudnet_tcp_socket_destroy(refused);
 	}
@@ -548,7 +548,7 @@ static test_thread_result TEST_THREAD_CALL abort_listener_later_run(void *argume
 }
 
 static bool error_is_empty(const spudnet_error *error) {
-	return error->result == SPUD_SUCCESS && error->source == SPUDNET_ERROR_SOURCE_NONE && error->code == 0 && error->text[0] == '\0';
+	return error->result == SPUD_SUCCESS && error->source == SPUD_PLATFORM_ERROR_SOURCE_NONE && error->code == 0 && error->text[0] == '\0';
 }
 
 static void test_records(void) {
@@ -835,7 +835,7 @@ static void test_resolver(void) {
 	expect(spudnet_resolver_wait(resolver, SPUDNET_NO_WAIT, addresses, 8, &count), SPUDRESULT_SPUDNET_RESOLVE_FAILED, "and its wait");
 	spudnet_error error;
 	spudnet_resolver_get_error(resolver, &error);
-	check(error.source != SPUDNET_ERROR_SOURCE_NONE, "get_error has the resolver's reason");
+	check(error.source != SPUD_PLATFORM_ERROR_SOURCE_NONE, "get_error has the resolver's reason");
 	note_error("no such name", &error);
 	expect(spudnet_resolver_run(resolver), SPUDRESULT_SPUDNET_INVALID_RESOLVER, "a second run");
 	spudnet_resolver_destroy(resolver);
@@ -1601,7 +1601,7 @@ static void test_http(void) {
 		expect(result, SPUDRESULT_SPUDNET_CONNECT_FAILED, "a request to a port nobody listens on");
 		note("this stack reports it from %s", where);
 		spudnet_http_transfer_get_error(transfer, &error);
-		check(error.source != SPUDNET_ERROR_SOURCE_NONE, "get_error has the stack's code for it");
+		check(error.source != SPUD_PLATFORM_ERROR_SOURCE_NONE, "get_error has the stack's code for it");
 		note_error("connection refused", &error);
 		expect(spudnet_http_transfer_receive_response(transfer, PATIENCE_MS), SPUDRESULT_SPUDNET_INVALID_HTTP_TRANSFER, "after a failure only destroy is left");
 		spudnet_http_transfer_destroy(transfer);

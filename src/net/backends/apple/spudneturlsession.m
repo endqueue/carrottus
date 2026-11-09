@@ -153,16 +153,16 @@ static SPUDRESULT spudnet_apple_result(NSError *error, SPUDRESULT otherwise) {
  * error, which records the result with no source. */
 static SPUDRESULT spudnet_apple_record(spudnet_error *record, SPUDRESULT result, NSError *error) {
 	if (!error)
-		return spudnet_error_record(record, result, SPUDNET_ERROR_SOURCE_NONE, 0, NULL);
+		return spudnet_error_record(record, result, SPUD_PLATFORM_ERROR_SOURCE_NONE, 0, NULL);
 
-	SPUDNET_ERROR_SOURCE source      = SPUDNET_ERROR_SOURCE_OTHER;
+	SPUD_PLATFORM_ERROR_SOURCE source      = SPUD_PLATFORM_ERROR_SOURCE_OTHER;
 	NSString            *description = error.localizedDescription;
 	if ([error.domain isEqualToString:NSURLErrorDomain])
-		source = SPUDNET_ERROR_SOURCE_NSURL;
+		source = SPUD_PLATFORM_ERROR_SOURCE_NSURL;
 	else if ([error.domain isEqualToString:NSPOSIXErrorDomain])
-		source = SPUDNET_ERROR_SOURCE_ERRNO;
+		source = SPUD_PLATFORM_ERROR_SOURCE_ERRNO;
 	else if ([error.domain isEqualToString:NSOSStatusErrorDomain])
-		source = SPUDNET_ERROR_SOURCE_OSSTATUS;
+		source = SPUD_PLATFORM_ERROR_SOURCE_OSSTATUS;
 	else
 		description = [NSString stringWithFormat:@"%@: %@", error.domain, description];
 	return spudnet_error_record(record, result, source, (int64_t)error.code, description.UTF8String);
@@ -374,7 +374,7 @@ static BOOL spudnet_apple_answer_challenge(
 		if (!accepted) {
 			// Security wouldn't take the policy or the roots; it gives no
 			// more than that it failed.
-			spudnet_error_record(out_reason, SPUDRESULT_SPUDNET_TLS_FAILED, SPUDNET_ERROR_SOURCE_OSSTATUS, errSecInternalError, NULL);
+			spudnet_error_record(out_reason, SPUDRESULT_SPUDNET_TLS_FAILED, SPUD_PLATFORM_ERROR_SOURCE_OSSTATUS, errSecInternalError, NULL);
 		} else {
 			CFErrorRef why = NULL;
 			accepted       = SecTrustEvaluateWithError(trust, &why) ? YES : NO;
@@ -385,7 +385,7 @@ static BOOL spudnet_apple_answer_challenge(
 		}
 	}
 	if (accepted && tls->pins && !spudnet_apple_pin_matches(tls, trust)) {
-		spudnet_error_record(out_reason, SPUDRESULT_SPUDNET_TLS_FAILED, SPUDNET_ERROR_SOURCE_TLS_PIN, 0, NULL);
+		spudnet_error_record(out_reason, SPUDRESULT_SPUDNET_TLS_FAILED, SPUD_PLATFORM_ERROR_SOURCE_TLS_PIN, 0, NULL);
 		accepted = NO;
 	}
 
@@ -1657,7 +1657,7 @@ SPUDRESULT spudnet_websocket_recv(
 		}
 		// What NSURLSession reported is kept for both: for a message too
 		// big it is the evidence the verdict rests on.
-		if ((result == SPUDRESULT_SPUDNET_RECV_FAILED || result == SPUDRESULT_SPUDNET_WS_MESSAGE_TOO_BIG) && state->receive_error.source != SPUDNET_ERROR_SOURCE_NONE) {
+		if ((result == SPUDRESULT_SPUDNET_RECV_FAILED || result == SPUDRESULT_SPUDNET_WS_MESSAGE_TOO_BIG) && state->receive_error.source != SPUD_PLATFORM_ERROR_SOURCE_NONE) {
 			socket->errors[SPUDNET_ERROR_SIDE_RECEIVING]        = state->receive_error;
 			socket->errors[SPUDNET_ERROR_SIDE_RECEIVING].result = result;
 		}

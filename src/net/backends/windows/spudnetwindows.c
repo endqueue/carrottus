@@ -64,7 +64,7 @@ static SPUDRESULT spudnet_win_start(spudnet_error *out_error) {
 	// Returns its error rather than leaving it for WSAGetLastError.
 	int result = WSAStartup(MAKEWORD(2, 2), &wsa_data);
 	if (result != 0)
-		return spudnet_error_record(out_error, SPUDRESULT_SPUDNET_STARTUP_FAILED, SPUDNET_ERROR_SOURCE_WIN32, result, NULL);
+		return spudnet_error_record(out_error, SPUDRESULT_SPUDNET_STARTUP_FAILED, SPUD_PLATFORM_ERROR_SOURCE_WIN32, result, NULL);
 	return SPUD_SUCCESS;
 }
 
@@ -204,7 +204,7 @@ static SPUDRESULT spudnet_win_endpoint_wait(struct spudnet_win_endpoint *endpoin
 /* A failed Winsock call as a record: `error` is what WSAGetLastError said
  * after it. Returns `result`. */
 static SPUDRESULT spudnet_win_socket_failed(spudnet_error *record, SPUDRESULT result, int error) {
-	return spudnet_error_record(record, result, SPUDNET_ERROR_SOURCE_WIN32, error, NULL);
+	return spudnet_error_record(record, result, SPUD_PLATFORM_ERROR_SOURCE_WIN32, error, NULL);
 }
 
 /* The same for a call on a connection, where one error is a result of its

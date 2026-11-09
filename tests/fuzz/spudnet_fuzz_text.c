@@ -86,10 +86,10 @@ static void check_error_record(const uint8_t *data, size_t size) {
 
 	spudnet_error error;
 	memset(&error, 0xAB, sizeof(error));
-	SPUDRESULT result = spudnet_error_record(&error, SPUDRESULT_SPUDNET_RECV_FAILED, SPUDNET_ERROR_SOURCE_CURL, -7, text);
+	SPUDRESULT result = spudnet_error_record(&error, SPUDRESULT_SPUDNET_RECV_FAILED, SPUD_PLATFORM_ERROR_SOURCE_CURL, -7, text);
 	SPUDFUZZ_CHECK(result == SPUDRESULT_SPUDNET_RECV_FAILED);
 	SPUDFUZZ_CHECK(error.result == SPUDRESULT_SPUDNET_RECV_FAILED);
-	SPUDFUZZ_CHECK(error.source == SPUDNET_ERROR_SOURCE_CURL);
+	SPUDFUZZ_CHECK(error.source == SPUD_PLATFORM_ERROR_SOURCE_CURL);
 	SPUDFUZZ_CHECK(error.code == -7);
 
 	const size_t whole  = strlen(text);
@@ -110,7 +110,7 @@ static void check_error_record(const uint8_t *data, size_t size) {
 		SPUDFUZZ_CHECK(error.text[i] == '\0');
 
 	// No record to fill is allowed, and only returns the result.
-	SPUDFUZZ_CHECK(spudnet_error_record(NULL, SPUDRESULT_SPUDNET_SEND_FAILED, SPUDNET_ERROR_SOURCE_CURL, 0, text) == SPUDRESULT_SPUDNET_SEND_FAILED);
+	SPUDFUZZ_CHECK(spudnet_error_record(NULL, SPUDRESULT_SPUDNET_SEND_FAILED, SPUD_PLATFORM_ERROR_SOURCE_CURL, 0, text) == SPUDRESULT_SPUDNET_SEND_FAILED);
 	free(text);
 }
 

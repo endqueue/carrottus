@@ -102,7 +102,7 @@ void spudnet_error_clear(spudnet_error *error);
 SPUDRESULT spudnet_error_record(
     spudnet_error *error,
     SPUDRESULT result,
-    SPUDNET_ERROR_SOURCE source,
+    SPUD_PLATFORM_ERROR_SOURCE source,
     int64_t code,
     const char *text);
 
