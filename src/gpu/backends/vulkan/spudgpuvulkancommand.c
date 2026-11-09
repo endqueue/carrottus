@@ -139,7 +139,7 @@ SPUDRESULT spudgpu_create_command_allocator(
     spudgpu_command_allocator_vulkan *alloc = SPUD_NEW_ZEROED(allocator, spudgpu_command_allocator_vulkan);
     if (!alloc) return SPUDRESULT_OUT_OF_MEMORY;
     alloc->head.allocator = device->head.allocator;
-    SPUD_BIRTH(alloc);
+    SPUD_BIRTH_IN(alloc, &device->_shared->quarantine);
     alloc->_device = *device;
     alloc->_queue_family_index = graphics_family;
     alloc->_type = desc->type;
@@ -177,7 +177,7 @@ void spudgpu_destroy_command_allocator(spudgpu_command_allocator allocator) {
     SPUD_KILL(allocator);
     const SPUD_ALLOCATOR memory_allocator = allocator->head.allocator;
     spud_string_free(&memory_allocator, allocator->head.debug_name);
-    SPUD_DELETE(&memory_allocator, spudgpu_command_allocator_vulkan, allocator);
+    SPUD_RETIRE(SPUD_QUARANTINE_OF(allocator), &memory_allocator, spudgpu_command_allocator_vulkan, allocator);
 }
 
 SPUDRESULT spudgpu_create_command_list(
@@ -197,7 +197,7 @@ SPUDRESULT spudgpu_create_command_list(
     spudgpu_command_list_vulkan *cl = SPUD_NEW_ZEROED(&allocator->head.allocator, spudgpu_command_list_vulkan);
     if (!cl) return SPUDRESULT_OUT_OF_MEMORY;
     cl->head.allocator = allocator->head.allocator;
-    SPUD_BIRTH(cl);
+    SPUD_BIRTH_IN(cl, &allocator->_device._shared->quarantine);
     cl->_allocator = *allocator;
     cl->_eq_allocator = spud_eq_allocator(&cl->head.allocator);
     eq_array_init(&cl->_scratch, &cl->_eq_allocator);
@@ -234,7 +234,7 @@ void spudgpu_destroy_command_list(spudgpu_command_list cmd) {
     SPUD_KILL(cmd);
     const SPUD_ALLOCATOR allocator = cmd->head.allocator;
     spud_string_free(&allocator, cmd->head.debug_name);
-    SPUD_DELETE(&allocator, spudgpu_command_list_vulkan, cmd);
+    SPUD_RETIRE(SPUD_QUARANTINE_OF(cmd), &allocator, spudgpu_command_list_vulkan, cmd);
 }
 
 #if _DEBUG

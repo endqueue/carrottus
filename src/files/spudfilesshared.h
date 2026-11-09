@@ -22,6 +22,11 @@ extern "C" {
 struct spudfile_instance_t {
 	/* No debug name: the instance desc has none. */
 	spud_object_head head;
+#if _DEBUG
+	/* Its closed files and listings and released mappings, freed with it
+	 * (spudstale.h, card X27). */
+	spud_quarantine quarantine;
+#endif
 };
 
 struct spudfile_file_t {

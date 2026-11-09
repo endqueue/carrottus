@@ -157,6 +157,68 @@ static void test_instance(const SPUD_ALLOCATOR *allocator) {
 	spudfile_instance_destroy(NULL);
 }
 
+/* Card X27 (spudlib's src/spudstale.h): in a Debug build a closed file's
+ * memory stays its instance's until the instance is destroyed, so the
+ * destroyed-handle check reads SPUD_DEAD however many blocks of the same
+ * size are allocated after it, and destroying the instance frees every one.
+ * Its own instance and counting allocator, to count exactly what the
+ * instance holds. Debug only: Release has no check, and frees at once. */
+static void test_quarantine(void) {
+#if defined(_DEBUG) && _DEBUG
+	enum { ROUNDS = 256, KEPT_OPEN = 64 };
+	spudtest_allocator tracker;
+	SPUD_ALLOCATOR allocator = spudtest_allocator_make(&tracker);
+	spudfile_instance_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type = SPUD_STRUCT_TYPE_FILES_INSTANCE_DESC;
+	desc.allocator = &allocator;
+	spudfile_instance instance = NULL;
+	CHECK_RESULT(spudfile_instance_create(&desc, &instance), SPUD_SUCCESS);
+	if (!instance)
+		return;
+	const size_t instance_blocks = tracker.live_blocks;
+
+	char path[1100];
+	path_in(path, sizeof(path), "quarantine");
+	spudfile_open_desc open = open_desc(path, SPUDFILE_ACCESS_READ_WRITE, SPUDFILE_CREATE_TRUNCATE);
+	spudfile_file dead      = NULL;
+	CHECK_RESULT(spudfile_file_open(instance, &open, &dead), SPUD_SUCCESS);
+	if (!dead) {
+		spudfile_instance_destroy(instance);
+		return;
+	}
+	spudfile_file_close(dead);
+	CHECK(tracker.live_blocks == instance_blocks + 1);
+
+	/* Blocks of the same size, made and freed again and again: an allocator
+	 * that reused the closed file's block would hand it to one of these. */
+	open.create = SPUDFILE_CREATE_OPEN_EXISTING;
+	for (int i = 0; i < ROUNDS; ++i) {
+		spudfile_file file = NULL;
+		CHECK_RESULT(spudfile_file_open(instance, &open, &file), SPUD_SUCCESS);
+		CHECK(file != dead);
+		spudfile_file_close(file);
+	}
+	spudfile_file open_files[KEPT_OPEN];
+	for (int i = 0; i < KEPT_OPEN; ++i) {
+		open_files[i] = NULL;
+		CHECK_RESULT(spudfile_file_open(instance, &open, &open_files[i]), SPUD_SUCCESS);
+		CHECK(open_files[i] != dead);
+	}
+	uint64_t size = 0;
+	CHECK_RESULT(spudfile_file_get_size(dead, &size), SPUDRESULT_SPUDFILE_INVALID_FILE);
+	spudfile_file_close(dead);
+	for (int i = 0; i < KEPT_OPEN; ++i)
+		spudfile_file_close(open_files[i]);
+
+	/* Every closed file is still the instance's, then none is. */
+	CHECK(tracker.live_blocks == instance_blocks + 1 + ROUNDS + KEPT_OPEN);
+	spudfile_instance_destroy(instance);
+	CHECK(spudtest_allocator_clean(&tracker));
+	CHECK(remove(path) == 0);
+#endif
+}
+
 static void test_open_checks(void) {
 	char path[1100];
 	path_in(path, sizeof(path), "checks.txt");
@@ -1521,6 +1583,7 @@ int main(void) {
 	CHECK_RESULT(spudfile_instance_create(&desc, &g_files), SPUD_SUCCESS);
 	if (g_files) {
 		test_open_checks();
+		test_quarantine();
 		test_create_modes();
 		test_read_write();
 		test_map();

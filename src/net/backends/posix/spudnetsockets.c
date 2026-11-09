@@ -248,7 +248,7 @@ static struct spudnet_tcp_socket_t *spudnet_posix_socket_alloc(spudnet_instance 
 	if (!socket)
 		return NULL;
 	socket->head.allocator = *allocator;
-	SPUD_BIRTH(socket);
+	SPUD_BIRTH_IN(socket, &instance->quarantine);
 	socket->instance       = instance;
 	socket->fd             = -1;
 	atomic_init(&socket->connect_called, false);
@@ -296,7 +296,7 @@ void spudnet_tcp_listener_destroy(spudnet_tcp_listener listener) {
 	SPUD_KILL(listener);
 	const SPUD_ALLOCATOR allocator = listener->head.allocator;
 	spud_string_free(&allocator, listener->head.debug_name);
-	SPUD_DELETE(&allocator, struct spudnet_tcp_listener_t, listener);
+	SPUD_RETIRE(SPUD_QUARANTINE_OF(listener), &allocator, struct spudnet_tcp_listener_t, listener);
 }
 
 SPUDRESULT spudnet_tcp_listener_create(
@@ -329,7 +329,7 @@ SPUDRESULT spudnet_tcp_listener_create(
 	if (!listener)
 		return SPUDRESULT_OUT_OF_MEMORY;
 	listener->head.allocator = instance->head.allocator;
-	SPUD_BIRTH(listener);
+	SPUD_BIRTH_IN(listener, &instance->quarantine);
 	listener->instance       = instance;
 	listener->fd             = -1;
 	if (!spudnet_posix_abort_init(&listener->abort)) {
@@ -502,7 +502,7 @@ void spudnet_tcp_socket_destroy(spudnet_tcp_socket socket) {
 	SPUD_KILL(socket);
 	const SPUD_ALLOCATOR allocator = socket->head.allocator;
 	spud_string_free(&allocator, socket->head.debug_name);
-	SPUD_DELETE(&allocator, struct spudnet_tcp_socket_t, socket);
+	SPUD_RETIRE(SPUD_QUARANTINE_OF(socket), &allocator, struct spudnet_tcp_socket_t, socket);
 }
 
 void spudnet_tcp_socket_abort(spudnet_tcp_socket socket) {

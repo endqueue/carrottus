@@ -633,6 +633,9 @@ static SPUDRESULT spudgpuvulkan___list_adapters(spudgpu_instance_vulkan *instanc
         }
         adapter->head.allocator      = instance->head.allocator;
         SPUD_BIRTH(adapter);
+#if _DEBUG
+        adapter->_debug_instance     = instance;
+#endif
         adapter->_physical_device_vk = physicalDevices[i];
         atomic_init(&adapter->_in_use, false);
         if (!spudgpuvulkan___read_adapter_facts(allocator, instance, adapter)) {
@@ -722,6 +725,7 @@ SPUDRESULT spudgpu_create_instance(
         return SPUDRESULT_OUT_OF_MEMORY;
     instance->head.allocator = *desc->allocator;
     SPUD_BIRTH(instance);
+    SPUD_QUARANTINE_INIT(&instance->_quarantine, &instance->head.allocator);
     if (vkCreateInstance(&createInfo, NULL, &instance->_instance_vk) != VK_SUCCESS) {
         SPUD_DELETE(allocator, spudgpu_instance_vulkan, instance);
         return SPUDRESULT_API_SPECIFIC_FAILURE;
@@ -753,6 +757,7 @@ SPUDRESULT spudgpu_destroy_instance(spudgpu_instance instance) {
     const SPUD_ALLOCATOR allocator = instance->head.allocator;
     spudgpuvulkan___destroy_adapters(instance);
     vkDestroyInstance(instance->_instance_vk, NULL);
+    SPUD_QUARANTINE_RELEASE(&instance->_quarantine);
     spud_string_free(&allocator, instance->head.debug_name);
     SPUD_DELETE(&allocator, spudgpu_instance_vulkan, instance);
     return SPUD_SUCCESS;
@@ -1012,10 +1017,14 @@ static void spudgpuvulkan___free_device(spudgpu_device_vulkan *device) {
     spudgpuvulkan___destroy_bindless_state((spudgpu_device) device);
     if (device->_logical_device_vk)
         vkDestroyDevice(device->_logical_device_vk, NULL);
+#if _DEBUG
+    if (device->_shared)
+        spud_quarantine_release(&device->_shared->quarantine);
+#endif
     SPUD_DELETE(&allocator, spudgpu_device_shared_vulkan, device->_shared);
     spudgpu_adapter_vulkan *adapter = device->_adapter;
     spud_string_free(&allocator, device->head.debug_name);
-    SPUD_DELETE(&allocator, spudgpu_device_vulkan, device);
+    SPUD_RETIRE(SPUD_QUARANTINE_OF(device), &allocator, spudgpu_device_vulkan, device);
     atomic_store(&adapter->_in_use, false);
 }
 
@@ -1043,7 +1052,7 @@ SPUDRESULT spudgpu_create_device(
         return SPUDRESULT_OUT_OF_MEMORY;
     }
     device->head.allocator              = adapter->head.allocator;
-    SPUD_BIRTH(device);
+    SPUD_BIRTH_IN(device, &adapter->_debug_instance->_quarantine);
     device->_adapter                    = adapter;
     device->_physical_device_vk         = adapter->_physical_device_vk;
     device->_features                   = desc->required_features;
@@ -1060,6 +1069,7 @@ SPUDRESULT spudgpu_create_device(
         return SPUDRESULT_GENERAL_FAILURE;
     }
 #if _DEBUG
+    spud_quarantine_init(&device->_shared->quarantine, &device->head.allocator);
     if (!spudgpu___internal_live_init(&device->_shared->live)) {
         spudgpu___internal_budget_destroy(&device->_shared->budget);
         spudgpuvulkan___free_device(device);

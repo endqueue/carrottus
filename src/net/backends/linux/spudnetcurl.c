@@ -94,6 +94,7 @@ SPUDRESULT spudnet_instance_create(
 		return SPUDRESULT_OUT_OF_MEMORY;
 	instance->head.allocator = *allocator;
 	SPUD_BIRTH(instance);
+	SPUD_QUARANTINE_INIT(&instance->quarantine, &instance->head.allocator);
 
 	pthread_mutex_lock(&spudnet_curl_start_lock);
 	// The libcurl found at run time, which need not be the one the headers
@@ -126,6 +127,7 @@ void spudnet_instance_destroy(spudnet_instance instance) {
 	curl_global_cleanup();
 	SPUD_KILL(instance);
 	const SPUD_ALLOCATOR allocator = instance->head.allocator;
+	SPUD_QUARANTINE_RELEASE(&instance->quarantine);
 	spud_string_free(&allocator, instance->head.debug_name);
 	SPUD_DELETE(&allocator, struct spudnet_instance_t, instance);
 }
@@ -536,7 +538,7 @@ void spudnet_http_client_destroy(spudnet_http_client client) {
 	spudnet_curl_tls_free(&allocator, &client->tls);
 	spudnet_proxy_free(&allocator, &client->proxy);
 	spud_string_free(&allocator, client->head.debug_name);
-	SPUD_DELETE(&allocator, struct spudnet_http_client_t, client);
+	SPUD_RETIRE(SPUD_QUARANTINE_OF(client), &allocator, struct spudnet_http_client_t, client);
 }
 
 SPUDRESULT spudnet_http_client_create(
@@ -560,7 +562,7 @@ SPUDRESULT spudnet_http_client_create(
 	if (!client)
 		return SPUDRESULT_OUT_OF_MEMORY;
 	client->head.allocator = instance->head.allocator;
-	SPUD_BIRTH(client);
+	SPUD_BIRTH_IN(client, &instance->quarantine);
 	atomic_init(&client->busy, false);
 	SPUDRESULT result = spudnet_curl_tls_create(&client->head.allocator, &desc->tls, &client->tls);
 	if (!SPUDFAIL(result))
@@ -1189,7 +1191,7 @@ void spudnet_websocket_destroy(spudnet_websocket socket) {
 		close(socket->wake);
 	pthread_mutex_destroy(&socket->lock);
 	spud_string_free(&allocator, socket->head.debug_name);
-	SPUD_DELETE(&allocator, struct spudnet_websocket_t, socket);
+	SPUD_RETIRE(SPUD_QUARANTINE_OF(socket), &allocator, struct spudnet_websocket_t, socket);
 }
 
 spudnet_instance spudnet_websocket_instance(spudnet_websocket socket) { return socket ? socket->instance : NULL; }
@@ -1211,7 +1213,7 @@ SPUDRESULT spudnet_websocket_create(
 	if (!socket)
 		return SPUDRESULT_OUT_OF_MEMORY;
 	socket->head.allocator = instance->head.allocator;
-	SPUD_BIRTH(socket);
+	SPUD_BIRTH_IN(socket, &instance->quarantine);
 	socket->instance       = instance;
 	pthread_mutex_init(&socket->lock, NULL);
 	atomic_init(&socket->aborted, false);

@@ -10,13 +10,16 @@
 static void spudgpu_d3d12___release_swap_chain(spudgpu_swap_chain_d3d12 *swap_chain) {
 	const SPUD_ALLOCATOR allocator = swap_chain->head.allocator;
 	const uint32_t count           = swap_chain->_desc.buffer_count;
+	// A destroyed swap chain's block and its back buffers' arrays go to its
+	// device's quarantine (spudstale.h); NULL on a create's failure path.
+	SPUD_QUARANTINE_KEEP(quarantine, swap_chain);
 	if (swap_chain->_back_buffer_images) {
 		for (uint32_t i = 0; i < count; ++i) {
 			SPUD_KILL(&swap_chain->_back_buffer_images[i]);
 			spud_string_free(&allocator, swap_chain->_back_buffer_images[i].head.debug_name);
 			swap_chain->_back_buffer_images[i].~spudgpu_image_d3d12();
 		}
-		SPUD_DELETE_ARRAY(&allocator, spudgpu_image_d3d12, swap_chain->_back_buffer_images, count);
+		SPUD_RETIRE_ARRAY(quarantine, &allocator, spudgpu_image_d3d12, swap_chain->_back_buffer_images, count);
 	}
 	if (swap_chain->_back_buffer_image_views) {
 		for (uint32_t i = 0; i < count; ++i) {
@@ -24,10 +27,10 @@ static void spudgpu_d3d12___release_swap_chain(spudgpu_swap_chain_d3d12 *swap_ch
 			spud_string_free(&allocator, swap_chain->_back_buffer_image_views[i].head.debug_name);
 		}
 	}
-	SPUD_DELETE_ARRAY(&allocator, spudgpu_image_view_d3d12, swap_chain->_back_buffer_image_views, count);
+	SPUD_RETIRE_ARRAY(quarantine, &allocator, spudgpu_image_view_d3d12, swap_chain->_back_buffer_image_views, count);
 	spud_string_free(&allocator, swap_chain->head.debug_name);
 	swap_chain->~spudgpu_swap_chain_d3d12();
-	SPUD_DELETE(&allocator, spudgpu_swap_chain_d3d12, swap_chain);
+	SPUD_RETIRE(quarantine, &allocator, spudgpu_swap_chain_d3d12, swap_chain);
 }
 
 // The present scalings a flip model swap chain on [hwnd] keeps the header's
@@ -79,7 +82,7 @@ SPUDRESULT spudgpu_create_swap_chain(
 		return SPUDRESULT_OUT_OF_MEMORY;
 	pResult                 = new (pResult) spudgpu_swap_chain_d3d12();
 	pResult->head.allocator = device->head.allocator;
-	SPUD_BIRTH(pResult);
+	SPUD_BIRTH_IN(pResult, &device->_quarantine);
 	pResult->_device        = device;
 	pResult->_desc          = *desc;
 

@@ -54,6 +54,10 @@ typedef struct spud_object_head {
 	// (spudstale.h). Debug builds only: a Release head is the two members
 	// above.
 	uint64_t debug_tag;
+	// The quarantine the handle's block goes to when it is destroyed: its
+	// owner's, or NULL where it has none and is freed at once (spudstale.h,
+	// card X27). Set with the tag, by SPUD_BIRTH or SPUD_BIRTH_IN.
+	struct spud_quarantine *debug_quarantine;
 #endif
 } spud_object_head;
 
@@ -87,6 +91,120 @@ static inline void spud_free(const SPUD_ALLOCATOR *allocator, const void *memory
 	if (memory)
 		allocator->free(allocator->user_data, (void *)memory, size ? size : 1, alignment);
 }
+
+// ---- The quarantine (spudstale.h, card X27; Debug builds only) ----
+//
+// A list of the dead handles' blocks an owner holds until it is destroyed
+// itself. A block is linked through its own memory: its head's debug name
+// and allocator, which the destroy has already freed and copied out, hold
+// the link, the size and the alignment, and the tag after them stays
+// SPUD_DEAD. So retiring a block allocates nothing and can't fail. Blocks
+// are pushed with a compare-and-swap, since an owner's objects may be
+// destroyed on different threads at once; the list is emptied only by the
+// owner's own destroy, when nothing else may be in it.
+//
+// Release has none of it: SPUD_RETIRE is SPUD_DELETE, the other macros are
+// nothing, and an owner's quarantine member exists only under _DEBUG.
+#if _DEBUG
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
+
+typedef struct spud_quarantined {
+	struct spud_quarantined *next;
+	size_t size;
+	size_t alignment;
+} spud_quarantined;
+
+#if defined(__cplusplus)
+static_assert(sizeof(spud_quarantined) <= offsetof(spud_object_head, debug_tag), "a retired block's link overwrites its tag");
+#else
+_Static_assert(sizeof(spud_quarantined) <= offsetof(spud_object_head, debug_tag), "a retired block's link overwrites its tag");
+#endif
+
+typedef struct spud_quarantine {
+	// The last block retired, linked to the one before; NULL when empty.
+	spud_quarantined *volatile first;
+	// The owner's allocator, which every block it holds was allocated
+	// through (each handle's head holds a copy of its owner's).
+	SPUD_ALLOCATOR allocator;
+} spud_quarantine;
+
+static inline void spud_quarantine_init(spud_quarantine *quarantine, const SPUD_ALLOCATOR *allocator) {
+	quarantine->first     = NULL;
+	quarantine->allocator = *allocator;
+}
+
+// Puts [block] first in [quarantine]'s list, whatever another thread pushes
+// at the same time.
+static inline void spud_quarantine_push(spud_quarantine *quarantine, spud_quarantined *block) {
+	for (;;) {
+		spud_quarantined *first = quarantine->first;
+		block->next             = first;
+#if defined(_MSC_VER)
+		if (_InterlockedCompareExchangePointer((void *volatile *)&quarantine->first, block, first) == first)
+			return;
+#else
+		if (__atomic_compare_exchange_n(&quarantine->first, &first, block, false, __ATOMIC_RELEASE, __ATOMIC_RELAXED))
+			return;
+#endif
+	}
+}
+
+// The quarantine [obj]'s block goes to at its destroy: its owner's, or NULL
+// where it has none, or while it isn't dead (a create's failure path frees
+// a block no caller held). Read before a C++ destructor runs.
+static inline spud_quarantine *spud_quarantine_of(const spud_object_head *head) {
+	return head->debug_tag == SPUD_DEAD ? head->debug_quarantine : NULL;
+}
+
+// What a destroy does with a handle's block in place of spud_free: keeps it
+// in [quarantine], or frees it at once through [allocator] where that is
+// NULL. [memory] starts with a spud_object_head; [size] and [alignment] are
+// what it was allocated with, which it is freed with later.
+static inline void spud_retire(spud_quarantine *quarantine, const SPUD_ALLOCATOR *allocator, void *memory, size_t size, size_t alignment) {
+	if (!memory)
+		return;
+	if (!quarantine) {
+		spud_free(allocator, memory, size, alignment);
+		return;
+	}
+	assert(allocator->user_data == quarantine->allocator.user_data && allocator->free == quarantine->allocator.free);
+	spud_quarantined *block = (spud_quarantined *)memory;
+	block->size             = size;
+	block->alignment        = alignment;
+	spud_quarantine_push(quarantine, block);
+}
+
+// Frees every block [quarantine] holds, each as its destroy would have:
+// the owner's last step before freeing itself. Nothing may retire into it
+// at the same time.
+static inline void spud_quarantine_release(spud_quarantine *quarantine) {
+	spud_quarantined *block = quarantine->first;
+	quarantine->first       = NULL;
+	while (block) {
+		spud_quarantined *next = block->next;
+		spud_free(&quarantine->allocator, block, block->size, block->alignment);
+		block = next;
+	}
+}
+
+#define SPUD_QUARANTINE_INIT(quarantine, allocator) spud_quarantine_init((quarantine), (allocator))
+#define SPUD_QUARANTINE_RELEASE(quarantine) spud_quarantine_release(quarantine)
+#define SPUD_QUARANTINE_OF(obj) spud_quarantine_of(SPUD_HEAD_OF(obj))
+// For a C++ destroy, which runs the destructor between reading the head and
+// retiring the block: [name] holds SPUD_QUARANTINE_OF(obj) from here on.
+#define SPUD_QUARANTINE_KEEP(name, obj) spud_quarantine *const name = SPUD_QUARANTINE_OF(obj)
+#define SPUD_RETIRE(quarantine, a, T, p) spud_retire((quarantine), (a), (p), sizeof(T), SPUD_ALIGNOF(T))
+// An array of handles, its first element's head at the block's start.
+#define SPUD_RETIRE_ARRAY(quarantine, a, T, p, n) spud_retire((quarantine), (a), (p), (n) * sizeof(T), SPUD_ALIGNOF(T))
+#else
+#define SPUD_QUARANTINE_INIT(quarantine, allocator) ((void)0)
+#define SPUD_QUARANTINE_RELEASE(quarantine) ((void)0)
+#define SPUD_QUARANTINE_KEEP(name, obj) ((void)0)
+#define SPUD_RETIRE(quarantine, a, T, p) SPUD_DELETE(a, T, p)
+#define SPUD_RETIRE_ARRAY(quarantine, a, T, p, n) SPUD_DELETE_ARRAY(a, T, p, n)
+#endif
 
 // [count] elements of [size] bytes, or NULL, also when the product would
 // overflow.

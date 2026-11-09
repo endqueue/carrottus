@@ -139,7 +139,7 @@ SPUDRESULT spudgpu_create_heap(
 		return SPUDRESULT_OUT_OF_MEMORY;
 	heap                 = new (heap) spudgpu_heap_d3d12();
 	heap->head.allocator = device->head.allocator;
-	SPUD_BIRTH(heap);
+	SPUD_BIRTH_IN(heap, &device->_quarantine);
 	heap->_device        = device;
 	heap->_desc          = *desc;
 
@@ -179,8 +179,9 @@ void spudgpu_destroy_heap(spudgpu_heap heap) {
 	SPUD_KILL(heap);
 	const SPUD_ALLOCATOR allocator = heap->head.allocator;
 	spud_string_free(&allocator, heap->head.debug_name);
+	SPUD_QUARANTINE_KEEP(quarantine, heap);
 	heap->~spudgpu_heap_d3d12();
-	SPUD_DELETE(&allocator, spudgpu_heap_d3d12, heap);
+	SPUD_RETIRE(quarantine, &allocator, spudgpu_heap_d3d12, heap);
 }
 
 SPUDRESULT spudgpu_get_heap_desc(
@@ -284,7 +285,7 @@ SPUDRESULT spudgpu_create_placed_buffer(
 		return SPUDRESULT_OUT_OF_MEMORY;
 	buffer                     = new (buffer) spudgpu_buffer_d3d12();
 	buffer->head.allocator     = heap->_device->head.allocator;
-	SPUD_BIRTH(buffer);
+	SPUD_BIRTH_IN(buffer, &heap->_device->_quarantine);
 	buffer->_device            = heap->_device;
 	buffer->_desc              = *desc;
 	buffer->_d3d_resource_desc = d3dDesc;
@@ -352,7 +353,7 @@ SPUDRESULT spudgpu_create_placed_image(
 		return SPUDRESULT_OUT_OF_MEMORY;
 	image                      = new (image) spudgpu_image_d3d12();
 	image->head.allocator      = heap->_device->head.allocator;
-	SPUD_BIRTH(image);
+	SPUD_BIRTH_IN(image, &heap->_device->_quarantine);
 	image->_subresource_states = eq::array<D3D12_RESOURCE_STATES>(&heap->_device->_eq_allocator);
 	image->_device            = heap->_device;
 	image->_desc              = *desc;

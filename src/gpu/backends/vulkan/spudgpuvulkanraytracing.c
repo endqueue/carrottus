@@ -186,7 +186,7 @@ static void spudgpuvulkan___rq_release(spudgpu_acceleration_structure_vulkan *st
     const SPUD_ALLOCATOR allocator = structure->head.allocator;
     spudgpu___internal_acceleration_structure_state_free(&structure->_state, &allocator);
     spud_string_free(&allocator, structure->head.debug_name);
-    SPUD_DELETE(&allocator, spudgpu_acceleration_structure_vulkan, structure);
+    SPUD_RETIRE(SPUD_QUARANTINE_OF(structure), &allocator, spudgpu_acceleration_structure_vulkan, structure);
 }
 
 // spudgpu_create_acceleration_structure and the placed one after their
@@ -205,7 +205,7 @@ static SPUDRESULT spudgpuvulkan___rq_create(
         SPUD_NEW_ZEROED(&owner->allocator, spudgpu_acceleration_structure_vulkan);
     if (!structure) return SPUDRESULT_OUT_OF_MEMORY;
     structure->head.allocator = owner->allocator;
-    SPUD_BIRTH(structure);
+    SPUD_BIRTH_IN(structure, &device->_shared->quarantine);
     structure->_device = device;
     structure->_heap = heap;
     if (!spudgpu___internal_acceleration_structure_state_init(&structure->_state, &structure->head.allocator, desc)) {

@@ -128,6 +128,11 @@ typedef struct spudgpu_instance_t {
 	// freed with it.
 	spudgpu_adapter *_adapters;
 	uint32_t _adapter_count;
+#if _DEBUG
+	// Its destroyed devices' and surfaces' blocks, freed with it
+	// (spudstale.h, card X27).
+	spud_quarantine _quarantine;
+#endif
 } spudgpu_instance_d3d12;
 
 typedef struct spudgpu_adapter_t {
@@ -285,6 +290,9 @@ typedef struct spudgpu_device_t {
 	// Objects made from the device and not yet destroyed, by kind;
 	// spudgpu_destroy_device reports and asserts on any left.
 	spudgpu___live_objects _live;
+	// The blocks of the objects made from it and destroyed, freed with it
+	// (spudstale.h, card X27).
+	spud_quarantine _quarantine;
 #endif
 } spudgpu_device_d3d12;
 

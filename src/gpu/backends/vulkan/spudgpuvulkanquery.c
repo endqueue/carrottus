@@ -29,7 +29,7 @@ SPUDRESULT spudgpu_create_timestamp_set(
     spudgpu_timestamp_set_vulkan *set = SPUD_NEW_ZEROED(&device->head.allocator, spudgpu_timestamp_set_vulkan);
     if (!set) return SPUDRESULT_OUT_OF_MEMORY;
     set->head.allocator = device->head.allocator;
-    SPUD_BIRTH(set);
+    SPUD_BIRTH_IN(set, &device->_shared->quarantine);
 
     VkQueryPoolCreateInfo info = {0};
     info.sType      = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
@@ -58,7 +58,7 @@ void spudgpu_destroy_timestamp_set(spudgpu_timestamp_set set) {
     SPUD_KILL(set);
     const SPUD_ALLOCATOR allocator = set->head.allocator;
     spud_string_free(&allocator, set->head.debug_name);
-    SPUD_DELETE(&allocator, spudgpu_timestamp_set_vulkan, set);
+    SPUD_RETIRE(SPUD_QUARANTINE_OF(set), &allocator, spudgpu_timestamp_set_vulkan, set);
 }
 
 void spudgpu_cmd_reset_timestamps(

@@ -39,7 +39,7 @@ SPUDRESULT spudgpu_create_timestamp_set(
 		return SPUDRESULT_OUT_OF_MEMORY;
 	set                 = new (set) spudgpu_timestamp_set_d3d12();
 	set->head.allocator = device->head.allocator;
-	SPUD_BIRTH(set);
+	SPUD_BIRTH_IN(set, &device->_quarantine);
 	set->_count         = count;
 	set->_frequency     = frequency;
 	set->_device        = device;
@@ -86,8 +86,9 @@ void spudgpu_destroy_timestamp_set(spudgpu_timestamp_set set) {
 	SPUD_KILL(set);
 	const SPUD_ALLOCATOR allocator = set->head.allocator;
 	spud_string_free(&allocator, set->head.debug_name);
+	SPUD_QUARANTINE_KEEP(quarantine, set);
 	set->~spudgpu_timestamp_set_d3d12();
-	SPUD_DELETE(&allocator, spudgpu_timestamp_set_d3d12, set);
+	SPUD_RETIRE(quarantine, &allocator, spudgpu_timestamp_set_d3d12, set);
 }
 
 void spudgpu_cmd_reset_timestamps(

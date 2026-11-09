@@ -574,6 +574,10 @@ SPUDRESULT spudgpuvulkan_create_image_views_internal(
 static void spudgpuvulkan___release_swap_chain_internal(spudgpu_swap_chain_vulkan *swap_chain) {
 	const SPUD_ALLOCATOR *allocator = &swap_chain->head.allocator;
 	VkDevice dev = swap_chain->_device._logical_device_vk;
+	// A destroyed swap chain's semaphores, images and views go to its
+	// device's quarantine with it (spudstale.h); NULL on a create's failure
+	// path.
+	SPUD_QUARANTINE_KEEP(quarantine, swap_chain);
 
 	for (uint32_t i = 0; i < swap_chain->_max_frames_in_flight; i++) {
 		vkDestroySemaphore(dev, swap_chain->_image_available_semaphores[i]._semaphore_vk, NULL);
@@ -588,8 +592,8 @@ static void spudgpuvulkan___release_swap_chain_internal(spudgpu_swap_chain_vulka
 		SPUD_KILL(&swap_chain->_render_finished_semaphores[i]);
 		spud_string_free(allocator, swap_chain->_render_finished_semaphores[i].head.debug_name);
 	}
-	SPUD_DELETE_ARRAY(allocator, spudgpu_semaphore_vulkan, swap_chain->_image_available_semaphores, swap_chain->_max_frames_in_flight);
-	SPUD_DELETE_ARRAY(allocator, spudgpu_semaphore_vulkan, swap_chain->_render_finished_semaphores, swap_chain->_render_finished_semaphores_count);
+	SPUD_RETIRE_ARRAY(quarantine, allocator, spudgpu_semaphore_vulkan, swap_chain->_image_available_semaphores, swap_chain->_max_frames_in_flight);
+	SPUD_RETIRE_ARRAY(quarantine, allocator, spudgpu_semaphore_vulkan, swap_chain->_render_finished_semaphores, swap_chain->_render_finished_semaphores_count);
 	SPUD_DELETE_ARRAY(allocator, VkFence, swap_chain->_in_flight_fences_vk, swap_chain->_max_frames_in_flight);
 
 	for (uint32_t i = 0; i < swap_chain->_swapchain_image_views_count; i++) {
@@ -597,13 +601,13 @@ static void spudgpuvulkan___release_swap_chain_internal(spudgpu_swap_chain_vulka
 		if (image) {
 			SPUD_KILL(image);
 			spud_string_free(allocator, image->head.debug_name);
-			SPUD_DELETE(allocator, spudgpu_image_vulkan, image);
+			SPUD_RETIRE(quarantine, allocator, spudgpu_image_vulkan, image);
 		}
 		SPUD_KILL(&swap_chain->_swapchain_image_views_vk[i]);
 		spud_string_free(allocator, swap_chain->_swapchain_image_views_vk[i].head.debug_name);
 		vkDestroyImageView(dev, swap_chain->_swapchain_image_views_vk[i]._image_view_vk, NULL);
 	}
-	SPUD_DELETE_ARRAY(allocator, spudgpu_image_view_vulkan, swap_chain->_swapchain_image_views_vk, swap_chain->_swapchain_image_views_count);
+	SPUD_RETIRE_ARRAY(quarantine, allocator, spudgpu_image_view_vulkan, swap_chain->_swapchain_image_views_vk, swap_chain->_swapchain_image_views_count);
 	SPUD_DELETE_ARRAY(allocator, VkImage, swap_chain->_swapchain_images_vk, swap_chain->_swapchain_images_count);
 
 	// The surface is owned by the caller — do not destroy it here.
@@ -630,7 +634,7 @@ SPUDRESULT spudgpu_create_surface(
 
 	spudgpu_surface_vulkan result = {0};
 	result.head.allocator = instance->head.allocator;
-	SPUD_BIRTH(&result);
+	SPUD_BIRTH_IN(&result, &instance->_quarantine);
 	result._instance = *instance;
 
 	VkResult r = VK_SUCCESS;
@@ -681,7 +685,7 @@ void spudgpu_destroy_surface(spudgpu_surface surface) {
 	SPUD_KILL(surface);
 	const SPUD_ALLOCATOR allocator = surface->head.allocator;
 	spud_string_free(&allocator, surface->head.debug_name);
-	SPUD_DELETE(&allocator, spudgpu_surface_vulkan, surface);
+	SPUD_RETIRE(SPUD_QUARANTINE_OF(surface), &allocator, spudgpu_surface_vulkan, surface);
 }
 
 spudgpu_surface spudgpu_create_surface_from_callback(
@@ -695,7 +699,7 @@ spudgpu_surface spudgpu_create_surface_from_callback(
 	if (!result) return NULL;
 
 	result->head.allocator = instance->head.allocator;
-	SPUD_BIRTH(result);
+	SPUD_BIRTH_IN(result, &instance->_quarantine);
 	result->_instance = *instance;
 
 	bool ok = create_fn(
@@ -738,7 +742,7 @@ SPUDRESULT spudgpu_create_swap_chain(
 
 	spudgpu_swap_chain_vulkan result = {0};
 	result.head.allocator = device->head.allocator;
-	SPUD_BIRTH(&result);
+	SPUD_BIRTH_IN(&result, &device->_shared->quarantine);
 	result._device = *((spudgpu_device_vulkan *) device);
 	memcpy(&result._desc, desc, sizeof(spudgpu_swap_chain_desc));
 	result._present_queue = (spudgpu_command_queue_vulkan *) desc->queue;
@@ -776,11 +780,12 @@ void spudgpu_destroy_swap_chain(spudgpu_swap_chain swap_chain) {
 	if (!swap_chain) return;
 	if (SPUD_STALE(swap_chain, "spudgpu_destroy_swap_chain", "swap_chain")) return;
 	SPUDGPU___LIVE_REMOVE(&swap_chain->_device._shared->live, SPUDGPU___OBJECT_SWAP_CHAIN);
-	spudgpuvulkan___release_swap_chain_internal(swap_chain);
+	// Dead first: what it releases goes to the quarantine with it.
 	SPUD_KILL(swap_chain);
+	spudgpuvulkan___release_swap_chain_internal(swap_chain);
 	const SPUD_ALLOCATOR allocator = swap_chain->head.allocator;
 	spud_string_free(&allocator, swap_chain->head.debug_name);
-	SPUD_DELETE(&allocator, spudgpu_swap_chain_vulkan, swap_chain);
+	SPUD_RETIRE(SPUD_QUARANTINE_OF(swap_chain), &allocator, spudgpu_swap_chain_vulkan, swap_chain);
 }
 
 

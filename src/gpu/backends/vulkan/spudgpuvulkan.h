@@ -31,6 +31,12 @@ typedef struct spudgpu_instance_t {
     // VK_KHR_get_surface_capabilities2's, loaded when either is enabled;
     // NULL otherwise.
     PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR _vkGetPhysicalDeviceSurfaceCapabilities2KHR;
+#if _DEBUG
+    // Its destroyed devices' and surfaces' blocks, freed with it
+    // (spudstale.h, card X27). A surface's copy of this struct never
+    // touches its own.
+    spud_quarantine _quarantine;
+#endif
 } spudgpu_instance_vulkan;
 
 typedef struct spudgpu_adapter_t {
@@ -60,6 +66,11 @@ typedef struct spudgpu_adapter_t {
     // spudgpu_destroy_device. The adapter is shared, hidden state, so this is
     // SpudGPU's to guard.
     atomic_bool _in_use;
+#if _DEBUG
+    // The instance that listed it, whose quarantine takes its destroyed
+    // devices (spudstale.h, card X27).
+    struct spudgpu_instance_t *_debug_instance;
+#endif
 } spudgpu_adapter_vulkan;
 
 // What a device keeps that changes while it lives: its descriptor budget,
@@ -71,6 +82,9 @@ typedef struct spudgpu_device_shared_vulkan {
     spudgpu___descriptor_budget budget;
 #if _DEBUG
     spudgpu___live_objects live;
+    // The blocks of the objects made from the device and destroyed, freed
+    // with it (spudstale.h, card X27).
+    spud_quarantine quarantine;
 #endif
 } spudgpu_device_shared_vulkan;
 

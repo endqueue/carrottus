@@ -305,7 +305,7 @@ SPUDRESULT spudgpu_create_heap(
         return SPUDRESULT_OUT_OF_MEMORY;
     }
     heap->head.allocator = device->head.allocator;
-    SPUD_BIRTH(heap);
+    SPUD_BIRTH_IN(heap, &device->_shared->quarantine);
     heap->_memory_vk = memory;
     heap->_memory_type_index_vk = memoryTypeIndex;
     heap->_memory_properties_vk = memoryProperties;
@@ -339,7 +339,7 @@ void spudgpu_destroy_heap(spudgpu_heap heap) {
     SPUD_KILL(heap);
     const SPUD_ALLOCATOR allocator = heap->head.allocator;
     spud_string_free(&allocator, heap->head.debug_name);
-    SPUD_DELETE(&allocator, spudgpu_heap_vulkan, heap);
+    SPUD_RETIRE(SPUD_QUARANTINE_OF(heap), &allocator, spudgpu_heap_vulkan, heap);
 }
 
 SPUDRESULT spudgpu_get_heap_desc(
@@ -458,7 +458,7 @@ SPUDRESULT spudgpu_create_placed_buffer(
         return SPUDRESULT_OUT_OF_MEMORY;
     }
     buffer->head.allocator = heap->head.allocator;
-    SPUD_BIRTH(buffer);
+    SPUD_BIRTH_IN(buffer, &heap->_device._shared->quarantine);
     buffer->_buffer_vk = vk_buffer;
     buffer->_memory_vk = heap->_memory_vk;
     buffer->_memory_offset_vk = offset;
@@ -530,7 +530,7 @@ SPUDRESULT spudgpu_create_placed_image(
         return SPUDRESULT_OUT_OF_MEMORY;
     }
     image->head.allocator = heap->head.allocator;
-    SPUD_BIRTH(image);
+    SPUD_BIRTH_IN(image, &heap->_device._shared->quarantine);
     image->_image_vk = vk_image;
     image->_memory_vk = heap->_memory_vk;
     image->_format_vk = info.format;

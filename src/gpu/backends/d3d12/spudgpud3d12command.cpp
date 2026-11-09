@@ -139,7 +139,7 @@ SPUDRESULT spudgpu_create_command_allocator(
 		return SPUDRESULT_OUT_OF_MEMORY;
 	pResult                 = new (pResult) spudgpu_command_allocator_d3d12();
 	pResult->head.allocator = device->head.allocator;
-	SPUD_BIRTH(pResult);
+	SPUD_BIRTH_IN(pResult, &device->_quarantine);
 	pResult->_device        = device;
     pResult->_d3d_cmd_list_type = spudgpu_d3d12_get_command_list_type(desc->type);
     pResult->_type = desc->type;
@@ -164,8 +164,9 @@ void spudgpu_destroy_command_allocator(spudgpu_command_allocator allocator) {
 	SPUD_KILL(allocator);
 	const SPUD_ALLOCATOR memory_allocator = allocator->head.allocator;
 	spud_string_free(&memory_allocator, allocator->head.debug_name);
+	SPUD_QUARANTINE_KEEP(quarantine, allocator);
 	allocator->~spudgpu_command_allocator_d3d12();
-	SPUD_DELETE(&memory_allocator, spudgpu_command_allocator_d3d12, allocator);
+	SPUD_RETIRE(quarantine, &memory_allocator, spudgpu_command_allocator_d3d12, allocator);
 }
 
 SPUDRESULT
@@ -196,7 +197,7 @@ SPUDRESULT spudgpu_create_command_list(
         return SPUDRESULT_OUT_OF_MEMORY;
     pResult = new (pResult) spudgpu_command_list_d3d12();
     pResult->head.allocator = allocator->_device->head.allocator;
-    SPUD_BIRTH(pResult);
+    SPUD_BIRTH_IN(pResult, &allocator->_device->_quarantine);
     pResult->_allocator = allocator;
     pResult->_scratch_barriers = eq::array<D3D12_RESOURCE_BARRIER>(&allocator->_device->_eq_allocator);
     pResult->_scratch_rects = eq::array<D3D12_RECT>(&allocator->_device->_eq_allocator);
@@ -227,8 +228,9 @@ void spudgpu_destroy_command_list(spudgpu_command_list cmd) {
     SPUD_KILL(cmd);
     const SPUD_ALLOCATOR allocator = cmd->head.allocator;
     spud_string_free(&allocator, cmd->head.debug_name);
+    SPUD_QUARANTINE_KEEP(quarantine, cmd);
     cmd->~spudgpu_command_list_d3d12();
-    SPUD_DELETE(&allocator, spudgpu_command_list_d3d12, cmd);
+    SPUD_RETIRE(quarantine, &allocator, spudgpu_command_list_d3d12, cmd);
 }
 void spudgpu_begin_command_list(spudgpu_command_list cmd)
 {

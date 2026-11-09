@@ -602,7 +602,7 @@ SPUDRESULT spudgpu_create_shader_module(
 	}
 	pResult                 = new (pResult) spudgpu_shader_module_d3d12();
 	pResult->head.allocator = pDev->head.allocator;
-	SPUD_BIRTH(pResult);
+	SPUD_BIRTH_IN(pResult, &pDev->_quarantine);
 
 	pResult->_desc             = *desc;
 	pResult->_desc.code        = code;
@@ -631,8 +631,9 @@ void spudgpu_destroy_shader_module(spudgpu_shader_module shader_module) {
 	spud_string_free(&allocator, shader_module->head.debug_name);
 	spud_string_free(&allocator, shader_module->_desc.entry_point);
 	spud_free(&allocator, shader_module->_desc.code, (size_t)shader_module->_desc.code_size, 4);
+	SPUD_QUARANTINE_KEEP(quarantine, shader_module);
 	shader_module->~spudgpu_shader_module_d3d12();
-	SPUD_DELETE(&allocator, spudgpu_shader_module_d3d12, shader_module);
+	SPUD_RETIRE(quarantine, &allocator, spudgpu_shader_module_d3d12, shader_module);
 }
 
 SPUDRESULT spudgpu_create_shader_pipeline(
@@ -669,7 +670,7 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 		return SPUDRESULT_OUT_OF_MEMORY;
 	pResult                   = new (pResult) spudgpu_shader_pipeline_d3d12();
 	pResult->head.allocator   = device->head.allocator;
-	SPUD_BIRTH(pResult);
+	SPUD_BIRTH_IN(pResult, &device->_quarantine);
 	pResult->_device          = device;
 	pResult->_desc            = *desc;
 	pResult->_is_mesh_pipeline = desc->mesh_module != nullptr;
@@ -854,8 +855,9 @@ void spudgpu_destroy_shader_pipeline(spudgpu_shader_pipeline pipeline) {
 	SPUD_KILL(pipeline);
 	const SPUD_ALLOCATOR allocator = pipeline->head.allocator;
 	spud_string_free(&allocator, pipeline->head.debug_name);
+	SPUD_QUARANTINE_KEEP(quarantine, pipeline);
 	pipeline->~spudgpu_shader_pipeline_d3d12();
-	SPUD_DELETE(&allocator, spudgpu_shader_pipeline_d3d12, pipeline);
+	SPUD_RETIRE(quarantine, &allocator, spudgpu_shader_pipeline_d3d12, pipeline);
 }
 
 SPUDRESULT spudgpu_get_shader_pipeline_desc(
@@ -969,7 +971,7 @@ SPUDRESULT spudgpu_create_compute_pipeline(
 		return SPUDRESULT_OUT_OF_MEMORY;
 	pResult                 = new (pResult) spudgpu_compute_pipeline_d3d12();
 	pResult->head.allocator = device->head.allocator;
-	SPUD_BIRTH(pResult);
+	SPUD_BIRTH_IN(pResult, &device->_quarantine);
 	pResult->_device        = device;
 	pResult->_desc          = *desc;
 
@@ -1023,8 +1025,9 @@ void spudgpu_destroy_compute_pipeline(spudgpu_compute_pipeline pipeline) {
 	SPUD_KILL(pipeline);
 	const SPUD_ALLOCATOR allocator = pipeline->head.allocator;
 	spud_string_free(&allocator, pipeline->head.debug_name);
+	SPUD_QUARANTINE_KEEP(quarantine, pipeline);
 	pipeline->~spudgpu_compute_pipeline_d3d12();
-	SPUD_DELETE(&allocator, spudgpu_compute_pipeline_d3d12, pipeline);
+	SPUD_RETIRE(quarantine, &allocator, spudgpu_compute_pipeline_d3d12, pipeline);
 }
 
 SPUDRESULT spudgpu_get_compute_pipeline_desc(

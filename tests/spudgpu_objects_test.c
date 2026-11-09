@@ -187,6 +187,58 @@ static void test_buffer_and_view(spudgpu_device device) {
 	spudgpu_destroy_buffer(buffer);
 }
 
+/* Card X27 (src/spudstale.h): in a Debug build a destroyed buffer's memory
+ * stays its device's until the device is destroyed, so the destroyed-handle
+ * check reads SPUD_DEAD however many buffers of the same size are made after
+ * it; the device frees every one when it goes, and its own block stays its
+ * instance's. Debug only: Release has no check, and frees at once. */
+static void test_quarantine(spudgpu_adapter adapter, const spudtest_allocator *tracker) {
+#if defined(_DEBUG) && _DEBUG
+	enum { ROUNDS = 256 };
+	const size_t before = tracker->live_blocks;
+	spudgpu_device_desc device_desc;
+	memset(&device_desc, 0, sizeof(device_desc));
+	device_desc.base.type          = SPUD_STRUCT_TYPE_GPU_DEVICE_DESC;
+	device_desc.direct_queue_count = 1;
+	spudgpu_device device          = NULL;
+	CHECK(spudgpu_create_device(adapter, &device_desc, &device) == SPUD_SUCCESS);
+	if (!device)
+		return;
+
+	spudgpu_buffer_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type        = SPUD_STRUCT_TYPE_GPU_BUFFER_DESC;
+	desc.usage            = SPUDGPU_BUFFER_USAGE_UNIFORM;
+	desc.memory_kind      = SPUDGPU_MEMORY_KIND_UPLOAD;
+	desc.size             = 256;
+	spudgpu_buffer dead   = NULL;
+	CHECK(spudgpu_create_buffer(device, &desc, &dead) == SPUD_SUCCESS);
+	if (!dead) {
+		spudgpu_destroy_device(device);
+		return;
+	}
+	spudgpu_destroy_buffer(dead);
+	const size_t held = tracker->live_blocks;
+	for (int i = 0; i < ROUNDS; ++i) {
+		spudgpu_buffer buffer = NULL;
+		CHECK(spudgpu_create_buffer(device, &desc, &buffer) == SPUD_SUCCESS);
+		CHECK(buffer != dead);
+		spudgpu_destroy_buffer(buffer);
+	}
+	spudgpu_buffer_desc read;
+	memset(&read, 0, sizeof(read));
+	CHECK(spudgpu_get_buffer_desc(dead, &read) == SPUDRESULT_GPU_INVALID_BUFFER);
+	/* Every destroyed buffer's block is still the device's. */
+	CHECK(tracker->live_blocks >= held + ROUNDS);
+	spudgpu_destroy_device(device);
+	/* All of them freed with it; the device's own block is the instance's. */
+	CHECK(tracker->live_blocks == before + 1);
+#else
+	(void)adapter;
+	(void)tracker;
+#endif
+}
+
 static void test_heap_desc(spudgpu_device device) {
 	spudgpu_heap_desc desc;
 	memset(&desc, 0, sizeof(desc));
@@ -3927,6 +3979,7 @@ int main(int argc, char **argv) {
 		spudgpu_destroy_device(device);
 	}
 
+	test_quarantine(adapter, &tracker);
 	test_drawing(adapter, properties.supported_features);
 #if SPUDGPU_EXT_RAY_QUERY
 	test_ray_queries(adapter, properties.supported_features);

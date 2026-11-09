@@ -630,7 +630,7 @@ void spudnet_http_client_destroy(spudnet_http_client client) {
 	const SPUD_ALLOCATOR allocator = client->head.allocator;
 	spudnet_win_tls_free(&allocator, &client->tls);
 	spud_string_free(&allocator, client->head.debug_name);
-	SPUD_DELETE(&allocator, struct spudnet_http_client_t, client);
+	SPUD_RETIRE(SPUD_QUARANTINE_OF(client), &allocator, struct spudnet_http_client_t, client);
 }
 
 SPUDRESULT spudnet_http_client_create(
@@ -663,7 +663,7 @@ SPUDRESULT spudnet_http_client_create(
 		return SPUDRESULT_OUT_OF_MEMORY;
 	}
 	client->head.allocator = *allocator;
-	SPUD_BIRTH(client);
+	SPUD_BIRTH_IN(client, &instance->quarantine);
 	result                 = spudnet_win_tls_create(allocator, &desc->tls, &client->tls);
 	if (!SPUDFAIL(result)) {
 		client->session = spudnet_win_open_session(allocator, &proxy);
@@ -1353,7 +1353,7 @@ void spudnet_websocket_destroy(spudnet_websocket socket) {
 	spudnet_win_tls_free(&allocator, &socket->tls);
 	DeleteCriticalSection(&socket->lock);
 	spud_string_free(&allocator, socket->head.debug_name);
-	SPUD_DELETE(&allocator, struct spudnet_websocket_t, socket);
+	SPUD_RETIRE(SPUD_QUARANTINE_OF(socket), &allocator, struct spudnet_websocket_t, socket);
 }
 
 spudnet_instance spudnet_websocket_instance(spudnet_websocket socket) { return socket ? socket->instance : NULL; }
@@ -1373,7 +1373,7 @@ SPUDRESULT spudnet_websocket_create(
 	if (!socket)
 		return SPUDRESULT_OUT_OF_MEMORY;
 	socket->head.allocator = instance->head.allocator;
-	SPUD_BIRTH(socket);
+	SPUD_BIRTH_IN(socket, &instance->quarantine);
 	socket->instance       = instance;
 	InitializeCriticalSection(&socket->lock);
 	socket->handles_closed_event = CreateEventW(NULL, TRUE, FALSE, NULL);

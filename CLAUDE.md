@@ -642,9 +642,25 @@ GameInput and evdev builds were not run.
   null check, its own `if`, refusing as the null check does
   (`if (SPUD_STALE(x, "call", "x")) return ...;`, one line printed), the
   same checks in the same order in every backend. Release has no tag.
-  Best effort: reading a destroyed handle can fault where the caller's
-  allocator has given its page back. A new handle type gets a factory in
-  `tests/misuse/make_misuse_tests.py`.
+  A new handle type gets a factory in
+  `tests/misuse/make_misuse_tests.py`. **Since card X27 (2026-11-08) a
+  Debug destroy keeps the handle's block** in its owner's quarantine (a
+  list linked through the dead blocks themselves, no allocation, lock-free
+  push) until the owner is destroyed, which frees each block through the
+  same allocator with its size and alignment; so the tag stays dead and no
+  new object is made in that memory. The owner is named at the create,
+  `SPUD_BIRTH_IN(obj, &owner->quarantine)`, and the destroy frees with
+  `SPUD_RETIRE` where it used `SPUD_DELETE` (`src/spudallocator.h`; the
+  owner per kind is in `src/spudstale.h`): a device for what is made on
+  it, the instance for devices, surfaces, files, listings, mappings and
+  SpudNet's objects. Freed at once as before: roots, what an owner
+  releases in its own destroy, a resolver, and a SpudAudio stream (the
+  header doesn't say a stream goes before its instance). Release
+  unchanged. Built and run on Windows (D3D12, Vulkan, WinHTTP, Winsock,
+  files); the POSIX sockets, libcurl and URLSession halves are written,
+  not compiled; Metal and the audio backends still free at once. Still
+  best effort for a handle with no owner: the misuse harness keeps its
+  own block-keeping allocator for those.
 - **Every handle starts with a `spud_object_head`** (`src/spudallocator.h`): its
   debug name, then its copy of the allocator. A handle is freed by copying the
   allocator out of its head first, since the head is inside the memory being

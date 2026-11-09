@@ -311,7 +311,7 @@ SPUDRESULT spudnet_wait_set_create(
 	if (!set)
 		return SPUDRESULT_OUT_OF_MEMORY;
 	set->head.allocator = instance->head.allocator;
-	SPUD_BIRTH(set);
+	SPUD_BIRTH_IN(set, &instance->quarantine);
 	set->allocator      = spud_eq_allocator(&set->head.allocator);
 	eq_array_init(&set->members, &set->allocator);
 	eq_array_init(&set->entries, &set->allocator);
@@ -348,7 +348,7 @@ void spudnet_wait_set_destroy(spudnet_wait_set set) {
 	SPUD_KILL(set);
 	const SPUD_ALLOCATOR allocator = set->head.allocator;
 	spud_string_free(&allocator, set->head.debug_name);
-	SPUD_DELETE(&allocator, struct spudnet_wait_set_t, set);
+	SPUD_RETIRE(SPUD_QUARANTINE_OF(set), &allocator, struct spudnet_wait_set_t, set);
 }
 
 void spudnet_wait_set_abort(spudnet_wait_set set) {

@@ -325,7 +325,8 @@ SPUDRESULT spudnet_http_transfer_create(
 	if (!transfer)
 		return SPUDRESULT_OUT_OF_MEMORY;
 	transfer->head.allocator = *allocator;
-	SPUD_BIRTH(transfer);
+	// Its client's owner, the instance, is its own (spudstale.h).
+	SPUD_BIRTH_IN(transfer, SPUD_HEAD_OF(client)->debug_quarantine);
 	transfer->client         = client;
 	transfer->phase          = SPUDNET_HTTP_PHASE_CREATED;
 	SPUDRESULT result        = spudnet_http_backend_create(transfer);
@@ -348,7 +349,7 @@ void spudnet_http_transfer_destroy(spudnet_http_transfer transfer) {
 	const SPUD_ALLOCATOR allocator = transfer->head.allocator;
 	spudnet_head_clear(&allocator, &transfer->response);
 	spud_string_free(&allocator, transfer->head.debug_name);
-	SPUD_DELETE(&allocator, struct spudnet_http_transfer_t, transfer);
+	SPUD_RETIRE(SPUD_QUARANTINE_OF(transfer), &allocator, struct spudnet_http_transfer_t, transfer);
 }
 
 void spudnet_http_transfer_abort(spudnet_http_transfer transfer) {

@@ -52,6 +52,12 @@ extern "C" {
  * allocator. */
 struct spudnet_instance_t {
 	spud_object_head head;
+#if _DEBUG
+	/* The blocks of the objects made with it and destroyed (a resolver's
+	 * aside, which may outlast it), freed with it (spudstale.h, card X27).
+	 * Every backend's spudnet_instance_create and _destroy keep it. */
+	spud_quarantine quarantine;
+#endif
 };
 
 /* The checks every platform's spudnet_instance_create makes of its desc, in

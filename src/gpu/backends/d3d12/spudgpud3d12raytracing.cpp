@@ -116,8 +116,9 @@ static void spudgpu_d3d12___rq_release(spudgpu_acceleration_structure_d3d12 *str
 	const SPUD_ALLOCATOR allocator = structure->head.allocator;
 	spudgpu___internal_acceleration_structure_state_free(&structure->_state, &allocator);
 	spud_string_free(&allocator, structure->head.debug_name);
+	SPUD_QUARANTINE_KEEP(quarantine, structure);
 	structure->~spudgpu_acceleration_structure_d3d12();
-	SPUD_DELETE(&allocator, spudgpu_acceleration_structure_d3d12, structure);
+	SPUD_RETIRE(quarantine, &allocator, spudgpu_acceleration_structure_d3d12, structure);
 }
 
 // spudgpu_create_acceleration_structure and the placed one after their
@@ -136,7 +137,7 @@ static SPUDRESULT spudgpu_d3d12___rq_create(
 		return SPUDRESULT_OUT_OF_MEMORY;
 	structure                 = new (structure) spudgpu_acceleration_structure_d3d12();
 	structure->head.allocator = *allocator;
-	SPUD_BIRTH(structure);
+	SPUD_BIRTH_IN(structure, &device->_quarantine);
 	structure->_device = device;
 	structure->_heap   = heap;
 	if (!spudgpu___internal_acceleration_structure_state_init(&structure->_state, &structure->head.allocator, desc)) {

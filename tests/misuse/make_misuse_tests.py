@@ -105,7 +105,10 @@ static const char *why = "";
  * whatever the system's allocator does with memory it is given back (the
  * Windows heap decommits freed pages, and reading one faults), and no new
  * object can be made in it. Locked, for an object freed on a thread of the
- * platform's. */
+ * platform's. Since card X27 a Debug build keeps a destroyed handle's
+ * block itself until the handle's owner is destroyed (src/spudstale.h), but
+ * not every handle has an owner: an instance, a SpudAudio stream and a
+ * SpudNet resolver are freed at once, so this stays. */
 typedef struct kept_block {
 	struct kept_block *next;
 	void *memory;

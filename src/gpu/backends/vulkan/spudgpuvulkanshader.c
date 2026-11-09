@@ -227,7 +227,7 @@ SPUDRESULT spudgpu_create_shader_module(
 
 	spudgpu_shader_module_vulkan result = {0};
 	result.head.allocator               = device->head.allocator;
-	SPUD_BIRTH(&result);
+	SPUD_BIRTH_IN(&result, &device->_shared->quarantine);
 	result._device                      = *((spudgpu_device_vulkan *)device);
 	result._stage_vk = spudgpuvulkan___shader_stage_flag_internal(desc->stage);
 	result._entry_point = spud_string_copy(&result.head.allocator, desc->entry_point);
@@ -276,7 +276,7 @@ void spudgpu_destroy_shader_module(spudgpu_shader_module shader_module) {
 	const SPUD_ALLOCATOR allocator = shader_module->head.allocator;
 	spud_string_free(&allocator, shader_module->_entry_point);
 	spud_string_free(&allocator, shader_module->head.debug_name);
-	SPUD_DELETE(&allocator, spudgpu_shader_module_vulkan, shader_module);
+	SPUD_RETIRE(SPUD_QUARANTINE_OF(shader_module), &allocator, spudgpu_shader_module_vulkan, shader_module);
 }
 
 SPUDRESULT spudgpu_create_shader_pipeline(
@@ -311,7 +311,7 @@ SPUDRESULT spudgpu_create_shader_pipeline(
 
 	spudgpu_shader_pipeline_vulkan result = {0};
 	result.head.allocator                 = device->head.allocator;
-	SPUD_BIRTH(&result);
+	SPUD_BIRTH_IN(&result, &device->_shared->quarantine);
 	result._device                        = *device;
 	result._desc                          = *desc;
 
@@ -700,7 +700,7 @@ void spudgpu_destroy_shader_pipeline(spudgpu_shader_pipeline pipeline) {
 	SPUD_KILL(pipeline);
 	const SPUD_ALLOCATOR allocator = vkPipeline->head.allocator;
 	spud_string_free(&allocator, vkPipeline->head.debug_name);
-	SPUD_DELETE(&allocator, spudgpu_shader_pipeline_vulkan, vkPipeline);
+	SPUD_RETIRE(SPUD_QUARANTINE_OF(vkPipeline), &allocator, spudgpu_shader_pipeline_vulkan, vkPipeline);
 }
 
 SPUDRESULT spudgpu_get_shader_pipeline_desc(
@@ -734,7 +734,7 @@ SPUDRESULT spudgpu_create_compute_pipeline(
 
 	spudgpu_compute_pipeline_vulkan result = {0};
 	result.head.allocator                  = device->head.allocator;
-	SPUD_BIRTH(&result);
+	SPUD_BIRTH_IN(&result, &device->_shared->quarantine);
 	result._device                         = *device;
 	result._desc                           = *desc;
 
@@ -824,7 +824,7 @@ void spudgpu_destroy_compute_pipeline(spudgpu_compute_pipeline pipeline) {
 	SPUD_KILL(pipeline);
 	const SPUD_ALLOCATOR allocator = vkPipeline->head.allocator;
 	spud_string_free(&allocator, vkPipeline->head.debug_name);
-	SPUD_DELETE(&allocator, spudgpu_compute_pipeline_vulkan, vkPipeline);
+	SPUD_RETIRE(SPUD_QUARANTINE_OF(vkPipeline), &allocator, spudgpu_compute_pipeline_vulkan, vkPipeline);
 }
 
 SPUDRESULT spudgpu_get_compute_pipeline_desc(

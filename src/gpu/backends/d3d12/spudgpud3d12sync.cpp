@@ -34,7 +34,7 @@ SPUDRESULT spudgpu_create_fence(
 		return SPUDRESULT_OUT_OF_MEMORY;
 	pResult                       = new (pResult) spudgpu_fence_d3d12();
 	pResult->head.allocator       = device->head.allocator;
-	SPUD_BIRTH(pResult);
+	SPUD_BIRTH_IN(pResult, &device->_quarantine);
 	pResult->_device              = device;
 	pResult->flags                = flags;
 
@@ -61,8 +61,9 @@ void spudgpu_destroy_fence(spudgpu_fence fence) {
 	SPUD_KILL(fence);
 	const SPUD_ALLOCATOR allocator = fence->head.allocator;
 	spud_string_free(&allocator, fence->head.debug_name);
+	SPUD_QUARANTINE_KEEP(quarantine, fence);
 	fence->~spudgpu_fence_d3d12();
-	SPUD_DELETE(&allocator, spudgpu_fence_d3d12, fence);
+	SPUD_RETIRE(quarantine, &allocator, spudgpu_fence_d3d12, fence);
 }
 
 uint64_t spudgpu_get_fence_value(spudgpu_fence fence) {
@@ -174,7 +175,7 @@ SPUDRESULT spudgpu_create_semaphore(
 		return SPUDRESULT_OUT_OF_MEMORY;
 	pResult                 = new (pResult) spudgpu_semaphore_d3d12();
 	pResult->head.allocator = device->head.allocator;
-	SPUD_BIRTH(pResult);
+	SPUD_BIRTH_IN(pResult, &device->_quarantine);
 	pResult->_device        = device;
 
 	if (FAILED(device->_d3d_device->CreateFence(
@@ -199,8 +200,9 @@ void spudgpu_destroy_semaphore(spudgpu_semaphore semaphore) {
 	SPUD_KILL(semaphore);
 	const SPUD_ALLOCATOR allocator = semaphore->head.allocator;
 	spud_string_free(&allocator, semaphore->head.debug_name);
+	SPUD_QUARANTINE_KEEP(quarantine, semaphore);
 	semaphore->~spudgpu_semaphore_d3d12();
-	SPUD_DELETE(&allocator, spudgpu_semaphore_d3d12, semaphore);
+	SPUD_RETIRE(quarantine, &allocator, spudgpu_semaphore_d3d12, semaphore);
 }
 }
 

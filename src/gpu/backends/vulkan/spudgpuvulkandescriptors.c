@@ -77,7 +77,7 @@ SPUDRESULT spudgpu_create_sampler(
     spudgpu_sampler_vulkan *pResult = SPUD_NEW_ZEROED(&device->head.allocator, spudgpu_sampler_vulkan);
     if (!pResult) return SPUDRESULT_OUT_OF_MEMORY;
     pResult->head.allocator = device->head.allocator;
-    SPUD_BIRTH(pResult);
+    SPUD_BIRTH_IN(pResult, &device->_shared->quarantine);
     pResult->_device = *device;
 
     if (vkCreateSampler(device->_logical_device_vk, &info, NULL, &pResult->_sampler_vk) != VK_SUCCESS) {
@@ -104,7 +104,7 @@ void spudgpu_destroy_sampler(spudgpu_sampler sampler) {
     SPUD_KILL(sampler);
     const SPUD_ALLOCATOR allocator = sampler->head.allocator;
     spud_string_free(&allocator, sampler->head.debug_name);
-    SPUD_DELETE(&allocator, spudgpu_sampler_vulkan, sampler);
+    SPUD_RETIRE(SPUD_QUARANTINE_OF(sampler), &allocator, spudgpu_sampler_vulkan, sampler);
 }
 
 SPUDRESULT spudgpu_create_descriptor_set_layout(
@@ -121,7 +121,7 @@ SPUDRESULT spudgpu_create_descriptor_set_layout(
 
     spudgpu_descriptor_set_layout_vulkan result = {0};
     result.head.allocator = device->head.allocator;
-    SPUD_BIRTH(&result);
+    SPUD_BIRTH_IN(&result, &device->_shared->quarantine);
     result._device = *device;
     result._desc = *desc;
 
@@ -208,7 +208,7 @@ void spudgpu_destroy_descriptor_set_layout(
     SPUD_KILL(layout);
     const SPUD_ALLOCATOR allocator = layout->head.allocator;
     spud_string_free(&allocator, layout->head.debug_name);
-    SPUD_DELETE(&allocator, spudgpu_descriptor_set_layout_vulkan, layout);
+    SPUD_RETIRE(SPUD_QUARANTINE_OF(layout), &allocator, spudgpu_descriptor_set_layout_vulkan, layout);
 }
 
 SPUDRESULT spudgpu_create_descriptor_pool(
@@ -225,7 +225,7 @@ SPUDRESULT spudgpu_create_descriptor_pool(
 
     spudgpu_descriptor_pool_vulkan result = {0};
     result.head.allocator = device->head.allocator;
-    SPUD_BIRTH(&result);
+    SPUD_BIRTH_IN(&result, &device->_shared->quarantine);
     result._device = *device;
     result._desc = *desc;
 
@@ -315,7 +315,7 @@ static void spudgpuvulkan___release_descriptor_sets(spudgpu_descriptor_pool_vulk
         SPUD_KILL(set);
         const SPUD_ALLOCATOR allocator = set->head.allocator;
         spud_string_free(&allocator, set->head.debug_name);
-        SPUD_DELETE(&allocator, spudgpu_descriptor_set_vulkan, set);
+        SPUD_RETIRE(SPUD_QUARANTINE_OF(set), &allocator, spudgpu_descriptor_set_vulkan, set);
         set = next;
     }
     pool->_sets = NULL;
@@ -345,7 +345,7 @@ void spudgpu_destroy_descriptor_pool(
     SPUD_KILL(pool);
     const SPUD_ALLOCATOR allocator = pool->head.allocator;
     spud_string_free(&allocator, pool->head.debug_name);
-    SPUD_DELETE(&allocator, spudgpu_descriptor_pool_vulkan, pool);
+    SPUD_RETIRE(SPUD_QUARANTINE_OF(pool), &allocator, spudgpu_descriptor_pool_vulkan, pool);
 }
 
 SPUDRESULT spudgpu_create_descriptor_sets(
@@ -400,7 +400,7 @@ SPUDRESULT spudgpu_create_descriptor_sets(
         }
         pSet->head.debug_name = NULL;
         pSet->head.allocator = desc->pool->head.allocator;
-        SPUD_BIRTH(pSet);
+        SPUD_BIRTH_IN(pSet, &desc->pool->_device._shared->quarantine);
         pSet->_pool = *desc->pool;
         pSet->_set_vk = vk_sets[i];
         pSet->_next = desc->pool->_sets;

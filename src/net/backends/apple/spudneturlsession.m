@@ -71,6 +71,7 @@ SPUDRESULT spudnet_instance_create(
 		return SPUDRESULT_OUT_OF_MEMORY;
 	instance->head.allocator = *desc->allocator;
 	SPUD_BIRTH(instance);
+	SPUD_QUARANTINE_INIT(&instance->quarantine, &instance->head.allocator);
 	*out_instance            = instance;
 	return SPUD_SUCCESS;
 }
@@ -82,6 +83,7 @@ void spudnet_instance_destroy(spudnet_instance instance) {
 		return;
 	SPUD_KILL(instance);
 	const SPUD_ALLOCATOR allocator = instance->head.allocator;
+	SPUD_QUARANTINE_RELEASE(&instance->quarantine);
 	spud_string_free(&allocator, instance->head.debug_name);
 	SPUD_DELETE(&allocator, struct spudnet_instance_t, instance);
 }
@@ -672,7 +674,7 @@ SPUDRESULT spudnet_http_client_create(
 		return SPUDRESULT_OUT_OF_MEMORY;
 	}
 	client->head.allocator = *allocator;
-	SPUD_BIRTH(client);
+	SPUD_BIRTH_IN(client, &instance->quarantine);
 
 	@autoreleasepool {
 		NSURLSessionConfiguration *configuration = spudnet_apple_configuration(&proxy);
@@ -711,7 +713,7 @@ void spudnet_http_client_destroy(spudnet_http_client client) {
 	SPUD_KILL(client);
 	const SPUD_ALLOCATOR allocator = client->head.allocator;
 	spud_string_free(&allocator, client->head.debug_name);
-	SPUD_DELETE(&allocator, struct spudnet_http_client_t, client);
+	SPUD_RETIRE(SPUD_QUARANTINE_OF(client), &allocator, struct spudnet_http_client_t, client);
 }
 
 /* The record and the result for a transfer NSURLSession ended with
@@ -1206,7 +1208,7 @@ SPUDRESULT spudnet_websocket_create(
 	if (!socket)
 		return SPUDRESULT_OUT_OF_MEMORY;
 	socket->head.allocator = instance->head.allocator;
-	SPUD_BIRTH(socket);
+	SPUD_BIRTH_IN(socket, &instance->quarantine);
 	socket->instance       = instance;
 	socket->state          = [[SpudNetWebSocketState alloc] init];
 	if (!socket->state || !socket->state->condition) {
@@ -1237,7 +1239,7 @@ void spudnet_websocket_destroy(spudnet_websocket socket) {
 	SPUD_KILL(socket);
 	const SPUD_ALLOCATOR allocator = socket->head.allocator;
 	spud_string_free(&allocator, socket->head.debug_name);
-	SPUD_DELETE(&allocator, struct spudnet_websocket_t, socket);
+	SPUD_RETIRE(SPUD_QUARANTINE_OF(socket), &allocator, struct spudnet_websocket_t, socket);
 }
 
 void spudnet_websocket_get_error(

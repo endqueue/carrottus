@@ -299,7 +299,7 @@ SPUDRESULT spudgpu_create_image(
 		return SPUDRESULT_OUT_OF_MEMORY;
 	pResult                      = new (pResult) spudgpu_image_d3d12();
 	pResult->head.allocator      = device->head.allocator;
-	SPUD_BIRTH(pResult);
+	SPUD_BIRTH_IN(pResult, &device->_quarantine);
 	pResult->_subresource_states = eq::array<D3D12_RESOURCE_STATES>(&device->_eq_allocator);
 	pResult->_device        = device;
 	pResult->_desc          = *desc;
@@ -361,8 +361,9 @@ void spudgpu_destroy_image(spudgpu_image image) {
     SPUD_KILL(image);
     const SPUD_ALLOCATOR allocator = image->head.allocator;
     spud_string_free(&allocator, image->head.debug_name);
+    SPUD_QUARANTINE_KEEP(quarantine, image);
     image->~spudgpu_image_d3d12();
-    SPUD_DELETE(&allocator, spudgpu_image_d3d12, image);
+    SPUD_RETIRE(quarantine, &allocator, spudgpu_image_d3d12, image);
 }
 SPUDRESULT spudgpu_get_image_desc(
 	spudgpu_image image,
@@ -417,7 +418,7 @@ SPUDRESULT spudgpu_create_image_view(
 	if (!pResult)
 		return SPUDRESULT_OUT_OF_MEMORY;
 	pResult->head.allocator = image->_device->head.allocator;
-	SPUD_BIRTH(pResult);
+	SPUD_BIRTH_IN(pResult, &image->_device->_quarantine);
 	pResult->_image = image;
 	pResult->_desc  = *desc;
 	pResult->_desc.parent_image = image;
@@ -508,7 +509,7 @@ void spudgpu_destroy_image_view(spudgpu_image_view image_view) {
 	SPUD_KILL(image_view);
 	const SPUD_ALLOCATOR allocator = image_view->head.allocator;
 	spud_string_free(&allocator, image_view->head.debug_name);
-	SPUD_DELETE(&allocator, spudgpu_image_view_d3d12, image_view);
+	SPUD_RETIRE(SPUD_QUARANTINE_OF(image_view), &allocator, spudgpu_image_view_d3d12, image_view);
 }
 SPUDRESULT spudgpu_get_image_view_desc(
     spudgpu_image_view image_view, spudgpu_image_view_desc *out_desc) {

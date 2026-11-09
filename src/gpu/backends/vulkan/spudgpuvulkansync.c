@@ -39,7 +39,7 @@ SPUDRESULT spudgpu_create_fence(
     spudgpu_fence_vulkan *fence = SPUD_NEW_ZEROED(&device->head.allocator, spudgpu_fence_vulkan);
     if (!fence) return SPUDRESULT_OUT_OF_MEMORY;
     fence->head.allocator = device->head.allocator;
-    SPUD_BIRTH(fence);
+    SPUD_BIRTH_IN(fence, &device->_shared->quarantine);
 
     VkResult r = vkCreateSemaphore(device->_logical_device_vk, &info, NULL, &fence->_semaphore_vk);
     if (r != VK_SUCCESS) {
@@ -62,7 +62,7 @@ void spudgpu_destroy_fence(spudgpu_fence fence) {
     SPUD_KILL(fence);
     const SPUD_ALLOCATOR allocator = fence->head.allocator;
     spud_string_free(&allocator, fence->head.debug_name);
-    SPUD_DELETE(&allocator, spudgpu_fence_vulkan, fence);
+    SPUD_RETIRE(SPUD_QUARANTINE_OF(fence), &allocator, spudgpu_fence_vulkan, fence);
 }
 
 uint64_t spudgpu_get_fence_value(spudgpu_fence fence) {
@@ -142,7 +142,7 @@ SPUDRESULT spudgpu_create_semaphore(
     spudgpu_semaphore_vulkan *sem = SPUD_NEW_ZEROED(&device->head.allocator, spudgpu_semaphore_vulkan);
     if (!sem) return SPUDRESULT_GENERAL_FAILURE;
     sem->head.allocator = device->head.allocator;
-    SPUD_BIRTH(sem);
+    SPUD_BIRTH_IN(sem, &device->_shared->quarantine);
 
     VkResult r = vkCreateSemaphore(device->_logical_device_vk, &info, NULL, &sem->_semaphore_vk);
     if (r != VK_SUCCESS) {
@@ -165,7 +165,7 @@ void spudgpu_destroy_semaphore(spudgpu_semaphore semaphore) {
     SPUD_KILL(semaphore);
     const SPUD_ALLOCATOR allocator = semaphore->head.allocator;
     spud_string_free(&allocator, semaphore->head.debug_name);
-    SPUD_DELETE(&allocator, spudgpu_semaphore_vulkan, semaphore);
+    SPUD_RETIRE(SPUD_QUARANTINE_OF(semaphore), &allocator, spudgpu_semaphore_vulkan, semaphore);
 }
 
 #if __cplusplus

@@ -28,6 +28,7 @@ SPUDRESULT spudfile_instance_create(
 		return SPUDRESULT_OUT_OF_MEMORY;
 	instance->head.allocator = *desc->allocator;
 	SPUD_BIRTH(instance);
+	SPUD_QUARANTINE_INIT(&instance->quarantine, &instance->head.allocator);
 	*out_instance       = instance;
 	return SPUD_SUCCESS;
 }
@@ -39,6 +40,7 @@ void spudfile_instance_destroy(spudfile_instance instance) {
 		return;
 	SPUD_KILL(instance);
 	const SPUD_ALLOCATOR allocator = instance->head.allocator;
+	SPUD_QUARANTINE_RELEASE(&instance->quarantine);
 	SPUD_DELETE(&allocator, struct spudfile_instance_t, instance);
 }
 
@@ -77,7 +79,7 @@ SPUDRESULT spudfile_file_open(
 	if (!file)
 		return SPUDRESULT_OUT_OF_MEMORY;
 	file->head.allocator = instance->head.allocator;
-	SPUD_BIRTH(file);
+	SPUD_BIRTH_IN(file, &instance->quarantine);
 	file->instance       = instance;
 	file->access         = desc->access;
 
@@ -108,7 +110,7 @@ void spudfile_file_close(spudfile_file file) {
 	SPUD_KILL(file);
 	const SPUD_ALLOCATOR allocator = file->head.allocator;
 	spud_string_free(&allocator, file->head.debug_name);
-	SPUD_DELETE(&allocator, struct spudfile_file_t, file);
+	SPUD_RETIRE(SPUD_QUARANTINE_OF(file), &allocator, struct spudfile_file_t, file);
 }
 
 /* ---- I/O at an offset ---- */
@@ -221,7 +223,7 @@ SPUDRESULT spudfile_file_map(
 	if (!mapping)
 		return SPUDRESULT_OUT_OF_MEMORY;
 	mapping->head.allocator = file->head.allocator;
-	SPUD_BIRTH(mapping);
+	SPUD_BIRTH_IN(mapping, &file->instance->quarantine);
 	uint64_t lead           = 0;
 	const SPUDRESULT result = spudfile_backend_map(file->native, offset, size, &mapping->base, &mapping->base_size, &lead);
 	if (result != SPUD_SUCCESS) {
@@ -254,7 +256,7 @@ void spudfile_mapping_release(spudfile_mapping mapping) {
 	SPUD_KILL(mapping);
 	const SPUD_ALLOCATOR allocator = mapping->head.allocator;
 	spud_string_free(&allocator, mapping->head.debug_name);
-	SPUD_DELETE(&allocator, struct spudfile_mapping_t, mapping);
+	SPUD_RETIRE(SPUD_QUARANTINE_OF(mapping), &allocator, struct spudfile_mapping_t, mapping);
 }
 
 /* ---- Paths ---- */
@@ -392,7 +394,7 @@ SPUDRESULT spudfile_listing_open(
 	if (!listing)
 		return SPUDRESULT_OUT_OF_MEMORY;
 	listing->head.allocator = instance->head.allocator;
-	SPUD_BIRTH(listing);
+	SPUD_BIRTH_IN(listing, &instance->quarantine);
 	listing->instance       = instance;
 
 	const SPUDRESULT result = spudfile_backend_listing_open(instance, desc->path, &listing->native);
@@ -438,7 +440,7 @@ void spudfile_listing_close(spudfile_listing listing) {
 	SPUD_KILL(listing);
 	const SPUD_ALLOCATOR allocator = listing->head.allocator;
 	spud_string_free(&allocator, listing->head.debug_name);
-	SPUD_DELETE(&allocator, struct spudfile_listing_t, listing);
+	SPUD_RETIRE(SPUD_QUARANTINE_OF(listing), &allocator, struct spudfile_listing_t, listing);
 }
 
 /* RFC 3629's UTF-8: no surrogate, no overlong form, nothing past U+10FFFF. */

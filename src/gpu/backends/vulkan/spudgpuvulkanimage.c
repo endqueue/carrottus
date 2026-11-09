@@ -164,7 +164,7 @@ SPUDRESULT spudgpu_create_image(
     // Create the result struct
     spudgpu_image_vulkan result = {0};
     result.head.allocator = device->head.allocator;
-    SPUD_BIRTH(&result);
+    SPUD_BIRTH_IN(&result, &device->_shared->quarantine);
     result._device = *device;
     result._desc = *desc;
     result._format_vk = convert_spud_to_vulkan_format(result._desc.format);
@@ -270,7 +270,7 @@ void spudgpu_destroy_image(
     SPUD_KILL(image);
     const SPUD_ALLOCATOR allocator = image->head.allocator;
     spud_string_free(&allocator, image->head.debug_name);
-    SPUD_DELETE(&allocator, spudgpu_image_vulkan, image);
+    SPUD_RETIRE(SPUD_QUARANTINE_OF(image), &allocator, spudgpu_image_vulkan, image);
 }
 
 // The aspects [format] has (SPUDGPU_IMAGE_ASPECT). The same table in every
@@ -318,7 +318,7 @@ SPUDRESULT spudgpu_create_image_view(
 
     spudgpu_image_view_vulkan result = {0};
     result.head.allocator = image->head.allocator;
-    SPUD_BIRTH(&result);
+    SPUD_BIRTH_IN(&result, &image->_device._shared->quarantine);
     result._desc = *desc;
     result._desc.parent_image = image;
 
@@ -375,7 +375,7 @@ void spudgpu_destroy_image_view(spudgpu_image_view image_view) {
     SPUD_KILL(image_view);
     const SPUD_ALLOCATOR allocator = image_view->head.allocator;
     spud_string_free(&allocator, image_view->head.debug_name);
-    SPUD_DELETE(&allocator, spudgpu_image_view_vulkan, image_view);
+    SPUD_RETIRE(SPUD_QUARANTINE_OF(image_view), &allocator, spudgpu_image_view_vulkan, image_view);
 }
 
 SPUDRESULT spudgpu_get_image_view_desc(

@@ -194,7 +194,7 @@ SPUDRESULT spudgpu_create_buffer(
     // Create the result struct
     spudgpu_buffer_vulkan result = {0};
     result.head.allocator = device->head.allocator;
-    SPUD_BIRTH(&result);
+    SPUD_BIRTH_IN(&result, &device->_shared->quarantine);
     result._device = *device;
     result._desc = *desc;
 
@@ -319,7 +319,7 @@ void spudgpu_destroy_buffer(spudgpu_buffer buffer) {
     SPUD_KILL(buffer);
     const SPUD_ALLOCATOR allocator = buffer->head.allocator;
     spud_string_free(&allocator, buffer->head.debug_name);
-    SPUD_DELETE(&allocator, spudgpu_buffer_vulkan, buffer);
+    SPUD_RETIRE(SPUD_QUARANTINE_OF(buffer), &allocator, spudgpu_buffer_vulkan, buffer);
 }
 
 SPUDRESULT spudgpu_create_buffer_view(
@@ -343,7 +343,7 @@ SPUDRESULT spudgpu_create_buffer_view(
 
 	spudgpu_buffer_view_vulkan result = {0};
     result.head.allocator = buffer->head.allocator;
-    SPUD_BIRTH(&result);
+    SPUD_BIRTH_IN(&result, &buffer->_device._shared->quarantine);
     result._desc = *desc;
     result._desc.parent_buffer = buffer;
     result._buffer_view_vk = VK_NULL_HANDLE; // Only needed for texel buffers
@@ -385,7 +385,7 @@ void spudgpu_destroy_buffer_view(spudgpu_buffer_view buffer_view) {
 	SPUD_KILL(buffer_view);
 	const SPUD_ALLOCATOR allocator = buffer_view->head.allocator;
 	spud_string_free(&allocator, buffer_view->head.debug_name);
-	SPUD_DELETE(&allocator, spudgpu_buffer_view_vulkan, buffer_view);
+	SPUD_RETIRE(SPUD_QUARANTINE_OF(buffer_view), &allocator, spudgpu_buffer_view_vulkan, buffer_view);
 }
 
 SPUDRESULT spudgpu_map_buffer(

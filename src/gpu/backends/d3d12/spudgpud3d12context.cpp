@@ -303,6 +303,7 @@ SPUDRESULT spudgpu_create_instance(
 	pResult                      = new (pResult) spudgpu_instance_d3d12();
 	pResult->head.allocator      = *desc->allocator;
 	SPUD_BIRTH(pResult);
+	SPUD_QUARANTINE_INIT(&pResult->_quarantine, &pResult->head.allocator);
 	pResult->application_name    = desc->application_name;
 	pResult->application_version = desc->application_version;
 	pResult->engine_name         = desc->engine_name;
@@ -350,6 +351,7 @@ SPUDRESULT spudgpu_destroy_instance(spudgpu_instance instance) {
 	SPUD_KILL(instance);
 	const SPUD_ALLOCATOR allocator = instance->head.allocator;
 	spudgpu_d3d12___destroy_adapters(instance);
+	SPUD_QUARANTINE_RELEASE(&instance->_quarantine);
 	spud_string_free(&allocator, instance->head.debug_name);
 	instance->~spudgpu_instance_d3d12();
 	SPUD_DELETE(&allocator, spudgpu_instance_d3d12, instance);
@@ -496,12 +498,14 @@ static void spudgpu_d3d12___free_device(spudgpu_device_d3d12 *device) {
 	for (size_t i = 0; i < device->_indirect_signatures.count; ++i)
 		device->_indirect_signatures.data[i].signature->Release();
 	eq_array_free(&device->_indirect_signatures);
+	SPUD_QUARANTINE_RELEASE(&device->_quarantine);
 	spudgpu_adapter_d3d12 *adapter = device->_adapter;
 	spud_string_free(&allocator, device->head.debug_name);
+	SPUD_QUARANTINE_KEEP(quarantine, device);
 	// The native device goes with the destructor, before the adapter is
 	// free for another: D3D12 hands back a device still alive.
 	device->~spudgpu_device_d3d12();
-	SPUD_DELETE(&allocator, spudgpu_device_d3d12, device);
+	SPUD_RETIRE(quarantine, &allocator, spudgpu_device_d3d12, device);
 	adapter->_in_use.store(false);
 }
 
@@ -529,7 +533,8 @@ SPUDRESULT spudgpu_create_device(
 	}
 	device                 = new (device) spudgpu_device_d3d12();
 	device->head.allocator = adapter->head.allocator;
-	SPUD_BIRTH(device);
+	SPUD_BIRTH_IN(device, &adapter->_instance->_quarantine);
+	SPUD_QUARANTINE_INIT(&device->_quarantine, &device->head.allocator);
 	device->_eq_allocator  = spud_eq_allocator(&device->head.allocator);
 	eq_array_init(&device->_csv_heap.free_ranges, &device->_eq_allocator);
 	eq_array_init(&device->_sampler_heap.free_ranges, &device->_eq_allocator);
@@ -637,7 +642,7 @@ SPUDRESULT spudgpu_create_surface(
 	if (!pResult)
 		return SPUDRESULT_OUT_OF_MEMORY;
 	pResult->head.allocator = instance->head.allocator;
-	SPUD_BIRTH(pResult);
+	SPUD_BIRTH_IN(pResult, &instance->_quarantine);
 	pResult->_hwnd          = (HWND)window_handle;
 	pResult->_instance      = instance;
 	*out_surface            = pResult;
@@ -651,7 +656,7 @@ void spudgpu_destroy_surface(spudgpu_surface surface) {
 	SPUD_KILL(surface);
 	const SPUD_ALLOCATOR allocator = surface->head.allocator;
 	spud_string_free(&allocator, surface->head.debug_name);
-	SPUD_DELETE(&allocator, spudgpu_surface_d3d12, surface);
+	SPUD_RETIRE(SPUD_QUARANTINE_OF(surface), &allocator, spudgpu_surface_d3d12, surface);
 }
 }
 

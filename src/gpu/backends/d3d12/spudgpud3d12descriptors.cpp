@@ -69,7 +69,7 @@ static void spudgpu_d3d12___free_descriptor_sets(
 		SPUD_KILL(set);
 		const SPUD_ALLOCATOR allocator    = set->head.allocator;
 		spud_string_free(&allocator, set->head.debug_name);
-		SPUD_DELETE(&allocator, spudgpu_descriptor_set_d3d12, set);
+		SPUD_RETIRE(SPUD_QUARANTINE_OF(set), &allocator, spudgpu_descriptor_set_d3d12, set);
 	}
 }
 
@@ -274,7 +274,7 @@ SPUDRESULT spudgpu_create_sampler(
 	if (!pResult)
 		return SPUDRESULT_OUT_OF_MEMORY;
 	pResult->head.allocator   = device->head.allocator;
-	SPUD_BIRTH(pResult);
+	SPUD_BIRTH_IN(pResult, &device->_quarantine);
 	pResult->_d3d_desc.Filter = spudgpu_d3d12_filter(
 	    desc->min_filter, desc->mag_filter, desc->mipmap_filter, desc->max_anisotropy);
 	pResult->_d3d_desc.AddressU       = spudgpu_d3d12_address_mode(desc->address_mode_u);
@@ -315,7 +315,7 @@ void spudgpu_destroy_sampler(spudgpu_sampler sampler) {
 	SPUD_KILL(sampler);
 	const SPUD_ALLOCATOR allocator = sampler->head.allocator;
 	spud_string_free(&allocator, sampler->head.debug_name);
-	SPUD_DELETE(&allocator, spudgpu_sampler_d3d12, sampler);
+	SPUD_RETIRE(SPUD_QUARANTINE_OF(sampler), &allocator, spudgpu_sampler_d3d12, sampler);
 }
 
 SPUDRESULT spudgpu_create_descriptor_set_layout(
@@ -348,7 +348,7 @@ SPUDRESULT spudgpu_create_descriptor_set_layout(
 	if (!pResult)
 		return SPUDRESULT_OUT_OF_MEMORY;
 	pResult->head.allocator = device->head.allocator;
-	SPUD_BIRTH(pResult);
+	SPUD_BIRTH_IN(pResult, &device->_quarantine);
 	pResult->_device        = device;
 	pResult->_desc          = *desc;
 
@@ -395,7 +395,7 @@ void spudgpu_destroy_descriptor_set_layout(spudgpu_descriptor_set_layout layout)
 	SPUD_KILL(layout);
 	const SPUD_ALLOCATOR allocator = layout->head.allocator;
 	spud_string_free(&allocator, layout->head.debug_name);
-	SPUD_DELETE(&allocator, spudgpu_descriptor_set_layout_d3d12, layout);
+	SPUD_RETIRE(SPUD_QUARANTINE_OF(layout), &allocator, spudgpu_descriptor_set_layout_d3d12, layout);
 }
 
 SPUDRESULT spudgpu_create_descriptor_pool(
@@ -445,7 +445,7 @@ SPUDRESULT spudgpu_create_descriptor_pool(
 	}
 	pResult                        = new (pResult) spudgpu_descriptor_pool_d3d12();
 	pResult->head.allocator        = device->head.allocator;
-	SPUD_BIRTH(pResult);
+	SPUD_BIRTH_IN(pResult, &device->_quarantine);
 	pResult->_device               = device;
 	pResult->_desc                 = *desc;
 	pResult->_cbv_srv_uav_capacity = csvCapacity;
@@ -495,8 +495,9 @@ void spudgpu_destroy_descriptor_pool(spudgpu_descriptor_pool pool) {
 	SPUD_KILL(pool);
 	const SPUD_ALLOCATOR allocator = p->head.allocator;
 	spud_string_free(&allocator, p->head.debug_name);
+	SPUD_QUARANTINE_KEEP(quarantine, p);
 	p->~spudgpu_descriptor_pool_d3d12();
-	SPUD_DELETE(&allocator, spudgpu_descriptor_pool_d3d12, p);
+	SPUD_RETIRE(quarantine, &allocator, spudgpu_descriptor_pool_d3d12, p);
 }
 
 SPUDRESULT spudgpu_create_descriptor_sets(
@@ -560,7 +561,7 @@ SPUDRESULT spudgpu_create_descriptor_sets(
 			break;
 		}
 		pSet->head.allocator    = pool->head.allocator;
-		SPUD_BIRTH(pSet);
+		SPUD_BIRTH_IN(pSet, &pool->_device->_quarantine);
 		pSet->_pool             = pool;
 		pSet->_layout           = layout;
 		pSet->_cbv_srv_uav_base = pool->_cbv_srv_uav_cursor;
