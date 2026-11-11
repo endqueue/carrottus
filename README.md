@@ -57,7 +57,7 @@ int main(void) {
 ```
 
 From there, `crgpu_device_create` takes the adapter the caller chose.
-`spudgpusamples` has complete programs: triangles, textures, mesh shaders,
+`crgpusamples` has complete programs: triangles, textures, mesh shaders,
 indirect execution, bindless.
 
 ## Module map
@@ -120,7 +120,7 @@ CTest runs eight tests, none of which opens a window: `crcore_test`,
 `crmemory_test`, `craudio_test`, `crperf_test` and `crinput_test`.
 The two `crgpu_` tests need a GPU and are skipped without one. Carrottus Net's test needs a
 local server and runs through `tests/run_crnet_test.sh`. Most of Carrottus GPU is
-verified by `spudgpusamples` instead. [`CLAUDE.md`](https://github.com/endqueue/carrottus/blob/master/CLAUDE.md), "Known gaps",
+verified by `crgpusamples` instead. [`CLAUDE.md`](https://github.com/endqueue/carrottus/blob/master/CLAUDE.md), "Known gaps",
 records what each covers and what has run where.
 
 ## Contributing

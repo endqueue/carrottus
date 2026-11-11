@@ -6,7 +6,7 @@
  *   crgpu_rq_measure [--adapter N] [--dragon path/to/Dragon_LOD0.bin]
  *
  * - A bottom level's build and memory, before and after compaction: a
- *   12-triangle cube, and the Dragon mesh spudgpusamples' CrGPUMeshShaders
+ *   12-triangle cube, and the Dragon mesh crgpusamples' CrGPUMeshShaders
  *   loads (its index and position buffer views), when its file is given.
  * - A top level of 1, 1,000 and 100,000 instances of the cube: its build,
  *   an update (refit) of it, and its instances written on the CPU

@@ -464,7 +464,7 @@ and evdev builds, which needed no change but have not been compiled.
    own and makes the conversion smaller.
 3. **Done: Carrottus GPU, Carrottus Audio, Carrottus Net, Carrottus Input and Carrottus Files.** Convert one module at a time, header and every backend together:
    Carrottus GPU, then Carrottus Audio, Carrottus Net, Carrottus Input, Carrottus Files. Bring
-   `spudgpusamples`, the tests and every caller along in the same change.
+   `crgpusamples`, the tests and every caller along in the same change.
    This is a source break for every caller.
 4. After each module:
    - build on macOS and run the tests, plain and under the `-asan` preset;

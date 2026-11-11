@@ -771,7 +771,7 @@ synchronization validation, after a fix here: a buffer barrier out of
 `COMMON` now waits on every earlier command and makes every write available
 (D3D12 orders submissions and decays buffers to `COMMON`; Vulkan had waited on
 nothing), and `VERTEX_BUFFER` includes uniform reads in shaders, as
-crgpu.h says it does. Every sample in `spudgpusamples` but mesh shaders
+crgpu.h says it does. Every sample in `crgpusamples` but mesh shaders
 ran there too. On 2026-11-04 on the ThinkPad P1 (Fedora 44, Mesa 26.0.3:
 ANV, NVK on the RTX A2000, llvmpipe) the presets ran under `-asan` and
 `-tsan` with GCC 16.2.1 and again with clang 22.1.8, 15 ctests each and
@@ -780,8 +780,8 @@ callers' GPU tests and the samples under both on every adapter: no report
 in Carrottus. craudio_test gained a TSan suppression for ALSA's own ring
 buffer under PipeWire, and a second name for the plugin's lock entry
 (`tests/sanitizers/linux-tsan.supp`; `../DECISIONS.md` card S37). That covers the calls that caller makes. A call nothing above
-Carrottus uses is only as verified as its sample in `spudgpusamples`. Vulkan
-on Windows has run `apricottests`' `rbtrend_gpu_tests` (2026-10-16, Intel Iris
+Carrottus uses is only as verified as its sample in `crgpusamples`. Vulkan
+on Windows has run `rabbittustests`' `rbtrend_gpu_tests` (2026-10-16, Intel Iris
 Xe and NVIDIA RTX A2000, validation layer clean), which found that the
 Vulkan backend passed a descriptor write's image layout and a descriptor set
 layout binding's stage flags to Vulkan untranslated; both are Carrottus GPU enum
@@ -820,7 +820,7 @@ text`, as Vulkan's validation layer does with no messenger; nothing is
 registered when the layer is off or the runtime predates
 `ID3D12InfoQueue1`. Run without a debugger on both devices: silent on the
 tests as they are, and a mismatched clear value put in for the test
-printed its 6 warnings on each. On 2026-10-22 every `spudgpusamples` sample
+printed its 6 warnings on each. On 2026-10-22 every `crgpusamples` sample
 ran on D3D12 (both devices and WARP, GPU-based validation too) and Vulkan
 (both devices, under synchronization and GPU-assisted validation as well),
 which found two Vulkan bugs: an image barrier out of `UNDEFINED` or
@@ -887,7 +887,7 @@ validation): silent but GPU-based validation's `[942]` on the Iris Xe,
 which `../claude_made_decisions.md` (2026-10-29) takes as the validator's
 (a buffer barrier from COMMON after an ExecuteCommandLists, where D3D12
 decays buffers to COMMON; clean on the A2000 and WARP). Every
-`spudgpusamples` sample ran on the three D3D12 adapters (debug layer, and
+`crgpusamples` sample ran on the three D3D12 adapters (debug layer, and
 GPU-based validation) and both Vulkan devices (all three validation modes),
 clean; `CrGPUMeshShaders` exits 1 on the Iris Xe, which has no mesh
 shading. The run found one thing here: on Windows `cr_system_allocate`
@@ -972,7 +972,7 @@ by a caller's tests), Debug, Release and `-asan`, 15 ctests passing,
 `cr_misuse_tests` ten times on each backend, `cr_noalloc_tests` none of
 ours, `crgpu_objects_test` on both GPUs with the debug layer and
 validation silent; clip space +Y up (Vulkan by negative viewport heights),
-read back by the objects test and seen in every `spudgpusamples` sample;
+read back by the objects test and seen in every `crgpusamples` sample;
 `shaderDrawParameters` in Vulkan's base set. The Metal backend's module
 path (a `.metallib`, the entry point by name and function type) is written,
 not compiled.
@@ -1042,13 +1042,13 @@ evening on the Mac (Known gaps below, `CRGPU_DEVICE_TODO.md`).
   authored here — don't "clean up" or reformat it as if it were project code).
 - **Metal** — implemented, all twelve backend `.m` files, now that Apple hardware is
   available to validate against. Swap chain creation/present is verified end-to-end
-  on real hardware (Apple M5 Pro) via `spudgpusamples/Samples/HelloTriangle`; the
+  on real hardware (Apple M5 Pro) via `crgpusamples/Samples/HelloTriangle`; the
   natives-header asymmetries above were worked out ahead of the implementation and
   held. Buffer/image copy (`crgpu_command_list_copy_buffer`/`_copy_buffer_to_image`/
   `_copy_image_to_buffer`, `crgpu_image_get_buffer_copy_size`) is also real now,
   via a new `_active_blit_encoder` on the command list following the same
   end-any-other-active-encoder-first pattern as `_active_compute_encoder` — verified
-  end-to-end via `spudgpusamples/Samples/HelloTexture`'s texture upload, which
+  end-to-end via `crgpusamples/Samples/HelloTexture`'s texture upload, which
   silently rendered solid black until this landed (these were unimplemented
   placeholders before, per the file comment in `crgpumetalrenderpass.m`).
   `crgpu_command_list_blit_image` implements only a blit that is a copy (same size,
@@ -1160,7 +1160,7 @@ evening on the Mac (Known gaps below, `CRGPU_DEVICE_TODO.md`).
   kind on the device: the two tightly packed ones made with the device (so
   the common case takes no lock, since 2026-10-21), any other in
   `_indirect_signatures`, mutex-guarded, made at first use; all released with
-  the device. `apricottests`' `test_draw_indirect_stride` draws with a
+  the device. `rabbittustests`' `test_draw_indirect_stride` draws with a
   32-byte stride; it fails on the old D3D12 code and passes on all three
   devices here. The same test found that D3D12's `crgpu_buffer_view_create`
   refused a buffer that was not a vertex, index or uniform buffer (Vulkan and
@@ -1174,7 +1174,7 @@ evening on the Mac (Known gaps below, `CRGPU_DEVICE_TODO.md`).
   mesh shading (OPTIONS7), the depth bounds test (OPTIONS2), and bindless,
   which needs resource binding tier 3. WARP is listed, as
   `CRGPU_ADAPTER_TYPE_SOFTWARE`. Run on an Iris Xe (12_1, tier 3) and an
-  RTX A2000 before the adapter change, and every `spudgpusamples` sample on
+  RTX A2000 before the adapter change, and every `crgpusamples` sample on
   both and on WARP after it (2026-10-22); the tier-2 path has not run on any
   device.
 - D3D12's shader-visible descriptors are in two heaps per device
@@ -1195,7 +1195,7 @@ evening on the Mac (Known gaps below, `CRGPU_DEVICE_TODO.md`).
   `CRGPU_IMAGE_VIEW_TYPE_2D` view on D3D12 saw layer 0 whatever its
   `base_array_layer` (render target, depth, shader resource and storage
   views alike). A 2D view of any other layer is now made as a 2D array view
-  of that one layer (`crgpu_d3d12_view_type`). Found by `apricottests`'
+  of that one layer (`crgpu_d3d12_view_type`). Found by `rabbittustests`'
   `test_generate_mips`, whose layer 1 rendered into and sampled layer 0;
   it passes on both devices here, debug layer clean. A shader that
   declares a `Texture2D` and is handed such a view (a 2D view of a layer
@@ -1219,7 +1219,7 @@ evening on the Mac (Known gaps below, `CRGPU_DEVICE_TODO.md`).
   image type in the SPIR-V a 2D array image type
   (`crgpu_d3d12_storage_cubes_as_arrays`), whose third coordinate is
   the face as the cube's was. An `imageSize()` of a cube takes the width
-  and height of the array's three (not run). `apricottests`'
+  and height of the array's three (not run). `rabbittustests`'
   `test_cube_storage_views` writes every face of two cubes through a
   `CUBE` and a `CUBE_ARRAY` storage view and reads all twelve layers back;
   against the old views it wrote layer 0 twice and nothing else. It passes
@@ -1280,7 +1280,7 @@ evening on the Mac (Known gaps below, `CRGPU_DEVICE_TODO.md`).
   - D3D12's `crgpu_command_list_begin_rendering` returned early without a colour
     attachment until 2026-10-17, so a depth-only pass rendered on Vulkan
     and Metal only. It now begins a pass of a depth attachment alone;
-    written on macOS, then run on D3D12 on 2026-10-17 by `apricottests`'
+    written on macOS, then run on D3D12 on 2026-10-17 by `rabbittustests`'
     `test_lit_mesh_shadow` (Intel Iris Xe and NVIDIA RTX A2000, debug
     layer clean). A caller's host built and ran over it on D3D12 and
     Vulkan the same day (reported), but that caller renders no depth-only
@@ -1362,7 +1362,7 @@ evening on the Mac (Known gaps below, `CRGPU_DEVICE_TODO.md`).
     actions off. No `magnificationFilter`. Run on macOS (Apple M5 Pro,
     Debug): `crgpu_objects_test` makes a swap chain of each on a windowless
     `CAMetalLayer`, flipped and not, and reads the gravity back (plain,
-    ASan, TSan, Metal validation), and `spudgpusamples`' HelloTriangle
+    ASan, TSan, Metal validation), and `crgpusamples`' HelloTriangle
     showed each in a 900x900 window over 1280x720 back buffers
     (`--scaling`, `--window`), under Metal validation with warnings fatal:
     top-left and cropped, stretched, and letterboxed.
@@ -1586,7 +1586,7 @@ evening on the Mac (Known gaps below, `CRGPU_DEVICE_TODO.md`).
   and `crnet_test` (a local server, started by `tests/run_crnet_test.sh`).
   Carrottus GPU's are `crgpu_device_test` and `crgpu_objects_test`, which
   draw nothing; the rest of Carrottus GPU is
-  verified by running the `spudgpusamples` samples.
+  verified by running the `crgpusamples` samples.
 - No static/immutable sampler support. `crgpu_sampler` (added alongside
   `CrGPUDynamicIndexing`) only covers the dynamic, descriptor-bound case — a real
   `VkSampler` written into a descriptor set on Vulkan, a heap-slot `CreateSampler` on
@@ -1627,5 +1627,5 @@ evening on the Mac (Known gaps below, `CRGPU_DEVICE_TODO.md`).
   and Vulkan
   (2026-10-23, Windows 11, Intel Iris Xe and NVIDIA RTX A2000, debug and
   validation layers silent), where combined samplers needed no change;
-  `spudgpusamples/Samples/HelloTexture` still uses the separate
+  `crgpusamples/Samples/HelloTexture` still uses the separate
   `SAMPLED_IMAGE` + `SAMPLER` pair it was written with.
