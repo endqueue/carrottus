@@ -755,6 +755,21 @@ if(NOT TARGET spudlib)
                 SPUDFILES_TEST_LIBRARY_FAILING="$<TARGET_FILE:spudfiles_test_library_failing>")
             add_dependencies(spudfiles_test spudfiles_test_library_failing)
         endif()
+        # On iOS, a framework in a Frameworks folder beside the test, where an
+        # app's bundle keeps one (card S44, Q5a): the test is a bare
+        # executable, not a bundle, so its folder stands in for one.
+        if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+            add_library(spudfiles_test_framework SHARED tests/spudfiles_test_library.c)
+            target_compile_definitions(spudfiles_test_framework PRIVATE SPUDFILES_TEST_LIBRARY_VALUE=5)
+            set_target_properties(spudfiles_test_framework PROPERTIES
+                C_VISIBILITY_PRESET hidden
+                FRAMEWORK TRUE
+                MACOSX_FRAMEWORK_IDENTIFIER com.endqueue.spudfiles-test-framework
+                LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/Frameworks")
+            list(APPEND _spudfiles_test_libraries
+                SPUDFILES_TEST_FRAMEWORK="$<TARGET_FILE:spudfiles_test_framework>")
+            add_dependencies(spudfiles_test spudfiles_test_framework)
+        endif()
         target_compile_definitions(spudfiles_test PRIVATE ${_spudfiles_test_libraries})
         add_dependencies(spudfiles_test spudfiles_test_library_a spudfiles_test_library_b spudfiles_test_library_dependent)
 

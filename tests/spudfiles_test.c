@@ -936,8 +936,25 @@ static void test_listing_non_utf8(void) {
 		CloseHandle(handle);
 	}
 	const char *const name = "lone\xED\xA0\x80.txt";
+#elif SPUDLIB_PLATFORM_APPLE
+	// APFS and HFS+ refuse a name that isn't UTF-8 (EILSEQ): the file
+	// system's rule, passed on. Nothing is made, so nothing is listed.
+	const char *const name = "bad\xFF.txt";
+	(void)name;
+	{
+		char made[1100];
+		path_in(made, sizeof(made), "non_utf8" SLASH "bad\xFF.txt");
+		const spudfile_open_desc desc = open_desc(made, SPUDFILE_ACCESS_WRITE, SPUDFILE_CREATE_TRUNCATE);
+		spudfile_file file            = NULL;
+		CHECK_RESULT(spudfile_file_open(g_files, &desc, &file), SPUDRESULT_API_SPECIFIC_FAILURE);
+		CHECK(file == NULL);
+		const struct seen none = list_dir(dir);
+		CHECK(none.count == 0);
+		CHECK(rmdir(dir) == 0);
+		return;
+	}
 #else
-	// An invalid byte: POSIX takes a name's bytes as they are.
+	// An invalid byte: Linux's file systems take a name's bytes as they are.
 	const char *const name = "bad\xFF.txt";
 	char made[1100];
 	path_in(made, sizeof(made), "non_utf8" SLASH "bad\xFF.txt");
@@ -1729,6 +1746,28 @@ static void test_messages(void) {
 	set_attributes(plain, FILE_ATTRIBUTE_NORMAL);
 #else
 	CHECK(chmod(plain, 0644) == 0);
+	// Access denied by a directory: a file inside one made 0000.
+	if (denies) {
+		char closed[1100];
+		char inside[1300];
+		path_in(closed, sizeof(closed), "closed");
+		CHECK_RESULT(spudfile_directory_create(files, closed), SPUD_SUCCESS);
+		snprintf(inside, sizeof(inside), "%s" SLASH "inside.txt", closed);
+		write_whole(inside, "inside");
+		CHECK(chmod(closed, 0000) == 0);
+		spudfile_open_desc behind = open_desc(inside, SPUDFILE_ACCESS_READ, SPUDFILE_CREATE_OPEN_EXISTING);
+		seen.count                = 0;
+		CHECK_RESULT(spudfile_file_open(files, &behind, &file), SPUDRESULT_SPUDFILE_ACCESS_DENIED);
+		check_platform_message(&seen, "spudfile_file_open", files, SPUDRESULT_SPUDFILE_ACCESS_DENIED, PLATFORM_SOURCE);
+		CHECK(seen.last.code == EACCES);
+		seen.count = 0;
+		CHECK_RESULT(spudfile_path_get_info(files, inside, &info), SPUDRESULT_SPUDFILE_ACCESS_DENIED);
+		check_platform_message(&seen, "spudfile_path_get_info", files, SPUDRESULT_SPUDFILE_ACCESS_DENIED, PLATFORM_SOURCE);
+		CHECK(seen.last.code == EACCES);
+		CHECK(chmod(closed, 0755) == 0);
+		CHECK_RESULT(spudfile_path_remove(files, inside), SPUD_SUCCESS);
+		CHECK_RESULT(spudfile_directory_remove(files, closed), SPUD_SUCCESS);
+	}
 #endif
 
 	// Nothing for a refused argument, a check of SpudFiles' own, or an
@@ -2069,6 +2108,21 @@ static void test_library_checks(spudfile_instance files) {
 	desc              = library_desc(a);
 	desc.dependencies = SPUDFILE_LIBRARY_DEPENDENCIES_LIBRARY_DIRECTORY_FIRST;
 	CHECK_RESULT(spudfile_library_open(files, &desc, &library), SPUDRESULT_SPUDFILE_LIBRARY_OPTION_NOT_SUPPORTED);
+	// dlopen's other two choices taken: lazy binding, global scope, and both.
+	const SPUDFILE_LIBRARY_BINDING bindings[3] = {SPUDFILE_LIBRARY_BINDING_LAZY, SPUDFILE_LIBRARY_BINDING_NOW, SPUDFILE_LIBRARY_BINDING_LAZY};
+	const SPUDFILE_LIBRARY_SCOPE scopes[3]     = {SPUDFILE_LIBRARY_SCOPE_LOCAL, SPUDFILE_LIBRARY_SCOPE_GLOBAL, SPUDFILE_LIBRARY_SCOPE_GLOBAL};
+	for (int i = 0; i < 3; ++i) {
+		desc         = library_desc(a);
+		desc.binding = bindings[i];
+		desc.scope   = scopes[i];
+		library      = NULL;
+		CHECK_RESULT(spudfile_library_open(files, &desc, &library), SPUD_SUCCESS);
+		if (library) {
+			CHECK(call_int(library, "spudfiles_test_value") == 1);
+			spudfile_library_close(library);
+		}
+	}
+	library = NULL;
 #endif
 	CHECK(library == NULL || library != (spudfile_library)(uintptr_t)1);
 
@@ -2222,6 +2276,18 @@ static void test_libraries(void) {
 		spudfile_library_close(library);
 	}
 
+#if defined(SPUDFILES_TEST_FRAMEWORK)
+	// iOS: a framework beside the test, as an app's bundle holds one (Q5a),
+	// opened by the path of its binary inside it.
+	library = open_library(files, SPUDFILES_TEST_FRAMEWORK);
+	if (library) {
+		CHECK(strstr(SPUDFILES_TEST_FRAMEWORK, ".framework/") != NULL);
+		CHECK(call_int(library, "spudfiles_test_value") == 5);
+		CHECK(call_int(library, "spudfiles_test_initialized") == 1);
+		spudfile_library_close(library);
+	}
+#endif
+
 	// A non-ASCII directory and file name.
 	char dir[1100];
 	char unicode[1300];
@@ -2298,6 +2364,14 @@ static void test_libraries(void) {
 }
 
 /* Two threads opening, finding, calling and closing at once. */
+#if defined(__has_feature)
+#if __has_feature(thread_sanitizer) && SPUDLIB_PLATFORM_APPLE
+#define SPUDFILES_TEST_PIN_LIBRARIES 1
+#endif
+#endif
+#ifndef SPUDFILES_TEST_PIN_LIBRARIES
+#define SPUDFILES_TEST_PIN_LIBRARIES 0
+#endif
 enum { LIBRARY_ROUNDS = 50 };
 
 struct library_user {
@@ -2339,6 +2413,16 @@ static void test_libraries_two_threads(void) {
 		return;
 	struct library_user one = {files, a, 1, 0};
 	struct library_user two = {files, b, 2, 0};
+#if SPUDFILES_TEST_PIN_LIBRARIES
+	// ThreadSanitizer's own dlopen on Apple lists the loaded images, and
+	// crashes when another thread's dlclose unmaps one meanwhile (seen
+	// 2026-11-09 with Apple clang 21 in a program of two threads calling
+	// dlopen and dlclose alone, no SpudLib in it; never without TSan). One
+	// more open of each here keeps every image mapped, so no close unmaps
+	// one: the threads still open, find and close at once through SpudLib.
+	spudfile_library pin_a = open_library(files, a);
+	spudfile_library pin_b = open_library(files, b);
+#endif
 #if SPUDLIB_PLATFORM_WIN32
 	HANDLE ta = (HANDLE)_beginthreadex(NULL, 0, use_library, &one, 0, NULL);
 	HANDLE tb = (HANDLE)_beginthreadex(NULL, 0, use_library, &two, 0, NULL);
@@ -2356,6 +2440,10 @@ static void test_libraries_two_threads(void) {
 #endif
 	CHECK(one.ok == LIBRARY_ROUNDS);
 	CHECK(two.ok == LIBRARY_ROUNDS);
+#if SPUDFILES_TEST_PIN_LIBRARIES
+	spudfile_library_close(pin_a);
+	spudfile_library_close(pin_b);
+#endif
 	spudfile_instance_destroy(files);
 }
 

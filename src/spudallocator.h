@@ -138,17 +138,25 @@ static inline void spud_quarantine_init(spud_quarantine *quarantine, const SPUD_
 // Puts [block] first in [quarantine]'s list, whatever another thread pushes
 // at the same time.
 static inline void spud_quarantine_push(spud_quarantine *quarantine, spud_quarantined *block) {
+	// The first read is atomic too: a plain one beside another thread's
+	// compare-and-swap is a data race in C11 (MSVC's volatile reads are
+	// atomic, clang's and GCC's aren't; ThreadSanitizer found it).
+#if defined(_MSC_VER)
 	for (;;) {
 		spud_quarantined *first = quarantine->first;
 		block->next             = first;
-#if defined(_MSC_VER)
 		if (_InterlockedCompareExchangePointer((void *volatile *)&quarantine->first, block, first) == first)
 			return;
+	}
 #else
+	spud_quarantined *first = __atomic_load_n(&quarantine->first, __ATOMIC_RELAXED);
+	for (;;) {
+		block->next = first;
+		// On failure [first] is reloaded with what another thread pushed.
 		if (__atomic_compare_exchange_n(&quarantine->first, &first, block, false, __ATOMIC_RELEASE, __ATOMIC_RELAXED))
 			return;
-#endif
 	}
+#endif
 }
 
 // The quarantine [obj]'s block goes to at its destroy: its owner's, or NULL

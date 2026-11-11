@@ -1390,7 +1390,8 @@ evening on the Mac (Known gaps below, `SPUDGPU_DEVICE_TODO.md`).
   `spudcore.h`, SpudFiles the first module built with them), and a
   dynamic library is opened, searched and closed through SpudFiles (card
   S44, `spudfile_library_*`; `SPUDFILES_TODO.md`), built and run on
-  Windows; the POSIX halves of both written, not compiled.
+  Windows, and on the Mac and the iOS simulator on 2026-11-09 (the POSIX
+  halves of both; Linux not yet compiled).
   Listing a directory and an advisory lock on an open file (card S39,
   `spudfiles_list_lock_draft.h`) were built on 2026-11-06 on Windows 11:
   `spudfile_listing_open`/`_next`/`_close` (no "." or "..", a reparse point

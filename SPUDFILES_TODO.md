@@ -443,10 +443,42 @@ needs:
 - `SPUDLIB_VERSION_MINOR` 2.
 - Run: windows-d3d12 and windows-vulkan, Debug and Release, 15 ctests each passing, no warning; windows-d3d12-asan and windows-vulkan-asan (MSVC AddressSanitizer, Debug), 15 each passing; spud_misuse_tests ten times per backend in Debug, each run 280 calls with zeroes and 253 with a destroyed handle, 0 failures; spud_noalloc_tests passing in every configuration; spudnet_test 343 of 343 (D3D12, Debug).
 
-Left: the POSIX half (dlopen, dlsym, dlclose with dlerror's text, and
-errno's messages for every file call) is written, not compiled: compile and
-run it on Linux and the Mac, `-tsan` included, and the iOS simulator's
-framework test (Q5a).
+**Run on the Mac 2026-11-09** (Apple M5 Pro, macOS 27, Apple clang 21;
+the workspace's prompt for the Mac, part 1): the POSIX half (dlopen,
+dlsym, dlclose with dlerror's text, and errno's messages for every file
+call) compiled at once with no warning, under `-Wall -Wextra -Wpedantic`
+too, and needed no change. `macos-metal` Debug and Release, `-asan` and
+`-tsan`: `spudfiles_test` passing in all four; every other ctest passing
+but `spudgpu_objects_test`'s X27 quarantine case in the Debug three (the
+Metal backend still frees a destroyed handle at once: X27's Metal half,
+not built). `spud_misuse_tests` ten times in Debug (269 calls with zeroes,
+234 with a destroyed handle, no failure); `spud_noalloc_tests` none of
+ours. `iossimulator-metal` Debug and Release in an iPhone 17 Pro
+simulator (iOS 26.5): `spudfiles_test` and the other tests that need no
+GPU or server passing. Added or changed in the tests:
+- `LAZY`, `GLOBAL` and both together accepted on POSIX and the library
+  called through each.
+- Access denied by a directory made `0000` (open and path info, each
+  `ACCESS_DENIED` with `EACCES`).
+- APFS refuses a name that isn't UTF-8 (`EILSEQ`): S39's listing test of
+  such a name keeps Linux's case and, on Apple, sees the create refused and
+  nothing listed.
+- Q5a: on iOS a framework (`spudfiles_test_framework`, value 5) built into a
+  `Frameworks` folder beside the test, which stands in for an app bundle,
+  opened by the path of its binary. The simulator doesn't enforce code
+  signing on dlopen, so this shows the framework's layout and the path, not
+  a device's library validation; a device can't run a bare executable.
+- Under ThreadSanitizer on Apple the two-thread case holds one more open of
+  each library while the threads run: TSan's own `dlopen` lists the loaded
+  images and crashed (about 1 run in 8) when another thread's `dlclose`
+  unmapped one meanwhile. Reproduced with a program of two threads calling
+  dlopen and dlclose alone, no SpudLib in it; never without TSan (40 of 40).
+Found and fixed: card X27's quarantine push read the list's head with a
+plain load beside another thread's compare-and-swap, a data race in C11
+(TSan, two threads closing libraries); the read is atomic now on clang and
+GCC, and MSVC's code is unchanged (its volatile read is atomic).
+
+Left: Linux (the POSIX half on glibc, `-tsan` there, `libc.so.6` by name).
 
 ## Breaks
 
