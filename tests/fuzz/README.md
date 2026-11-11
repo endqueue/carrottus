@@ -1,17 +1,17 @@
-# SpudNet fuzz targets
+# Carrottus Net fuzz targets
 
-libFuzzer targets over SpudNet's own parsers of bytes it doesn't control.
+libFuzzer targets over Carrottus Net's own parsers of bytes it doesn't control.
 HTTP and WebSocket framing themselves (status lines, chunked bodies,
 WebSocket frame headers, masking, fragmentation, close frames) are parsed by
-the platform's stack - NSURLSession, libcurl, WinHTTP - not by SpudLib, so
-what SpudLib parses, and what is fuzzed here, is what the stacks hand on:
+the platform's stack - NSURLSession, libcurl, WinHTTP - not by Carrottus, so
+what Carrottus parses, and what is fuzzed here, is what the stacks hand on:
 
 | Target | Function (file) | Bytes from |
 |---|---|---|
-| `spudnet_fuzz_http_head` | `spudnet_head_add_header_line`, `spudnet_head_add_header`, `spudnet_head_get_header` (`src/net/spudnethttp.c`); on Windows also `spudnet_win_add_raw_headers` (`src/net/backends/windows/spudnetwinhttp.c`) | the server: a response's header block, a line at a time (libcurl, WinHTTP) or as pairs (NSURLSession), and on Windows as WinHTTP hands over the whole block, UTF-16 |
-| `spudnet_fuzz_certificate` | `spudnet_certificate_public_key_info` (`src/spudnet.c`) | the server: its certificate's DER, walked to the key a pin is checked against (WinHTTP, NSURLSession) |
-| `spudnet_fuzz_text` | `spudnet_utf8_valid`, `spudnet_error_record`, `spudnet_ascii_equal_no_case`, `spudnet_url_has_scheme`, `spudnet_headers_accept_encoding` | the caller or the stack: text checked before a WebSocket send, a stack's message cut to fit a record |
-| `spudnet_fuzz_proxy` | `spudnet_proxy_parse` (`src/spudnet.c`) | the caller: a proxy URL |
+| `crnet_fuzz_http_head` | `crnet_head_add_header_line`, `crnet_head_add_header`, `crnet_head_get_header` (`src/net/crnethttp.c`); on Windows also `crnet_win_add_raw_headers` (`src/net/backends/windows/crnetwinhttp.c`) | the server: a response's header block, a line at a time (libcurl, WinHTTP) or as pairs (NSURLSession), and on Windows as WinHTTP hands over the whole block, UTF-16 |
+| `crnet_fuzz_certificate` | `crnet_certificate_public_key_info` (`src/crnet.c`) | the server: its certificate's DER, walked to the key a pin is checked against (WinHTTP, NSURLSession) |
+| `crnet_fuzz_text` | `crnet_utf8_valid`, `crnet_error_record`, `crnet_ascii_equal_no_case`, `crnet_url_has_scheme`, `crnet_headers_accept_encoding` | the caller or the stack: text checked before a WebSocket send, a stack's message cut to fit a record |
+| `crnet_fuzz_proxy` | `crnet_proxy_parse` (`src/crnet.c`) | the caller: a proxy URL |
 
 Each checks, besides AddressSanitizer's and UndefinedBehaviorSanitizer's
 own findings, that nothing leaks or is freed wrongly through the caller's
@@ -29,8 +29,8 @@ in a binary dir of their own:
 ```sh
 cmake --preset macos-fuzz            # or linux-fuzz
 cmake --build --preset macos-fuzz-debug
-mkdir -p /tmp/fuzz-head && cp tests/fuzz/corpus/spudnet_fuzz_http_head/* /tmp/fuzz-head/
-build-macos-fuzz/Debug/spudnet_fuzz_http_head -max_total_time=1200 -max_len=4096 /tmp/fuzz-head
+mkdir -p /tmp/fuzz-head && cp tests/fuzz/corpus/crnet_fuzz_http_head/* /tmp/fuzz-head/
+build-macos-fuzz/Debug/crnet_fuzz_http_head -max_total_time=1200 -max_len=4096 /tmp/fuzz-head
 ```
 
 On Windows (2026-10-29), from a Visual Studio developer prompt with LLVM's
@@ -39,7 +39,7 @@ On Windows (2026-10-29), from a Visual Studio developer prompt with LLVM's
 ```sh
 cmake --preset windows-fuzz
 cmake --build --preset windows-fuzz-relwithdebinfo
-PATH="/c/Program Files/LLVM/lib/clang/23/lib/windows:$PATH"   build-windows-fuzz/RelWithDebInfo/spudnet_fuzz_http_head -max_total_time=600 -max_len=4096 <scratch corpus>
+PATH="/c/Program Files/LLVM/lib/clang/23/lib/windows:$PATH"   build-windows-fuzz/RelWithDebInfo/crnet_fuzz_http_head -max_total_time=600 -max_len=4096 <scratch corpus>
 ```
 
 It is LLVM's clang through its GNU-style driver, RelWithDebInfo at `-O1`
@@ -60,8 +60,8 @@ libFuzzer's own RSS thread when a run ends; pass
 2. Fix the cause in `src/`.
 3. Keep the minimized input as `regressions/<target>/<what-it-was>`.
 
-Every build with `SPUDLIB_BUILD_TESTS` (the default) builds each target a
-second time with `spudfuzz_replay.c`'s plain `main` and registers it with
+Every build with `CARROTTUS_BUILD_TESTS` (the default) builds each target a
+second time with `crfuzz_replay.c`'s plain `main` and registers it with
 ctest as `<target>_replay`, fed every file in `corpus/<target>` and
 `regressions/<target>`. That runs on every platform and compiler, libFuzzer
 or not.

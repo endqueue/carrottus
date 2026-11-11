@@ -1,4 +1,4 @@
-// spudgpu_objects_test's vertex shader: a unit quad's corner (per vertex)
+// crgpu_objects_test's vertex shader: a unit quad's corner (per vertex)
 // moved to a cell of an 8 x 8 grid (per instance), so each draw call's
 // vertex and instance fetches decide which cells it covers. Clip space is
 // +Y up on every backend, so y is negated to keep cell (0, 0) at the top

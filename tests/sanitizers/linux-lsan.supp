@@ -1,11 +1,11 @@
-# LeakSanitizer suppressions for spudaudio_test on Linux, under the -asan
+# LeakSanitizer suppressions for craudio_test on Linux, under the -asan
 # presets (set on the test in CMakeLists.txt). Third-party code only, each
-# with its reason; SpudLib's own leaks are fixed, never listed here.
+# with its reason; Carrottus's own leaks are fixed, never listed here.
 
 # PipeWire, loaded by ALSA's pipewire PCM plugin (the default device on a
 # PipeWire desktop) inside snd_pcm_open: pw_context_new loads its modules
 # and keeps allocations that snd_pcm_close never frees; the modules are
-# unloaded by then, so most frames read "<unknown module>". SpudAudio closes
-# every PCM it opens (spudaudioalsa.c, alsa_open and its callers). Seen
+# unloaded by then, so most frames read "<unknown module>". Carrottus Audio closes
+# every PCM it opens (craudioalsa.c, alsa_open and its callers). Seen
 # 2026-10-25 on Fedora 44, PipeWire 1.6.9, alsa-lib 1.2.16.
 leak:pw_context_load_module

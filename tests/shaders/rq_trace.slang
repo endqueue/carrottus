@@ -1,4 +1,4 @@
-// S12's step 0 (SPUDGPU_DEVICE_TODO.md, "Hardware ray tracing"): one ray per
+// S12's step 0 (CRGPU_DEVICE_TODO.md, "Hardware ray tracing"): one ray per
 // pixel from a compute shader, through an inline ray query, the way the ray
 // tracing work ahead traces. Each ray starts on a plane at z = origin.z and
 // goes along +z. Triangle candidates are committed as the query reports them
@@ -8,8 +8,8 @@
 // index and barycentrics are written for the CPU to check.
 //
 // Bindings, the same on every target: set 0 binding 0 is the top level, set
-// 0 binding 1 the hit records; the push constants are SpudGPU's block (D3D12:
-// b0 in space SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS, 4). The hit records are a
+// 0 binding 1 the hit records; the push constants are Carrottus GPU's block (D3D12:
+// b0 in space CRGPU_MAX_DESCRIPTOR_SET_LAYOUTS, 4). The hit records are a
 // byte-address buffer, 32 bytes each in RqHit's order, since a storage
 // buffer is a raw view on D3D12 (as objects_double_comp.slang's are); a
 // structured buffer declared over a raw view is outside D3D12's rules.

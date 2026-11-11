@@ -1,19 +1,19 @@
-# SpudLib
+# Carrottus
 
 One C interface over the GPU (Vulkan, D3D12, Metal), files, memory, network,
 audio and input on Windows, Linux, macOS and iOS.
 
-SpudLib is **pure mechanism, zero policy**. It translates each platform API into
+Carrottus is **pure mechanism, zero policy**. It translates each platform API into
 one consistent C interface and stops there. It never makes a decision on the
 caller's behalf, has no default that hides a choice, and holds no global state.
-It lists what the platform offers (`spudgpu_enumerate_adapters`, not
-`spudgpu_select_best_device`) and the caller decides. That includes where
-memory comes from: every instance takes the caller's `SPUD_ALLOCATOR`.
+It lists what the platform offers (`crgpu_adapter_enumerate`, not
+`crgpu_select_best_device`) and the caller decides. That includes where
+memory comes from: every instance takes the caller's `CR_ALLOCATOR`.
 
 ```
 The caller                    ← every decision
         ↓ C-ABI
-SpudLib                       ← you are here
+Carrottus                       ← you are here
         ↓
 Native platform               ← Vulkan / D3D12 / Metal, Win32 / Linux / macOS / iOS
 ```
@@ -21,64 +21,64 @@ Native platform               ← Vulkan / D3D12 / Metal, Win32 / Linux / macOS 
 ## Example
 
 ```c
-#include <spudgpu.h>
+#include <crgpu.h>
 #include <stdio.h>
 #include <string.h>
 
 int main(void) {
-	SPUD_ALLOCATOR allocator = spud_allocator_system();
+	CR_ALLOCATOR allocator = cr_allocator_system();
 
-	spudgpu_instance_desc instance_desc;
+	crgpu_instance_desc instance_desc;
 	memset(&instance_desc, 0, sizeof(instance_desc));
-	instance_desc.base.type        = SPUD_STRUCT_TYPE_GPU_INSTANCE_DESC;
+	instance_desc.base.type        = CR_STRUCT_TYPE_GPU_INSTANCE_DESC;
 	instance_desc.allocator        = &allocator;
 	instance_desc.application_name = "hello";
 	instance_desc.engine_name      = "hello";
 
-	spudgpu_instance instance;
-	if (spudgpu_create_instance(&instance_desc, &instance) != SPUD_SUCCESS)
+	crgpu_instance instance;
+	if (crgpu_instance_create(&instance_desc, &instance) != CR_SUCCESS)
 		return 1;
 
-	/* SpudLib lists the adapters; choosing one is the caller's. */
-	const spudgpu_adapter *adapters;
+	/* Carrottus lists the adapters; choosing one is the caller's. */
+	const crgpu_adapter *adapters;
 	uint32_t count;
-	spudgpu_enumerate_adapters(instance, &adapters, &count);
+	crgpu_adapter_enumerate(instance, &adapters, &count);
 	for (uint32_t i = 0; i < count; i++) {
-		SPUDGPU_ADAPTER_PROPERTIES properties;
+		CRGPU_ADAPTER_PROPERTIES properties;
 		memset(&properties, 0, sizeof(properties));
-		properties.base.type = SPUD_STRUCT_TYPE_GPU_ADAPTER_PROPERTIES;
-		if (spudgpu_get_adapter_properties(adapters[i], &properties) == SPUD_SUCCESS)
+		properties.base.type = CR_STRUCT_TYPE_GPU_ADAPTER_PROPERTIES;
+		if (crgpu_adapter_get_properties(adapters[i], &properties) == CR_SUCCESS)
 			printf("%u: %s\n", i, properties.description);
 	}
 
-	spudgpu_destroy_instance(instance);
+	crgpu_instance_destroy(instance);
 	return 0;
 }
 ```
 
-From there, `spudgpu_create_device` takes the adapter the caller chose.
+From there, `crgpu_device_create` takes the adapter the caller chose.
 `spudgpusamples` has complete programs: triangles, textures, mesh shaders,
 indirect execution, bindless.
 
 ## Module map
 
-Every module reports errors through the shared `SPUDRESULT` enum
-(`spudcore.h`) rather than inventing its own convention.
+Every module reports errors through the shared `CR_RESULT` enum
+(`crcore.h`) rather than inventing its own convention.
 
 | Module | Header | Prefix | Backends |
 |---|---|---|---|
-| SpudGPU | `spudgpu.h` | `spudgpu_` | Vulkan, D3D12, Metal |
-| SpudFiles | `spudfiles.h` | `spudfile_` | Windows, Linux, macOS |
-| SpudMemory | `spudmemory.h` | `spudmem_` | Windows, POSIX (Linux + Apple, one file) |
-| SpudNet | `spudnet.h` | `spudnet_` | TCP sockets: Winsock2, BSD sockets (Linux + Apple, one file). HTTP + WebSocket: WinHTTP, libcurl, NSURLSession |
-| SpudAudio | `spudaudio.h` | `spudaudio_` / `SPUDRESULT_SAUD_*` | WASAPI (Windows), ALSA (Linux), CoreAudio (macOS); an argument-checking stub where no API is compiled in (iOS, watchOS) |
-| SpudInput | `spudinput.h` | `spudinput_` / `SPUDRESULT_SPUDINPUT_*` | GameController (macOS, iOS, iPadOS), evdev (Linux), GameInput (Windows). Not written: XInput (Windows); with no API built in, no instance can be made |
-| SpudCore | `spudcore.h` | `spud_` / `SPUDRESULT` | platform-agnostic |
-| SpudPerf | `spudperf.h` | `spudperf_` | Windows, Linux, Apple |
+| Carrottus GPU | `crgpu.h` | `crgpu_` | Vulkan, D3D12, Metal |
+| Carrottus Files | `crfiles.h` | `crfiles_` | Windows, Linux, macOS |
+| Carrottus Memory | `crmemory.h` | `crmem_` | Windows, POSIX (Linux + Apple, one file) |
+| Carrottus Net | `crnet.h` | `crnet_` | TCP sockets: Winsock2, BSD sockets (Linux + Apple, one file). HTTP + WebSocket: WinHTTP, libcurl, NSURLSession |
+| Carrottus Audio | `craudio.h` | `craudio_` / `CR_RESULT_SAUD_*` | WASAPI (Windows), ALSA (Linux), CoreAudio (macOS); an argument-checking stub where no API is compiled in (iOS, watchOS) |
+| Carrottus Input | `crinput.h` | `crinput_` / `CR_RESULT_CRINPUT_*` | GameController (macOS, iOS, iPadOS), evdev (Linux), GameInput (Windows). Not written: XInput (Windows); with no API built in, no instance can be made |
+| Carrottus Core | `crcore.h` | `cr_` / `CR_RESULT` | platform-agnostic |
+| Carrottus Perf | `crperf.h` | `crperf_` | Windows, Linux, Apple |
 
-SpudGPU is the largest module by far (133 functions across 24 opaque handles).
-The rest are small, focused translation shims by design — e.g. SpudNet moves
-bytes, it doesn't do message framing or host authority; SpudMemory is
+Carrottus GPU is the largest module by far (133 functions across 24 opaque handles).
+The rest are small, focused translation shims by design — e.g. Carrottus Net moves
+bytes, it doesn't do message framing or host authority; Carrottus Memory is
 reserve/commit/decommit/release of whole pages, not an allocator.
 
 ## Backend status
@@ -90,7 +90,7 @@ reserve/commit/decommit/release of whole pages, not an allocator.
 | Metal | Objective-C | Complete; SPIR-V is cross-compiled to MSL with SPIRV-Cross |
 
 Every backend takes shaders as SPIR-V. A build gates optional API with
-`SPUDGPU_EXT_*` macros, and at run time each adapter reports its own
+`CRGPU_EXT_*` macros, and at run time each adapter reports its own
 `supported_features`. Neither is assumed from the platform's name.
 
 ## Building
@@ -115,18 +115,18 @@ sanitizers. `Doxyfile` generates the API reference from the headers.
 
 ## Tests
 
-CTest runs eight tests, none of which opens a window: `spudcore_test`,
-`spudgpu_device_test`, `spudgpu_objects_test`, `spudfiles_test`,
-`spudmemory_test`, `spudaudio_test`, `spudperf_test` and `spudinput_test`.
-The two `spudgpu_` tests need a GPU and are skipped without one. SpudNet's test needs a
-local server and runs through `tests/run_spudnet_test.sh`. Most of SpudGPU is
-verified by `spudgpusamples` instead. [`CLAUDE.md`](https://github.com/endqueue/spudlib/blob/master/CLAUDE.md), "Known gaps",
+CTest runs eight tests, none of which opens a window: `crcore_test`,
+`crgpu_device_test`, `crgpu_objects_test`, `crfiles_test`,
+`crmemory_test`, `craudio_test`, `crperf_test` and `crinput_test`.
+The two `crgpu_` tests need a GPU and are skipped without one. Carrottus Net's test needs a
+local server and runs through `tests/run_crnet_test.sh`. Most of Carrottus GPU is
+verified by `spudgpusamples` instead. [`CLAUDE.md`](https://github.com/endqueue/carrottus/blob/master/CLAUDE.md), "Known gaps",
 records what each covers and what has run where.
 
 ## Contributing
 
-Read [`CLAUDE.md`](https://github.com/endqueue/spudlib/blob/master/CLAUDE.md) before making structural changes. It covers the
-zero-policy rule, `SPUDGPU_EXT_*` gating, struct bases and the backend file
+Read [`CLAUDE.md`](https://github.com/endqueue/carrottus/blob/master/CLAUDE.md) before making structural changes. It covers the
+zero-policy rule, `CRGPU_EXT_*` gating, struct bases and the backend file
 layout. Format with the repo's `.clang-format`.
 
 ## License

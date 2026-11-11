@@ -1,4 +1,4 @@
-// spudgpu_objects_test's set bindings draw (card S27): one triangle over the
+// crgpu_objects_test's set bindings draw (card S27): one triangle over the
 // whole target from the vertex index, with no vertex input and no set.
 
 struct VertexOutput {

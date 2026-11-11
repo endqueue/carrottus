@@ -1,4 +1,4 @@
-// spudgpu_objects_test's mesh shader: one cell's quad per workgroup, from
+// crgpu_objects_test's mesh shader: one cell's quad per workgroup, from
 // the cell in the push constants along x. Clip space is +Y up on every
 // backend, so y is negated to keep cell (0, 0) at the top left, as the
 // vertex shader does.

@@ -1,4 +1,4 @@
-// spudgpu_objects_test's compute shader: dst[i] = src[i] * 2 + add.
+// crgpu_objects_test's compute shader: dst[i] = src[i] * 2 + add.
 // Each buffer is uint[], read and written at byte offset 4 * i: a
 // byte-address buffer, which is what a storage buffer's raw UAV on D3D12 is.
 

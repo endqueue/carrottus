@@ -3,7 +3,7 @@
   "configurePresets": [
     {
       "name": "windows-d3d12",
-      "displayName": "SpudLib Windows D3D12",
+      "displayName": "Carrottus Windows D3D12",
       "generator": "Visual Studio 18 2026",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build-windows-d3d12",
@@ -14,7 +14,7 @@
     },
     {
       "name": "windows-vulkan",
-      "displayName": "SpudLib Windows Vulkan",
+      "displayName": "Carrottus Windows Vulkan",
       "generator": "Visual Studio 18 2026",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build-windows-vulkan",
@@ -25,7 +25,7 @@
     },
     {
       "name": "linux-vulkan",
-      "displayName": "SpudLib Linux Vulkan",
+      "displayName": "Carrottus Linux Vulkan",
       "generator": "Ninja Multi-Config",
       "binaryDir": "${sourceDir}/build-linux-vulkan",
       "cacheVariables": {
@@ -35,7 +35,7 @@
     },
     {
       "name": "macos-metal",
-      "displayName": "SpudLib macOS Metal",
+      "displayName": "Carrottus macOS Metal",
       "generator": "Ninja Multi-Config",
       "binaryDir": "${sourceDir}/build-macos-metal",
       "cacheVariables": {
@@ -46,7 +46,7 @@
     },
     {
       "name": "macos-metal-xcode",
-      "displayName": "SpudLib macOS Metal (Xcode)",
+      "displayName": "Carrottus macOS Metal (Xcode)",
       "generator": "Xcode",
       "binaryDir": "${sourceDir}/build-xcode-macos-metal",
       "cacheVariables": {
@@ -56,7 +56,7 @@
     },
     {
       "name": "iossimulator-metal",
-      "displayName": "SpudLib iOS Metal (simulator)",
+      "displayName": "Carrottus iOS Metal (simulator)",
       "generator": "Ninja Multi-Config",
       "binaryDir": "${sourceDir}/build-iossimulator-metal",
       "cacheVariables": {
@@ -72,7 +72,7 @@
     },
     {
       "name": "ios-metal",
-      "displayName": "SpudLib iOS Metal (iPhone and iPad devices)",
+      "displayName": "Carrottus iOS Metal (iPhone and iPad devices)",
       "generator": "Ninja Multi-Config",
       "binaryDir": "${sourceDir}/build-ios-metal",
       "cacheVariables": {
@@ -116,25 +116,25 @@
     },
     {
       "name": "macos-metal-asan",
-      "displayName": "SpudLib macOS ASan+UBSan",
+      "displayName": "Carrottus macOS ASan+UBSan",
       "inherits": ["sanitize-asan", "macos-metal"],
       "binaryDir": "${sourceDir}/build-macos-metal-asan"
     },
     {
       "name": "macos-metal-tsan",
-      "displayName": "SpudLib macOS TSan",
+      "displayName": "Carrottus macOS TSan",
       "inherits": ["sanitize-tsan", "macos-metal"],
       "binaryDir": "${sourceDir}/build-macos-metal-tsan"
     },
     {
       "name": "linux-vulkan-asan",
-      "displayName": "SpudLib Linux ASan+UBSan",
+      "displayName": "Carrottus Linux ASan+UBSan",
       "inherits": ["sanitize-asan", "linux-vulkan"],
       "binaryDir": "${sourceDir}/build-linux-vulkan-asan"
     },
     {
       "name": "linux-vulkan-tsan",
-      "displayName": "SpudLib Linux TSan",
+      "displayName": "Carrottus Linux TSan",
       "inherits": ["sanitize-tsan", "linux-vulkan"],
       "binaryDir": "${sourceDir}/build-linux-vulkan-tsan"
     },
@@ -143,7 +143,7 @@
       "hidden": true,
       "cacheVariables": {
         "CMAKE_CONFIGURATION_TYPES": "Debug",
-        "SPUDLIB_BUILD_FUZZERS": "ON",
+        "CARROTTUS_BUILD_FUZZERS": "ON",
         "CMAKE_C_FLAGS": "-fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer",
         "CMAKE_CXX_FLAGS": "-fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer",
         "CMAKE_OBJC_FLAGS": "-fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer",
@@ -155,7 +155,7 @@
     },
     {
       "name": "macos-fuzz",
-      "displayName": "SpudLib macOS libFuzzer (Homebrew LLVM)",
+      "displayName": "Carrottus macOS libFuzzer (Homebrew LLVM)",
       "inherits": ["sanitize-fuzz", "macos-metal"],
       "binaryDir": "${sourceDir}/build-macos-fuzz",
       "cacheVariables": {
@@ -166,7 +166,7 @@
     },
     {
       "name": "linux-fuzz",
-      "displayName": "SpudLib Linux libFuzzer (clang)",
+      "displayName": "Carrottus Linux libFuzzer (clang)",
       "inherits": ["sanitize-fuzz", "linux-vulkan"],
       "binaryDir": "${sourceDir}/build-linux-fuzz",
       "cacheVariables": {
@@ -188,7 +188,7 @@
     },
     {
       "name": "windows-d3d12-asan",
-      "displayName": "SpudLib Windows D3D12 ASan",
+      "displayName": "Carrottus Windows D3D12 ASan",
       "inherits": [
         "windows-sanitize-asan",
         "windows-d3d12"
@@ -197,7 +197,7 @@
     },
     {
       "name": "windows-vulkan-asan",
-      "displayName": "SpudLib Windows Vulkan ASan",
+      "displayName": "Carrottus Windows Vulkan ASan",
       "inherits": [
         "windows-sanitize-asan",
         "windows-vulkan"
@@ -206,11 +206,11 @@
     },
     {
       "name": "windows-fuzz",
-      "displayName": "SpudLib Windows libFuzzer (clang)",
+      "displayName": "Carrottus Windows libFuzzer (clang)",
       "generator": "Ninja Multi-Config",
       "binaryDir": "${sourceDir}/build-windows-fuzz",
       "cacheVariables": {
-        "SPUDLIB_BUILD_FUZZERS": "ON",
+        "CARROTTUS_BUILD_FUZZERS": "ON",
         "CMAKE_C_FLAGS": "-fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -fno-sanitize-coverage=indirect-calls,trace-cmp",
         "CMAKE_CXX_FLAGS": "-fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -fno-sanitize-coverage=indirect-calls,trace-cmp -D_DISABLE_STRING_ANNOTATION -D_DISABLE_VECTOR_ANNOTATION",
         "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined",
@@ -229,181 +229,181 @@
   "buildPresets": [
     {
       "name": "windows-d3d12-debug",
-      "displayName": "SpudLib Windows D3D12 (Debug)",
+      "displayName": "Carrottus Windows D3D12 (Debug)",
       "configurePreset": "windows-d3d12",
       "configuration": "Debug"
     },
     {
       "name": "windows-d3d12-release",
-      "displayName": "SpudLib Windows D3D12 (Release)",
+      "displayName": "Carrottus Windows D3D12 (Release)",
       "configurePreset": "windows-d3d12",
       "configuration": "Release"
     },
     {
       "name": "windows-d3d12-relwithdebinfo",
-      "displayName": "SpudLib Windows D3D12 (RelWithDebInfo)",
+      "displayName": "Carrottus Windows D3D12 (RelWithDebInfo)",
       "configurePreset": "windows-d3d12",
       "configuration": "RelWithDebInfo"
     },
     {
       "name": "windows-vulkan-debug",
-      "displayName": "SpudLib Windows Vulkan (Debug)",
+      "displayName": "Carrottus Windows Vulkan (Debug)",
       "configurePreset": "windows-vulkan",
       "configuration": "Debug"
     },
     {
       "name": "windows-vulkan-release",
-      "displayName": "SpudLib Windows Vulkan (Release)",
+      "displayName": "Carrottus Windows Vulkan (Release)",
       "configurePreset": "windows-vulkan",
       "configuration": "Release"
     },
     {
       "name": "windows-vulkan-relwithdebinfo",
-      "displayName": "SpudLib Windows Vulkan (RelWithDebInfo)",
+      "displayName": "Carrottus Windows Vulkan (RelWithDebInfo)",
       "configurePreset": "windows-vulkan",
       "configuration": "RelWithDebInfo"
     },
     {
       "name": "linux-vulkan-debug",
-      "displayName": "SpudLib Linux Vulkan (Debug)",
+      "displayName": "Carrottus Linux Vulkan (Debug)",
       "configurePreset": "linux-vulkan",
       "configuration": "Debug"
     },
     {
       "name": "linux-vulkan-release",
-      "displayName": "SpudLib Linux Vulkan (Release)",
+      "displayName": "Carrottus Linux Vulkan (Release)",
       "configurePreset": "linux-vulkan",
       "configuration": "Release"
     },
     {
       "name": "linux-vulkan-relwithdebinfo",
-      "displayName": "SpudLib Linux Vulkan (RelWithDebInfo)",
+      "displayName": "Carrottus Linux Vulkan (RelWithDebInfo)",
       "configurePreset": "linux-vulkan",
       "configuration": "RelWithDebInfo"
     },
     {
       "name": "macos-metal-debug",
-      "displayName": "SpudLib macOS Metal (Debug)",
+      "displayName": "Carrottus macOS Metal (Debug)",
       "configurePreset": "macos-metal",
       "configuration": "Debug"
     },
     {
       "name": "macos-metal-release",
-      "displayName": "SpudLib macOS Metal (Release)",
+      "displayName": "Carrottus macOS Metal (Release)",
       "configurePreset": "macos-metal",
       "configuration": "Release"
     },
     {
       "name": "macos-metal-relwithdebinfo",
-      "displayName": "SpudLib macOS Metal (RelWithDebInfo)",
+      "displayName": "Carrottus macOS Metal (RelWithDebInfo)",
       "configurePreset": "macos-metal",
       "configuration": "RelWithDebInfo"
     },
     {
       "name": "macos-metal-xcode-debug",
-      "displayName": "SpudLib macOS Metal (Xcode) (Debug)",
+      "displayName": "Carrottus macOS Metal (Xcode) (Debug)",
       "configurePreset": "macos-metal-xcode",
       "configuration": "Debug"
     },
     {
       "name": "macos-metal-xcode-release",
-      "displayName": "SpudLib macOS Metal (Xcode) (Release)",
+      "displayName": "Carrottus macOS Metal (Xcode) (Release)",
       "configurePreset": "macos-metal-xcode",
       "configuration": "Release"
     },
     {
       "name": "macos-metal-xcode-relwithdebinfo",
-      "displayName": "SpudLib macOS Metal (Xcode) (RelWithDebInfo)",
+      "displayName": "Carrottus macOS Metal (Xcode) (RelWithDebInfo)",
       "configurePreset": "macos-metal-xcode",
       "configuration": "RelWithDebInfo"
     },
     {
       "name": "iossimulator-metal-debug",
-      "displayName": "SpudLib iOS Metal (simulator) (Debug)",
+      "displayName": "Carrottus iOS Metal (simulator) (Debug)",
       "configurePreset": "iossimulator-metal",
       "configuration": "Debug"
     },
     {
       "name": "iossimulator-metal-release",
-      "displayName": "SpudLib iOS Metal (simulator) (Release)",
+      "displayName": "Carrottus iOS Metal (simulator) (Release)",
       "configurePreset": "iossimulator-metal",
       "configuration": "Release"
     },
     {
       "name": "iossimulator-metal-relwithdebinfo",
-      "displayName": "SpudLib iOS Metal (simulator) (RelWithDebInfo)",
+      "displayName": "Carrottus iOS Metal (simulator) (RelWithDebInfo)",
       "configurePreset": "iossimulator-metal",
       "configuration": "RelWithDebInfo"
     },
     {
       "name": "ios-metal-debug",
-      "displayName": "SpudLib iOS Metal (iPhone and iPad devices) (Debug)",
+      "displayName": "Carrottus iOS Metal (iPhone and iPad devices) (Debug)",
       "configurePreset": "ios-metal",
       "configuration": "Debug"
     },
     {
       "name": "ios-metal-release",
-      "displayName": "SpudLib iOS Metal (iPhone and iPad devices) (Release)",
+      "displayName": "Carrottus iOS Metal (iPhone and iPad devices) (Release)",
       "configurePreset": "ios-metal",
       "configuration": "Release"
     },
     {
       "name": "ios-metal-relwithdebinfo",
-      "displayName": "SpudLib iOS Metal (iPhone and iPad devices) (RelWithDebInfo)",
+      "displayName": "Carrottus iOS Metal (iPhone and iPad devices) (RelWithDebInfo)",
       "configurePreset": "ios-metal",
       "configuration": "RelWithDebInfo"
     },
     {
       "name": "macos-metal-asan-debug",
-      "displayName": "SpudLib macOS ASan+UBSan (Debug)",
+      "displayName": "Carrottus macOS ASan+UBSan (Debug)",
       "configurePreset": "macos-metal-asan",
       "configuration": "Debug"
     },
     {
       "name": "macos-metal-tsan-debug",
-      "displayName": "SpudLib macOS TSan (Debug)",
+      "displayName": "Carrottus macOS TSan (Debug)",
       "configurePreset": "macos-metal-tsan",
       "configuration": "Debug"
     },
     {
       "name": "linux-vulkan-asan-debug",
-      "displayName": "SpudLib Linux ASan+UBSan (Debug)",
+      "displayName": "Carrottus Linux ASan+UBSan (Debug)",
       "configurePreset": "linux-vulkan-asan",
       "configuration": "Debug"
     },
     {
       "name": "linux-vulkan-tsan-debug",
-      "displayName": "SpudLib Linux TSan (Debug)",
+      "displayName": "Carrottus Linux TSan (Debug)",
       "configurePreset": "linux-vulkan-tsan",
       "configuration": "Debug"
     },
     {
       "name": "macos-fuzz-debug",
-      "displayName": "SpudLib macOS libFuzzer (Debug)",
+      "displayName": "Carrottus macOS libFuzzer (Debug)",
       "configurePreset": "macos-fuzz",
       "configuration": "Debug"
     },
     {
       "name": "linux-fuzz-debug",
-      "displayName": "SpudLib Linux libFuzzer (Debug)",
+      "displayName": "Carrottus Linux libFuzzer (Debug)",
       "configurePreset": "linux-fuzz",
       "configuration": "Debug"
     },
     {
       "name": "windows-d3d12-asan-debug",
-      "displayName": "SpudLib Windows D3D12 ASan (Debug)",
+      "displayName": "Carrottus Windows D3D12 ASan (Debug)",
       "configurePreset": "windows-d3d12-asan",
       "configuration": "Debug"
     },
     {
       "name": "windows-vulkan-asan-debug",
-      "displayName": "SpudLib Windows Vulkan ASan (Debug)",
+      "displayName": "Carrottus Windows Vulkan ASan (Debug)",
       "configurePreset": "windows-vulkan-asan",
       "configuration": "Debug"
     },
     {
       "name": "windows-fuzz-relwithdebinfo",
-      "displayName": "SpudLib Windows libFuzzer (RelWithDebInfo)",
+      "displayName": "Carrottus Windows libFuzzer (RelWithDebInfo)",
       "configurePreset": "windows-fuzz",
       "configuration": "RelWithDebInfo"
     }

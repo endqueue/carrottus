@@ -1,8 +1,8 @@
 // The caller's GPU writer of acceleration structure instances, for a device
-// whose layout is SPUDGPU_ACCELERATION_STRUCTURE_INSTANCE_LAYOUT_ROW_MAJOR_64
+// whose layout is CRGPU_ACCELERATION_STRUCTURE_INSTANCE_LAYOUT_ROW_MAJOR_64
 // (Vulkan, D3D12; card S14: one writer per layout kind, the caller's). Each
 // thread turns one portable instance into the device's 64 bytes, the same
-// bytes spudgpu_write_acceleration_structure_instances() writes on the CPU.
+// bytes crgpu_device_write_acceleration_structure_instances() writes on the CPU.
 //
 // An input instance is 20 words: the row-major 3x4 transform (12 floats),
 // the user index, the mask, the table offset, the flags, the bottom level's

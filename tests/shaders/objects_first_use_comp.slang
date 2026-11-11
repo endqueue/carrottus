@@ -1,5 +1,5 @@
-// spudgpu_objects_test's attachment image written by compute after its
-// first use, a clear (spudgpu_create_image(), the first use of an attachment
+// crgpu_objects_test's attachment image written by compute after its
+// first use, a clear (crgpu_image_create(), the first use of an attachment
 // image, card S38): texel (x, y) of the left half becomes x + 8 y + 1; the
 // right half keeps the clear.
 

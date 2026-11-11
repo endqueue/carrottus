@@ -1,5 +1,5 @@
 [workspace]
 members = [
-    "bindings/rust/spudlib-sys",
-    "bindings/rust/spudlib",
+    "bindings/rust/carrottus-sys",
+    "bindings/rust/carrottus",
 ]

@@ -1,11 +1,11 @@
 # Struct bases TODO
 
 Planned on 2026-10-18. Steps 1 and 2 of "Order of work" are done (the
-`spudcore.h` pieces, and the three ABI bugs), and step 3 is done for
-SpudGPU, SpudAudio and SpudNet (2026-10-19, "SpudGPU, converted" and the
-sections after it), for SpudInput (2026-10-20, "SpudInput, converted") and
-for SpudFiles (2026-10-22, with its rework). Every module is converted. Every extensible struct in
-spudlib's public headers starts with a `SPUD_STRUCT_BASE`: a type tag and a
+`crcore.h` pieces, and the three ABI bugs), and step 3 is done for
+Carrottus GPU, Carrottus Audio and Carrottus Net (2026-10-19, "Carrottus GPU, converted" and the
+sections after it), for Carrottus Input (2026-10-20, "Carrottus Input, converted") and
+for Carrottus Files (2026-10-22, with its rework). Every module is converted. Every extensible struct in
+carrottus's public headers starts with a `CR_STRUCT_BASE`: a type tag and a
 pointer to a chain of further structs. A struct's layout is frozen once it is
 released. A new field never goes into a released struct; it comes as a new
 struct that the caller chains on. This is Vulkan's `sType`/`pNext` pattern
@@ -14,10 +14,10 @@ struct that the caller chains on. This is Vulkan's `sType`/`pNext` pattern
 ## Why
 
 - **Binary compatibility.** A caller built against one version of these headers
-  keeps working against a later spudlib, and a caller built against a later
-  version gets a refusal from an older spudlib, never a misread struct. This
-  matters once spudlib ships as a binary built separately from its caller.
-  While spudlib and its caller are built together from source, nothing can
+  keeps working against a later carrottus, and a caller built against a later
+  version gets a refusal from an older carrottus, never a misread struct. This
+  matters once carrottus ships as a binary built separately from its caller.
+  While carrottus and its caller are built together from source, nothing can
   break this way.
 - **Layouts never move.** Arrays of structs, structs held by value and
   structs mirrored in other languages all keep one layout forever. A trailing
@@ -31,84 +31,84 @@ struct that the caller chains on. This is Vulkan's `sType`/`pNext` pattern
 
 ## Design
 
-In `include/spudcore.h`:
+In `include/crcore.h`:
 
 ```c
 /* Which struct a based struct is. Numbered in blocks per module, as
- * SPUDRESULT is, and never renumbered. 0 is never valid, so a struct left
+ * CR_RESULT is, and never renumbered. 0 is never valid, so a struct left
  * zeroed is refused rather than misread. */
-typedef enum SPUD_STRUCT_TYPE {
-	SPUD_STRUCT_TYPE_UNKNOWN            = 0,
-	/* SpudGPU: 1000+ */
-	SPUD_STRUCT_TYPE_GPU_IMAGE_DESC     = 1000,
+typedef enum CR_STRUCT_TYPE {
+	CR_STRUCT_TYPE_UNKNOWN            = 0,
+	/* Carrottus GPU: 1000+ */
+	CR_STRUCT_TYPE_GPU_IMAGE_DESC     = 1000,
 	/* ... */
-	/* SpudAudio: 2000+ */
-	/* SpudNet: 3000+ */
-	/* SpudInput: 4000+ */
-	/* SpudFiles: 5000+ */
-	SPUD_STRUCT_TYPE_MAX_ENUM           = 0x7FFFFFFF
-} SPUD_STRUCT_TYPE;
+	/* Carrottus Audio: 2000+ */
+	/* Carrottus Net: 3000+ */
+	/* Carrottus Input: 4000+ */
+	/* Carrottus Files: 5000+ */
+	CR_STRUCT_TYPE_MAX_ENUM           = 0x7FFFFFFF
+} CR_STRUCT_TYPE;
 
 /* First member of every extensible struct the caller fills in. */
-typedef struct SPUD_STRUCT_BASE {
-	SPUD_STRUCT_TYPE type;               /* this struct's own type */
-	const struct SPUD_STRUCT_BASE *next; /* the next struct in the chain, or NULL */
-} SPUD_STRUCT_BASE;
+typedef struct CR_STRUCT_BASE {
+	CR_STRUCT_TYPE type;               /* this struct's own type */
+	const struct CR_STRUCT_BASE *next; /* the next struct in the chain, or NULL */
+} CR_STRUCT_BASE;
 
-/* First member of every extensible struct spudlib fills in for the caller
+/* First member of every extensible struct carrottus fills in for the caller
  * (properties, capabilities, requirements). The caller builds the chain and
- * sets each type; spudlib writes the fields. */
-typedef struct SPUD_STRUCT_BASE_OUT {
-	SPUD_STRUCT_TYPE type;
-	struct SPUD_STRUCT_BASE_OUT *next;
-} SPUD_STRUCT_BASE_OUT;
+ * sets each type; carrottus writes the fields. */
+typedef struct CR_STRUCT_BASE_OUT {
+	CR_STRUCT_TYPE type;
+	struct CR_STRUCT_BASE_OUT *next;
+} CR_STRUCT_BASE_OUT;
 ```
 
 A desc, and an addition chained onto it:
 
 ```c
-typedef struct spudgpu_image_desc {
-	SPUD_STRUCT_BASE base;   /* type = SPUD_STRUCT_TYPE_GPU_IMAGE_DESC */
-	SPUDGPU_IMAGE_USAGE usage;
+typedef struct crgpu_image_desc {
+	CR_STRUCT_BASE base;   /* type = CR_STRUCT_TYPE_GPU_IMAGE_DESC */
+	CRGPU_IMAGE_USAGE usage;
 	/* ... */
 	const char *debug_name;  /* always present, NULL for none */
-} spudgpu_image_desc;
+} crgpu_image_desc;
 
 /* An example of a later addition, not a planned one. */
-typedef struct spudgpu_image_multisample_desc {
-	SPUD_STRUCT_BASE base;   /* type = SPUD_STRUCT_TYPE_GPU_IMAGE_MULTISAMPLE_DESC */
+typedef struct crgpu_image_multisample_desc {
+	CR_STRUCT_BASE base;   /* type = CR_STRUCT_TYPE_GPU_IMAGE_MULTISAMPLE_DESC */
 	uint32_t sample_count;
-} spudgpu_image_multisample_desc;
+} crgpu_image_multisample_desc;
 ```
 
 The caller's side:
 
 ```c
-spudgpu_image_multisample_desc ms = {
-	.base = { SPUD_STRUCT_TYPE_GPU_IMAGE_MULTISAMPLE_DESC, NULL },
+crgpu_image_multisample_desc ms = {
+	.base = { CR_STRUCT_TYPE_GPU_IMAGE_MULTISAMPLE_DESC, NULL },
 	.sample_count = 4,
 };
-spudgpu_image_desc desc = {
-	.base = { SPUD_STRUCT_TYPE_GPU_IMAGE_DESC, &ms.base },
+crgpu_image_desc desc = {
+	.base = { CR_STRUCT_TYPE_GPU_IMAGE_DESC, &ms.base },
 	/* ... */
 };
 ```
 
-spudlib's side: check the root's type, then walk the chain:
+carrottus's side: check the root's type, then walk the chain:
 
 ```c
-if (desc->base.type != SPUD_STRUCT_TYPE_GPU_IMAGE_DESC)
-	return SPUDRESULT_STRUCT_WRONG_TYPE;
-const spudgpu_image_multisample_desc *ms = NULL;
-for (const SPUD_STRUCT_BASE *s = desc->base.next; s; s = s->next) {
+if (desc->base.type != CR_STRUCT_TYPE_GPU_IMAGE_DESC)
+	return CR_RESULT_STRUCT_WRONG_TYPE;
+const crgpu_image_multisample_desc *ms = NULL;
+for (const CR_STRUCT_BASE *s = desc->base.next; s; s = s->next) {
 	switch (s->type) {
-	case SPUD_STRUCT_TYPE_GPU_IMAGE_MULTISAMPLE_DESC:
+	case CR_STRUCT_TYPE_GPU_IMAGE_MULTISAMPLE_DESC:
 		if (ms)
-			return SPUDRESULT_STRUCT_DUPLICATE_IN_CHAIN;
-		ms = (const spudgpu_image_multisample_desc *)s;
+			return CR_RESULT_STRUCT_DUPLICATE_IN_CHAIN;
+		ms = (const crgpu_image_multisample_desc *)s;
 		break;
 	default:
-		return SPUDRESULT_STRUCT_UNKNOWN_IN_CHAIN;
+		return CR_RESULT_STRUCT_UNKNOWN_IN_CHAIN;
 	}
 }
 ```
@@ -116,8 +116,8 @@ for (const SPUD_STRUCT_BASE *s = desc->base.next; s; s = s->next) {
 ## Rules
 
 1. **Every public struct is based or frozen.**
-   - **Based:** its first member is `SPUD_STRUCT_BASE base;` or
-     `SPUD_STRUCT_BASE_OUT base;`.
+   - **Based:** its first member is `CR_STRUCT_BASE base;` or
+     `CR_STRUCT_BASE_OUT base;`.
    - **Frozen:** the line above its `typedef` is a `/* Frozen: <why> */`
      comment. A frozen struct never changes; a new need gets a new type.
 2. **Every layout is fixed once released.** That holds for based structs too:
@@ -135,10 +135,10 @@ for (const SPUD_STRUCT_BASE *s = desc->base.next; s; s = s->next) {
    behavior. Vulkan's flat `sType`/`pNext` fields would instead rely on
    casting between unrelated structs that share their first fields. A flat
    `type` field would also clash with the existing `type` fields
-   (`spudgpu_image_desc::type`, `SPUDFILE_FILE_DIALOG_ATTRIBUTES::type`).
+   (`crgpu_image_desc::type`, `CRFILES_FILE_DIALOG_ATTRIBUTES::type`).
 6. **Anything unknown in a chain is refused, never skipped.** Skipping it
    would quietly decide for the caller that the addition didn't matter.
-   Vulkan leaves this to its validation layers; spudlib refuses at every
+   Vulkan leaves this to its validation layers; carrottus refuses at every
    call, in every build. A type that appears twice in one chain is refused
    too.
 7. **There are no defaults.** Leaving a chained struct out means that
@@ -147,14 +147,14 @@ for (const SPUD_STRUCT_BASE *s = desc->base.next; s; s = s->next) {
 8. **Type numbers are permanent.** They are assigned in their module's block
    and never reused, and a struct that is retired keeps its number.
 
-New result codes in `spudcore.h`, in the generic block after
-`SPUDRESULT_NULL_OBJECT` (11):
+New result codes in `crcore.h`, in the generic block after
+`CR_RESULT_NULL_OBJECT` (11):
 
 | Code | When |
 |---|---|
-| `SPUDRESULT_STRUCT_WRONG_TYPE` (12) | A struct's `base.type` is not the type the call takes (including 0) |
-| `SPUDRESULT_STRUCT_UNKNOWN_IN_CHAIN` (13) | A chained struct's type is not one the call accepts in that chain, or not known to this build |
-| `SPUDRESULT_STRUCT_DUPLICATE_IN_CHAIN` (14) | One type appears twice in a chain |
+| `CR_RESULT_STRUCT_WRONG_TYPE` (12) | A struct's `base.type` is not the type the call takes (including 0) |
+| `CR_RESULT_STRUCT_UNKNOWN_IN_CHAIN` (13) | A chained struct's type is not one the call accepts in that chain, or not known to this build |
+| `CR_RESULT_STRUCT_DUPLICATE_IN_CHAIN` (14) | One type appears twice in a chain |
 
 ## Which structs get which
 
@@ -163,123 +163,123 @@ rule of thumb is: based if it may plausibly grow; frozen if it is a value, a
 fixed fact of a platform or GPU format, an element of a hot per-frame array,
 or held by value elsewhere. Line numbers are as of 2026-10-18.
 
-### spudgpu.h (converted 2026-10-19, as listed here)
+### crgpu.h (converted 2026-10-19, as listed here)
 
 The list changed with the adapters-and-devices change (2026-10-21,
-`SPUDGPU_DEVICE_TODO.md`): `SPUDGPU_DEVICE_PROPERTIES` and the three
+`CRGPU_DEVICE_TODO.md`): `CRGPU_DEVICE_PROPERTIES` and the three
 `*_capabilities` structs went, and the instance and device descs, the
 adapter properties and the two limits structs came. Below is the list as
-of 2026-10-22: 22 caller-filled, 4 SpudGPU-filled.
+of 2026-10-22: 22 caller-filled, 4 Carrottus GPU-filled.
 
-- **`SPUD_STRUCT_BASE` (caller fills):**
-  - `spudgpu_instance_desc`
-  - `spudgpu_device_desc`
-  - `spudgpu_submit_desc`
-  - `spudgpu_command_allocator_desc`
-  - `spudgpu_buffer_desc`
-  - `spudgpu_buffer_view_desc`
-  - `spudgpu_image_desc`
-  - `spudgpu_image_view_desc`
-  - `spudgpu_heap_desc`
-  - `spudgpu_swap_chain_desc`
-  - `spudgpu_descriptor_set_layout_desc`
-  - `spudgpu_descriptor_pool_desc`
-  - `spudgpu_descriptor_set_desc`
-  - `spudgpu_sampler_desc`
-  - `spudgpu_write_descriptor_set`
-  - `spudgpu_shader_module_desc`
-  - `spudgpu_shader_pipeline_desc`
-  - `spudgpu_compute_pipeline_desc`
-  - `spudgpu_rendering_begin_desc`
-  - `spudgpu_bundle_inheritance_desc`
-  - `spudgpu_buffer_barrier`
-  - `spudgpu_image_barrier`
-- **`SPUD_STRUCT_BASE_OUT` (spudlib fills):**
-  - `SPUDGPU_ADAPTER_PROPERTIES`
-  - `spudgpu_placement_requirements`
-  - `SPUDGPU_BINDLESS_LIMITS`
-  - `SPUDGPU_MESH_SHADING_LIMITS`
+- **`CR_STRUCT_BASE` (caller fills):**
+  - `crgpu_instance_desc`
+  - `crgpu_device_desc`
+  - `crgpu_submit_desc`
+  - `crgpu_command_allocator_desc`
+  - `crgpu_buffer_desc`
+  - `crgpu_buffer_view_desc`
+  - `crgpu_image_desc`
+  - `crgpu_image_view_desc`
+  - `crgpu_heap_desc`
+  - `crgpu_swap_chain_desc`
+  - `crgpu_descriptor_set_layout_desc`
+  - `crgpu_descriptor_pool_desc`
+  - `crgpu_descriptor_set_desc`
+  - `crgpu_sampler_desc`
+  - `crgpu_write_descriptor_set`
+  - `crgpu_shader_module_desc`
+  - `crgpu_graphics_pipeline_desc`
+  - `crgpu_compute_pipeline_desc`
+  - `crgpu_rendering_begin_desc`
+  - `crgpu_bundle_inheritance_desc`
+  - `crgpu_buffer_barrier`
+  - `crgpu_image_barrier`
+- **`CR_STRUCT_BASE_OUT` (carrottus fills):**
+  - `CRGPU_ADAPTER_PROPERTIES`
+  - `crgpu_placement_requirements`
+  - `CRGPU_BINDLESS_LIMITS`
+  - `CRGPU_MESH_SHADING_LIMITS`
 - **Frozen:**
-  - **Array element, held by value in `SPUDGPU_ADAPTER_PROPERTIES`:**
-    `SPUDGPU_QUEUE_POOL`.
-  - **Values:** `SPUDGPU_DEPTH_STENCIL_VALUE` and `SPUDGPU_CLEAR_VALUE`
-    (both held by value), `SPUDGPU_VIEWPORT`, `SPUDGPU_SCISSOR_RECT`.
+  - **Array element, held by value in `CRGPU_ADAPTER_PROPERTIES`:**
+    `CRGPU_QUEUE_POOL`.
+  - **Values:** `CRGPU_DEPTH_STENCIL_VALUE` and `CRGPU_CLEAR_VALUE`
+    (both held by value), `CRGPU_VIEWPORT`, `CRGPU_SCISSOR_RECT`.
   - **Held by value, or array elements:**
-    `spudgpu_image_view_desc_subresource_range`,
-    `spudgpu_descriptor_binding_desc`, `spudgpu_descriptor_pool_size`,
-    `spudgpu_descriptor_buffer_info`, `spudgpu_descriptor_image_info`,
-    `spudgpu_vertex_attribute_desc`, `spudgpu_vertex_binding_desc`,
-    `spudgpu_push_constant_range_desc`, `spudgpu_blend_attachment_desc`,
-    `spudgpu_color_attachment_desc` (an array in
-    `spudgpu_rendering_begin_desc`), `spudgpu_depth_attachment_desc`.
-  - **Copy regions:** `spudgpu_image_buffer_copy_desc` and
-    `spudgpu_image_blit_desc`, as Vulkan's `VkBufferImageCopy` and
+    `crgpu_image_view_desc_subresource_range`,
+    `crgpu_descriptor_binding_desc`, `crgpu_descriptor_pool_size`,
+    `crgpu_descriptor_buffer_info`, `crgpu_descriptor_image_info`,
+    `crgpu_vertex_attribute_desc`, `crgpu_vertex_binding_desc`,
+    `crgpu_push_constant_range_desc`, `crgpu_blend_attachment_desc`,
+    `crgpu_color_attachment_desc` (an array in
+    `crgpu_rendering_begin_desc`), `crgpu_depth_attachment_desc`.
+  - **Copy regions:** `crgpu_image_buffer_copy_desc` and
+    `crgpu_image_blit_desc`, as Vulkan's `VkBufferImageCopy` and
     `VkImageBlit` are.
   - **Read by the GPU, so the layout is the GPU's and can never carry a
-    base:** `spudgpu_draw_indirect_args`, `spudgpu_draw_indexed_indirect_args`.
+    base:** `crgpu_draw_indirect_args`, `crgpu_draw_indexed_indirect_args`.
 
-### spudgpu_*_natives.h
+### crgpu_*_natives.h
 
-All frozen: `SPUDGPU_D3D12_BUFFER_VIEW`, `SPUDGPU_D3D12_IMAGE_VIEW` and
-`SPUDGPU_MTL_BUFFER_VIEW` are facts of the native API they expose.
+All frozen: `CRGPU_D3D12_BUFFER_VIEW`, `CRGPU_D3D12_IMAGE_VIEW` and
+`CRGPU_MTL_BUFFER_VIEW` are facts of the native API they expose.
 
-### spudaudio.h (converted 2026-10-19, as listed here)
+### craudio.h (converted 2026-10-19, as listed here)
 
-- **`SPUD_STRUCT_BASE`:** `SPUDAUDIO_STREAM_DESC`.
-- **`SPUD_STRUCT_BASE_OUT`:** `SPUDAUDIO_DEVICE_PROPERTIES`,
-  `SPUDAUDIO_TIMING_CAPS`, `SPUDAUDIO_STREAM_CONFIG`.
-- **Frozen:** `SPUDAUDIO_FORMAT` (a value, held by value);
-  `SPUDAUDIO_THREAD_DESC` (held by value in `SPUDAUDIO_STREAM_DESC`);
-  `SPUDAUDIO_CALLBACK_INFO` (handed to the callback every period on the audio
-  thread); `SPUDAUDIO_STREAM_STATUS` (polled).
+- **`CR_STRUCT_BASE`:** `CRAUDIO_STREAM_DESC`.
+- **`CR_STRUCT_BASE_OUT`:** `CRAUDIO_DEVICE_PROPERTIES`,
+  `CRAUDIO_TIMING_CAPS`, `CRAUDIO_STREAM_CONFIG`.
+- **Frozen:** `CRAUDIO_FORMAT` (a value, held by value);
+  `CRAUDIO_THREAD_DESC` (held by value in `CRAUDIO_STREAM_DESC`);
+  `CRAUDIO_CALLBACK_INFO` (handed to the callback every period on the audio
+  thread); `CRAUDIO_STREAM_STATUS` (polled).
 
-### spudnet.h (converted 2026-10-19, as listed here)
+### crnet.h (converted 2026-10-19, as listed here)
 
-- **`SPUD_STRUCT_BASE`:** `spudnet_resolver_desc`,
-  `spudnet_tcp_listener_desc`, `spudnet_tcp_socket_connect_desc`,
-  `spudnet_http_client_desc`, `spudnet_http_transfer_desc`,
-  `spudnet_websocket_connect_desc`.
-- **Frozen, held by value:** `spudnet_tls_desc` and `spudnet_proxy_desc`,
-  in `spudnet_http_client_desc` and `spudnet_websocket_connect_desc`. See
+- **`CR_STRUCT_BASE`:** `crnet_resolver_desc`,
+  `crnet_tcp_listener_desc`, `crnet_tcp_socket_connect_desc`,
+  `crnet_http_client_desc`, `crnet_http_transfer_desc`,
+  `crnet_websocket_connect_desc`.
+- **Frozen, held by value:** `crnet_tls_desc` and `crnet_proxy_desc`,
+  in `crnet_http_client_desc` and `crnet_websocket_connect_desc`. See
   "Decisions", 2.
-- **Frozen:** `spudnet_error` (filled per call, like every error struct);
-  `spudnet_header`, `spudnet_tls_certificate`, `spudnet_tls_pin` (array
-  elements); `spudnet_wait_event` (an array spudlib fills on each wait).
+- **Frozen:** `crnet_error` (filled per call, like every error struct);
+  `crnet_header`, `crnet_tls_certificate`, `crnet_tls_pin` (array
+  elements); `crnet_wait_event` (an array carrottus fills on each wait).
 
-### spudinput.h (converted 2026-10-20, as listed here)
+### crinput.h (converted 2026-10-20, as listed here)
 
-- **`SPUD_STRUCT_BASE`:** `SPUDINPUT_INSTANCE_DESC`.
-- **`SPUD_STRUCT_BASE_OUT`:** `SPUDINPUT_GAMEPAD_PROPERTIES`.
-- **Frozen:** `SPUDINPUT_GAMEPAD_STATE` and `SPUDINPUT_GAMEPAD_MOTION_SAMPLE`
-  (polled every frame); `SPUDINPUT_GAMEPAD_TOUCH_STATE` and
-  `SPUDINPUT_GAMEPAD_TOUCH_CONTACT` (held by value);
-  `SPUDINPUT_GAMEPAD_TOUCH_SURFACE`, `SPUDINPUT_GAMEPAD_RUMBLE`,
-  `SPUDINPUT_GAMEPAD_BATTERY`.
+- **`CR_STRUCT_BASE`:** `CRINPUT_INSTANCE_DESC`.
+- **`CR_STRUCT_BASE_OUT`:** `CRINPUT_GAMEPAD_PROPERTIES`.
+- **Frozen:** `CRINPUT_GAMEPAD_STATE` and `CRINPUT_GAMEPAD_MOTION_SAMPLE`
+  (polled every frame); `CRINPUT_GAMEPAD_TOUCH_STATE` and
+  `CRINPUT_GAMEPAD_TOUCH_CONTACT` (held by value);
+  `CRINPUT_GAMEPAD_TOUCH_SURFACE`, `CRINPUT_GAMEPAD_RUMBLE`,
+  `CRINPUT_GAMEPAD_BATTERY`.
 - Rumble and state stay frozen on purpose (confirmed 2026-10-20). Rumble has
   grown elsewhere (XInput's two motors, GameInput's four), and the answer
   there was a new struct and call, as here: a chained motor struct left out
   would need a meaning, unchanged or stopped, which is a default. A new
-  button needs no new struct: bits 17-31 of `SPUDINPUT_GAMEPAD_BUTTONS` are
+  button needs no new struct: bits 17-31 of `CRINPUT_GAMEPAD_BUTTONS` are
   free, and a new reading is a new getter.
 
-### spudfiles.h
+### crfiles.h
 
-Converted 2026-10-22, with the rework (`SPUDFILES_TODO.md`); the structs
+Converted 2026-10-22, with the rework (`CRFILES_TODO.md`); the structs
 planned here went with the old API.
 
-- **`SPUD_STRUCT_BASE`:** `spudfile_instance_desc` (5001), `spudfile_open_desc` (5000).
-- **`SPUD_STRUCT_BASE_OUT`:** `SPUDFILE_PATH_INFO` (5002).
+- **`CR_STRUCT_BASE`:** `crfiles_instance_desc` (5001), `crfiles_open_desc` (5000).
+- **`CR_STRUCT_BASE_OUT`:** `CRFILES_PATH_INFO` (5002).
 
 ## ABI bugs (fixed 2026-10-18)
 
 Each was wrong whether or not the struct bases go in.
 
 1. **Struct layouts differed between Debug and Release.** `const char
-   *debug_name` sat inside `#if _DEBUG` in nine SpudGPU descs
-   (`spudgpu_buffer_desc`, `_image_desc`, `_heap_desc`,
+   *debug_name` sat inside `#if _DEBUG` in nine Carrottus GPU descs
+   (`crgpu_buffer_desc`, `_image_desc`, `_heap_desc`,
    `_descriptor_set_layout_desc`, `_descriptor_pool_desc`, `_sampler_desc`,
    `_shader_module_desc`, `_shader_pipeline_desc`, `_compute_pipeline_desc`),
-   so a caller and a spudlib built in different configurations read every
+   so a caller and a carrottus built in different configurations read every
    field after it at a different offset. The field is now always present.
    Names are kept in every build: each handle's `_debug_name` member and
    every copy and free of it are unconditional, in all three backends and
@@ -289,16 +289,16 @@ Each was wrong whether or not the struct bases go in.
    What stays debug-only is platform debug tooling, which touches no layout:
    Vulkan's `vkSetDebugUtilsObjectNameEXT` calls and D3D12's info-queue
    callback.
-2. **Functions existed only in Debug builds.** `spud_debug_name_set`,
-   `spud_debug_name_get` and their macros were declared only under
+2. **Functions existed only in Debug builds.** `cr_debug_name_set`,
+   `cr_debug_name_get` and their macros were declared only under
    `#ifdef _DEBUG`. Now always.
 3. **Outputs lived inside input descs.** `gpu_address_location` is gone
-   from `spudgpu_buffer_desc` and `spudgpu_image_desc` (an image never had
+   from `crgpu_buffer_desc` and `crgpu_image_desc` (an image never had
    one: it was always 0). A buffer's address comes from the new
-   `spudgpu_get_buffer_gpu_address(buffer, &address)`, in all three
+   `crgpu_buffer_get_gpu_address(buffer, &address)`, in all three
    backends.
 
-Run on macOS (Metal), Debug and Release: spudlib's tests, SpudNet's 261
+Run on macOS (Metal), Debug and Release: carrottus's tests, Carrottus Net's 261
 checks plain and under ASan+UBSan, and every caller in the workspace
 built against it with its tests passing. The Vulkan and D3D12 backends were not
 compiled (no headers on this Mac); their changes remove preprocessor lines
@@ -309,7 +309,7 @@ did. Windows and Linux builds are due.
 
 Recommended and confirmed on 2026-10-18.
 
-1. **Getters that return a desc.** `spudgpu_get_buffer_desc`,
+1. **Getters that return a desc.** `crgpu_buffer_get_desc`,
    `_get_buffer_view_desc`, `_get_image_desc`, `_get_image_view_desc`,
    `_get_heap_desc`, `_get_swap_chain_desc` and `_get_compute_pipeline_desc`
    write an input struct back out, whose `const` chain can't be filled.
@@ -328,52 +328,52 @@ Recommended and confirmed on 2026-10-18.
      fixed).
 2. **TLS and proxy settings: stay held by value, frozen.** Making them
    chained structs would make leaving one out mean
-   `SPUDNET_TLS_TRUST_SYSTEM` or `SPUDNET_PROXY_SYSTEM`. That is a default
-   that hides a choice, which rule 7 and SpudLib's first rule forbid.
+   `CRNET_TLS_TRUST_SYSTEM` or `CRNET_PROXY_SYSTEM`. That is a default
+   that hides a choice, which rule 7 and Carrottus's first rule forbid.
    - Held by value, every desc states its trust and proxy mode in fields
      that are always there.
    - Zero is the named enumerator `_SYSTEM`, a value the caller chose,
-     not an absence that spudlib fills in.
+     not an absence that carrottus fills in.
    - Anything TLS or proxies gain later (a client certificate, a minimum
      TLS version) is a new struct chained onto the HTTP client or
-     WebSocket connect desc. `spudnet_tls_desc` itself never grows.
+     WebSocket connect desc. `crnet_tls_desc` itself never grows.
 3. **Static initializers: no.**
    - C's designated initializers already say it in one line:
-     `.base = { SPUD_STRUCT_TYPE_GPU_IMAGE_DESC, NULL }`.
+     `.base = { CR_STRUCT_TYPE_GPU_IMAGE_DESC, NULL }`.
    - A macro would be a second spelling of the same thing.
    - Swift doesn't import macros like these, and C# never sees C macros,
      so the bindings can't share them.
    - A macro is one step from carrying a default. `webgpu.h`'s
      `WGPU_*_INIT` macros fill in default values, which is the policy
-     spudlib refuses.
+     carrottus refuses.
    - Vulkan has none.
 
-## SpudGPU, converted (2026-10-19)
+## Carrottus GPU, converted (2026-10-19)
 
-- `spudcore.h`: `SPUD_STRUCT_TYPE_GPU_*` 1000-1024, one per based struct,
+- `crcore.h`: `CR_STRUCT_TYPE_GPU_*` 1000-1024, one per based struct,
   in header order.
-- `spudgpu.h`: the 20 caller-filled structs above have a
-  `SPUD_STRUCT_BASE base` first, the 5 SpudGPU-filled ones a
-  `SPUD_STRUCT_BASE_OUT base`, and every other struct and union (the
+- `crgpu.h`: the 20 caller-filled structs above have a
+  `CR_STRUCT_BASE base` first, the 5 Carrottus GPU-filled ones a
+  `CR_STRUCT_BASE_OUT base`, and every other struct and union (the
   natives headers' too) a `/* Frozen: ... */` line above its `typedef`.
   Each function that takes a based struct documents the two results for it;
-  the void ones (`spudgpu_cmd_pipeline_barrier`, `_update_descriptor_sets`,
+  the void ones (`crgpu_command_list_pipeline_barrier`, `_update_descriptor_sets`,
   `_cmd_begin_rendering`, `_begin_bundle_command_list`) say they record
   nothing for a wrong base, as for their other invalid arguments.
-- `src/spudstructbase.h` (new): `spud_struct_check`, `spud_struct_out_check`,
+- `src/crstructbase.h` (new): `cr_struct_check`, `cr_struct_out_check`,
   and the bases a struct handed back has. Every backend calls them, right
   after the null check of the struct's parameter, so the results and their
   order are the same on all three (111 checks across Vulkan, D3D12 and
   Metal; an array, a barrier or descriptor write, is checked element by
   element).
-- Getters: `spudgpu_get_*_desc` set the returned desc's whole base
+- Getters: `crgpu_get_*_desc` set the returned desc's whole base
   (Decision 1); the device-properties and capability getters that copy or
   clear the whole struct put the caller's base back after.
-- spudlib's own calls into its API (the `_synced` submit, the clear and
+- carrottus's own calls into its API (the `_synced` submit, the clear and
   depth helpers that begin rendering) set the base like any caller.
 
-Run on macOS (Metal), 2026-10-19: spudlib Debug and Release with its tests,
-SpudNet's 261 checks, and the ASan+UBSan preset; every caller in the
+Run on macOS (Metal), 2026-10-19: carrottus Debug and Release with its tests,
+Carrottus Net's 261 checks, and the ASan+UBSan preset; every caller in the
 workspace built against it with its tests passing, the GPU tests under
 Metal validation, and every Metal sample for 120 frames under Metal API
 and shader validation, exiting cleanly. The same day, on Windows, the
@@ -384,92 +384,92 @@ package were already out of step with the C API and are not brought to it
 (the Swift package did not build before either); their device-properties
 and buffer-desc uses set the base.
 
-## SpudAudio, converted (2026-10-19)
+## Carrottus Audio, converted (2026-10-19)
 
-- `spudcore.h`: `SPUD_STRUCT_TYPE_AUDIO_*` 2000-2003.
-- `spudaudio.h`: `SPUDAUDIO_STREAM_DESC` has a `SPUD_STRUCT_BASE base`;
-  `SPUDAUDIO_DEVICE_PROPERTIES`, `_TIMING_CAPS` and `_STREAM_CONFIG` a
-  `SPUD_STRUCT_BASE_OUT base`; `SPUDAUDIO_FORMAT`, `_THREAD_DESC`,
+- `crcore.h`: `CR_STRUCT_TYPE_AUDIO_*` 2000-2003.
+- `craudio.h`: `CRAUDIO_STREAM_DESC` has a `CR_STRUCT_BASE base`;
+  `CRAUDIO_DEVICE_PROPERTIES`, `_TIMING_CAPS` and `_STREAM_CONFIG` a
+  `CR_STRUCT_BASE_OUT base`; `CRAUDIO_FORMAT`, `_THREAD_DESC`,
   `_CALLBACK_INFO` and `_STREAM_STATUS` are marked frozen. The functions
   that take them document the two results.
-- The stream desc is checked once, in `spudaudio_validate_stream_desc`
-  (`src/spudaudio.c`), which every backend's probe and create call. Each
+- The stream desc is checked once, in `craudio_validate_stream_desc`
+  (`src/craudio.c`), which every backend's probe and create call. Each
   output struct is checked in every backend (CoreAudio, WASAPI, ALSA, the
-  stub) right after its null check, before SpudAudio zeroes it as it
+  stub) right after its null check, before Carrottus Audio zeroes it as it
   always has; its base is put back after anything that zeroes or copies the
   whole struct, so a refused probe leaves the caller's base too.
 
-Run on macOS, 2026-10-19: spudlib Debug, Release and ASan+UBSan with its
+Run on macOS, 2026-10-19: carrottus Debug, Release and ASan+UBSan with its
 tests; a throwaway CoreAudio program (properties, timing caps, probe,
 create without starting, get config; a zeroed, a mistyped and a chained
 base each refused with the right result) passed; every caller in the
 workspace builds and passes its tests. WASAPI and ALSA are written, not
 compiled.
 
-## SpudNet, converted (2026-10-19)
+## Carrottus Net, converted (2026-10-19)
 
-- `spudcore.h`: `SPUD_STRUCT_TYPE_NET_*` 3000-3005.
-- `spudnet.h`: the six descs above start with a `SPUD_STRUCT_BASE base`;
-  `spudnet_error`, `_header`, `_tls_certificate`, `_tls_pin`, `_tls_desc`,
+- `crcore.h`: `CR_STRUCT_TYPE_NET_*` 3000-3005.
+- `crnet.h`: the six descs above start with a `CR_STRUCT_BASE base`;
+  `crnet_error`, `_header`, `_tls_certificate`, `_tls_pin`, `_tls_desc`,
   `_proxy_desc` and `_wait_event` are marked frozen. Each of the six
-  functions that take a desc documents the two results. SpudNet has no
-  struct it fills that may grow, so no `SPUD_STRUCT_BASE_OUT`.
+  functions that take a desc documents the two results. Carrottus Net has no
+  struct it fills that may grow, so no `CR_STRUCT_BASE_OUT`.
 - Every backend checks the desc right after its null check: the BSD
   sockets and Winsock files (resolver, listener, connect), NSURLSession,
   libcurl and WinHTTP (HTTP client, WebSocket connect), and the shared
-  HTTP front end, `src/net/spudnethttp.c` (transfer start). libcurl's
+  HTTP front end, `src/net/crnethttp.c` (transfer start). libcurl's
   WebSocket stub for curl before 8.11 refuses every call before it reads
   the desc, as before.
-- `tests/spudnet_test.c` sets every desc's base after its `memset`, and has
+- `tests/crnet_test.c` sets every desc's base after its `memset`, and has
   a new part, "Struct bases" (`bases`): each of the six calls refused for a
   zeroed base, another desc's type and a chained struct, before any
   connection is made.
 
-Run on macOS, 2026-10-19: spudlib Debug and Release with its ctest suites;
-`tests/run_spudnet_test.sh` passes all 279 checks (261 before, 18 new)
+Run on macOS, 2026-10-19: carrottus Debug and Release with its ctest suites;
+`tests/run_crnet_test.sh` passes all 279 checks (261 before, 18 new)
 plain, under ASan+UBSan and under TSan; every caller in the workspace
 builds and passes its tests. Winsock, libcurl and WinHTTP are written,
 not compiled.
 
-## SpudInput, converted (2026-10-20)
+## Carrottus Input, converted (2026-10-20)
 
-- `spudcore.h`: `SPUD_STRUCT_TYPE_INPUT_INSTANCE_DESC` = 4000 and
-  `SPUD_STRUCT_TYPE_INPUT_GAMEPAD_PROPERTIES` = 4001.
-- `spudinput.h`: `SPUDINPUT_INSTANCE_DESC` has a `SPUD_STRUCT_BASE base`,
-  `SPUDINPUT_GAMEPAD_PROPERTIES` a `SPUD_STRUCT_BASE_OUT base`, and the
+- `crcore.h`: `CR_STRUCT_TYPE_INPUT_INSTANCE_DESC` = 4000 and
+  `CR_STRUCT_TYPE_INPUT_GAMEPAD_PROPERTIES` = 4001.
+- `crinput.h`: `CRINPUT_INSTANCE_DESC` has a `CR_STRUCT_BASE base`,
+  `CRINPUT_GAMEPAD_PROPERTIES` a `CR_STRUCT_BASE_OUT base`, and the
   other seven are marked frozen. Both functions document the two results.
-- Both checks are in the front end, `src/spudinput.c`, once: every argument
+- Both checks are in the front end, `src/crinput.c`, once: every argument
   check is there and the backends only fill its records, so no backend
-  changed. `spudinput_instance_create` checks right after `if (!desc)` and
+  changed. `crinput_instance_create` checks right after `if (!desc)` and
   keeps its copy of the desc with `next` cleared;
-  `spudinput_gamepad_get_properties` checks right after its null check
+  `crinput_gamepad_get_properties` checks right after its null check
   (so after the gamepad's), and puts the base back after copying the record.
-- `tests/spudinput_test.c` sets every base, and refuses a zeroed base,
+- `tests/crinput_test.c` sets every base, and refuses a zeroed base,
   another struct's type and a chained struct for both calls. Properties
   come after the gamepad in the order of checks, so their refusals run only
   with a gamepad connected; the test says when they are skipped.
 
-Run on macOS, 2026-10-20, with no gamepad connected: spudlib Debug,
+Run on macOS, 2026-10-20, with no gamepad connected: carrottus Debug,
 Release and ASan+UBSan with its ctest suites; every caller in the workspace
-builds and passes its tests; `check.sh struct-bases` has no SpudInput entry
+builds and passes its tests; `check.sh struct-bases` has no Carrottus Input entry
 left. Not run: the properties refusals (no gamepad here), and the GameInput
 and evdev builds, which needed no change but have not been compiled.
 
 ## Order of work
 
-1. **Done.** Write the `spudcore.h` pieces and the three result codes, with
-   `spudresult_str` names. `SPUD_STRUCT_TYPE` has no struct types yet;
+1. **Done.** Write the `crcore.h` pieces and the three result codes, with
+   `cr_result_str` names. `CR_STRUCT_TYPE` has no struct types yet;
    each is added with its struct.
 2. **Done.** Fix the three ABI bugs first, in their own change. Each is a fix on its
    own and makes the conversion smaller.
-3. **Done: SpudGPU, SpudAudio, SpudNet, SpudInput and SpudFiles.** Convert one module at a time, header and every backend together:
-   SpudGPU, then SpudAudio, SpudNet, SpudInput, SpudFiles. Bring
+3. **Done: Carrottus GPU, Carrottus Audio, Carrottus Net, Carrottus Input and Carrottus Files.** Convert one module at a time, header and every backend together:
+   Carrottus GPU, then Carrottus Audio, Carrottus Net, Carrottus Input, Carrottus Files. Bring
    `spudgpusamples`, the tests and every caller along in the same change.
    This is a source break for every caller.
 4. After each module:
    - build on macOS and run the tests, plain and under the `-asan` preset;
-   - run SpudNet's test (`tests/run_spudnet_test.sh`) after SpudNet;
-   - flag Windows and Linux runs as needed for the SpudGPU change. It touches
+   - run Carrottus Net's test (`tests/run_crnet_test.sh`) after Carrottus Net;
+   - flag Windows and Linux runs as needed for the Carrottus GPU change. It touches
      every backend, so it warrants them.
 5. **Done** (2026-10-20). Add the rule to the workspace's `check.sh` as a `struct-bases` check,
    covering rules 1, 3 and 4: every public `typedef struct` is based or

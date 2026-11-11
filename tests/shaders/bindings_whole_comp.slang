@@ -3,7 +3,7 @@
 // leaves 0 out of the SPIR-V; the build writes it back on Metal, so the
 // module's argument buffer is the layout's and the texel is the image's.
 // Set 0 is a uniform buffer at 0, a sampled image at 5 and a sampler at 8,
-// set 1 a storage buffer at 0 (spudgpu_objects_test, test_set_bindings).
+// set 1 a storage buffer at 0 (crgpu_objects_test, test_set_bindings).
 
 struct Unread {
 	float4 value;

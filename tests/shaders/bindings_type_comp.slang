@@ -1,7 +1,7 @@
 // Every binding of a set (card S27): the set declared whole but 5, an image
 // in the layout, declared a buffer. Refused on Metal.
 // Set 0 is a uniform buffer at 0, a sampled image at 5 and a sampler at 8,
-// set 1 a storage buffer at 0 (spudgpu_objects_test, test_set_bindings).
+// set 1 a storage buffer at 0 (crgpu_objects_test, test_set_bindings).
 
 struct Unread {
 	float4 value;

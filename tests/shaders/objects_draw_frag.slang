@@ -1,4 +1,4 @@
-// spudgpu_objects_test's fragment shader: the draw's colour, plus a tint
+// crgpu_objects_test's fragment shader: the draw's colour, plus a tint
 // from a uniform buffer, plus a texel of a 2 x 2 texture as much as the
 // draw asks for.
 

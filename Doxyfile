@@ -1,4 +1,4 @@
-PROJECT_NAME           = "SpudLib"
+PROJECT_NAME           = "Carrottus"
 INPUT                  = include README.md
 FILE_PATTERNS          = *.h
 RECURSIVE              = YES
@@ -15,9 +15,9 @@ QUIET                  = YES
 ENABLE_PREPROCESSING   = YES
 MACRO_EXPANSION        = YES
 PREDEFINED             = _DEBUG=1 \
-                         SPUDGPU_COMPILE_VULKAN_API=1 \
-                         SPUDNET_EXT_TCP=1 \
-                         SPUDNET_EXT_WEBSOCKET=1
+                         CRGPU_COMPILE_VULKAN_API=1 \
+                         CRNET_EXT_TCP=1 \
+                         CRNET_EXT_WEBSOCKET=1
 
 WARN_IF_UNDOCUMENTED   = YES
 WARN_IF_DOC_ERROR      = YES

@@ -3,14 +3,14 @@
   "cmakeMinimumRequired": { "major": 3, "minor": 30, "patch": 0 },
   "configurePresets": [
     {
-      "name": "my-spudlib-windows-vulkan",
+      "name": "my-carrottus-windows-vulkan",
       "inherits": "windows-vulkan",
       "cacheVariables": {
         "SDL3_DIR": "C:/dev/SDL3-3.4.8/cmake"
       }
     },
     {
-      "name": "my-spudlib-windows-d3d12",
+      "name": "my-carrottus-windows-d3d12",
       "inherits": "windows-d3d12",
       "cacheVariables": {
         "SDL3_DIR": "C:/dev/SDL3-3.4.8/cmake"

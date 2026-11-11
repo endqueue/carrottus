@@ -1,9 +1,9 @@
 // The caller's GPU writer of acceleration structure instances, for a device
-// whose layout is SPUDGPU_ACCELERATION_STRUCTURE_INSTANCE_LAYOUT_COLUMN_MAJOR_72
+// whose layout is CRGPU_ACCELERATION_STRUCTURE_INSTANCE_LAYOUT_COLUMN_MAJOR_72
 // (Metal's indirect instance descriptor; card S14: one writer per layout
 // kind, the caller's). Each thread turns one portable instance into the
 // device's 72 bytes, the same bytes
-// spudgpu_write_acceleration_structure_instances() writes on the CPU: the
+// crgpu_device_write_acceleration_structure_instances() writes on the CPU: the
 // transform as four columns of three floats, then options (the flags),
 // mask, table offset, user index and the 64-bit reference.
 //

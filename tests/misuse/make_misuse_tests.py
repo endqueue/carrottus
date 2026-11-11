@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Writes tests/spud_misuse_tests.c from abi.txt, in two halves.
+"""Writes tests/cr_misuse_tests.c from abi.txt, in two halves.
 
-The zeroed half: a call to every public function of SpudLib with every
+The zeroed half: a call to every public function of Carrottus with every
 argument zeroed - NULL handles and pointers, zero sizes and counts, zeroed
 structs (ROADMAP.md in the workspace, section 3.1, "a misuse harness from the
-headers"). None may crash, and one that returns SPUDRESULT must not return
-SPUD_SUCCESS, unless the list below says why zeroes are a valid call. A
+headers"). None may crash, and one that returns CR_RESULT must not return
+CR_SUCCESS, unless the list below says why zeroes are a valid call. A
 function that returns nothing can't say it refused: the test counts those.
 
-The freed half (decision X16, src/spudstale.h): every public function whose
+The freed half (decision X16, src/crstale.h): every public function whose
 first parameter is a handle, called with a handle that has just been
 destroyed and every other argument zeroed. None may crash; one that returns
-SPUDRESULT must not return SPUD_SUCCESS (or, where zeroes are a valid call,
+CR_RESULT must not return CR_SUCCESS (or, where zeroes are a valid call,
 must return what it returns for NULL), and any other getter must return what
 it returns for NULL, its null fallback. A function that returns nothing is
 called and counted. Each handle type's destroyed handle comes from its
@@ -25,7 +25,7 @@ the test prints which it skipped and why.
 Each library that has one keeps its own copy of this generator, the same
 but for the configuration at the top.
 
-Run after ./check.sh --update-abi changes spudlib/abi.txt, or after a change
+Run after ./check.sh --update-abi changes carrottus/abi.txt, or after a change
 to the configuration:
     python3 tests/misuse/make_misuse_tests.py
 The output is checked in, so a build needs no Python."""
@@ -35,11 +35,11 @@ import re
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 
-LIBRARY = 'SpudLib'
-RESULT = 'SPUDRESULT'
-OK = 'SPUD_SUCCESS'
-OUTPUT = 'spud_misuse_tests'
-HEADERS = ['spudaudio.h', 'spudcore.h', 'spudfiles.h', 'spudgpu.h', 'spudinput.h', 'spudmemory.h', 'spudnet.h', 'spudperf.h', 'spudrandom.h']
+LIBRARY = 'Carrottus'
+RESULT = 'CR_RESULT'
+OK = 'CR_SUCCESS'
+OUTPUT = 'cr_misuse_tests'
+HEADERS = ['craudio.h', 'crcore.h', 'crfiles.h', 'crgpu.h', 'crinput.h', 'crmemory.h', 'crnet.h', 'crperf.h', 'crrandom.h']
 
 # Function name prefixes called only when a macro is set, each with its
 # macro (a part of the library a build may leave out) and the header that
@@ -49,8 +49,8 @@ GUARDED = {
 
 # Functions zeroes are a valid call for, each with the reason.
 ZEROES_SUCCEED = {
-    'spudgpu_destroy_instance': 'destroying NULL succeeds, as spudgpu.h says',
-    'spudrandom_fill': 'asking for no bytes succeeds, as spudrandom.h says',
+    'crgpu_instance_destroy': 'destroying NULL succeeds, as crgpu.h says',
+    'crrandom_fill': 'asking for no bytes succeeds, as crrandom.h says',
 }
 
 # Functions not called: zeroes are outside their contract in a way a
@@ -72,17 +72,17 @@ DEBUG_MACRO = '_DEBUG'
 
 # Functions not called with a destroyed handle, each with the reason.
 FREED_NOT_CALLED = {
-    'spudnet_resolver_run': 'may start after the resolver is destroyed (spudnet.h), so it has no stale check, and '
+    'crnet_resolver_run': 'may start after the resolver is destroyed (crnet.h), so it has no stale check, and '
                             'a resolver that has been run and destroyed is freed memory',
 }
 
 # Handle types no public function takes first, so no factory is needed.
 # Listed so that a new function taking one first is noticed: its type then
 # needs a factory.
-NO_FIRST_PARAMETER = ['spudgpu_descriptor_set', 'spudgpu_pipeline_layout']
+NO_FIRST_PARAMETER = ['crgpu_descriptor_set', 'crgpu_pipeline_layout']
 
 # Included by the freed half, beside HEADERS.
-FREED_INCLUDES = ['spudgpu_test_shaders.h', '<stdlib.h>', '<string.h>']
+FREED_INCLUDES = ['crgpu_test_shaders.h', '<stdlib.h>', '<string.h>']
 
 # The C before the factories: what they share, and freed_setup() and
 # freed_teardown(), which the freed half calls first and last. `why` is the
@@ -101,22 +101,22 @@ static const char *why = "";
 
 /* The allocator every object here is made with: the system's, except that
  * a freed block is kept, not given back, until freed_teardown(). A
- * destroyed handle's memory then stays readable, with SPUD_DEAD in its tag,
+ * destroyed handle's memory then stays readable, with CR_DEAD in its tag,
  * whatever the system's allocator does with memory it is given back (the
  * Windows heap decommits freed pages, and reading one faults), and no new
  * object can be made in it. Locked, for an object freed on a thread of the
  * platform's. Since card X27 a Debug build keeps a destroyed handle's
- * block itself until the handle's owner is destroyed (src/spudstale.h), but
- * not every handle has an owner: an instance, a SpudAudio stream and a
- * SpudNet resolver are freed at once, so this stays. */
+ * block itself until the handle's owner is destroyed (src/crstale.h), but
+ * not every handle has an owner: an instance, a CrAudio stream and a
+ * CrNet resolver are freed at once, so this stays. */
 typedef struct kept_block {
 	struct kept_block *next;
 	void *memory;
 	size_t size, alignment;
 } kept_block;
 
-static SPUD_ALLOCATOR system_allocator;
-static SPUD_ALLOCATOR allocator;
+static CR_ALLOCATOR system_allocator;
+static CR_ALLOCATOR allocator;
 static kept_block *kept;
 #if defined(_WIN32)
 static SRWLOCK kept_lock = SRWLOCK_INIT;
@@ -162,14 +162,14 @@ static void keeping_release_all(void) {
 	}
 }
 
-/* SpudGPU's: one instance and a device on adapter 0, which every object a
+/* CrGPU's: one instance and a device on adapter 0, which every object a
  * factory makes of a device comes from, and a hidden window on Windows for
  * the surface and the swap chain. */
-static spudgpu_instance gpu_instance;
-static spudgpu_device gpu_device;
-static spudgpu_command_queue gpu_queue;
-static SPUDGPU_FEATURES gpu_features;
-static SPUDGPU_SHADER_FORMAT gpu_shader_format;
+static crgpu_instance gpu_instance;
+static crgpu_device gpu_device;
+static crgpu_command_queue gpu_queue;
+static CRGPU_FEATURES gpu_features;
+static CRGPU_SHADER_FORMAT gpu_shader_format;
 #if defined(_WIN32)
 static HWND gpu_window;
 
@@ -178,60 +178,60 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w, LPARAM 
 }
 #endif
 
-static spudgpu_instance make_gpu_instance(void) {
-	spudgpu_instance_desc desc;
+static crgpu_instance make_gpu_instance(void) {
+	crgpu_instance_desc desc;
 	memset(&desc, 0, sizeof(desc));
-	desc.base.type          = SPUD_STRUCT_TYPE_GPU_INSTANCE_DESC;
+	desc.base.type          = CR_STRUCT_TYPE_GPU_INSTANCE_DESC;
 	desc.allocator          = &allocator;
-	desc.application_name   = "spud_misuse_tests";
-	desc.engine_name        = "spud_misuse_tests";
-	spudgpu_instance result = NULL;
-	if (spudgpu_create_instance(&desc, &result) != SPUD_SUCCESS)
+	desc.application_name   = "cr_misuse_tests";
+	desc.engine_name        = "cr_misuse_tests";
+	crgpu_instance result = NULL;
+	if (crgpu_instance_create(&desc, &result) != CR_SUCCESS)
 		return NULL;
 	return result;
 }
 
 /* A device on [instance]'s adapter 0 with [features], or NULL. */
-static spudgpu_device make_gpu_device(spudgpu_instance instance, SPUDGPU_FEATURES features) {
-	const spudgpu_adapter *adapters = NULL;
+static crgpu_device make_gpu_device(crgpu_instance instance, CRGPU_FEATURES features) {
+	const crgpu_adapter *adapters = NULL;
 	uint32_t count                  = 0;
-	if (spudgpu_enumerate_adapters(instance, &adapters, &count) != SPUD_SUCCESS || count == 0)
+	if (crgpu_adapter_enumerate(instance, &adapters, &count) != CR_SUCCESS || count == 0)
 		return NULL;
-	spudgpu_device_desc desc;
+	crgpu_device_desc desc;
 	memset(&desc, 0, sizeof(desc));
-	desc.base.type          = SPUD_STRUCT_TYPE_GPU_DEVICE_DESC;
+	desc.base.type          = CR_STRUCT_TYPE_GPU_DEVICE_DESC;
 	desc.required_features  = features;
 	desc.direct_queue_count = 1;
 	desc.max_descriptors    = 16;
 	desc.max_samplers       = 4;
-	spudgpu_device device   = NULL;
-	if (spudgpu_create_device(adapters[0], &desc, &device) != SPUD_SUCCESS)
+	crgpu_device device   = NULL;
+	if (crgpu_device_create(adapters[0], &desc, &device) != CR_SUCCESS)
 		return NULL;
 	return device;
 }
 
 static void freed_setup(void) {
-	system_allocator   = spud_allocator_system();
+	system_allocator   = cr_allocator_system();
 	allocator          = system_allocator;
 	allocator.allocate = keeping_allocate;
 	allocator.free     = keeping_free;
 	gpu_instance       = make_gpu_instance();
 	if (gpu_instance) {
-		const spudgpu_adapter *adapters = NULL;
+		const crgpu_adapter *adapters = NULL;
 		uint32_t count                  = 0;
-		spudgpu_enumerate_adapters(gpu_instance, &adapters, &count);
+		crgpu_adapter_enumerate(gpu_instance, &adapters, &count);
 		if (count > 0) {
-			SPUDGPU_ADAPTER_PROPERTIES properties;
+			CRGPU_ADAPTER_PROPERTIES properties;
 			memset(&properties, 0, sizeof(properties));
-			properties.base.type = SPUD_STRUCT_TYPE_GPU_ADAPTER_PROPERTIES;
-			if (spudgpu_get_adapter_properties(adapters[0], &properties) == SPUD_SUCCESS) {
-				gpu_features      = properties.supported_features & (SPUDGPU_FEATURE_PRESENT | SPUDGPU_FEATURE_PASS_TIMESTAMPS);
-				gpu_shader_format = spudgpu_test_shader_format(properties.shader_formats);
+			properties.base.type = CR_STRUCT_TYPE_GPU_ADAPTER_PROPERTIES;
+			if (crgpu_adapter_get_properties(adapters[0], &properties) == CR_SUCCESS) {
+				gpu_features      = properties.supported_features & (CRGPU_FEATURE_PRESENT | CRGPU_FEATURE_PASS_TIMESTAMPS);
+				gpu_shader_format = crgpu_test_shader_format(properties.shader_formats);
 			}
 		}
 		gpu_device = make_gpu_device(gpu_instance, gpu_features);
 		if (gpu_device)
-			spudgpu_get_command_queue(gpu_device, SPUDGPU_COMMAND_LIST_TYPE_DIRECT, 0, &gpu_queue);
+			crgpu_command_queue_get(gpu_device, CRGPU_COMMAND_LIST_TYPE_DIRECT, 0, &gpu_queue);
 	}
 #if defined(_WIN32)
 	WNDCLASSEXW window_class;
@@ -239,16 +239,16 @@ static void freed_setup(void) {
 	window_class.cbSize        = sizeof(window_class);
 	window_class.lpfnWndProc   = window_proc;
 	window_class.hInstance     = GetModuleHandleW(NULL);
-	window_class.lpszClassName = L"spud_misuse_tests";
+	window_class.lpszClassName = L"cr_misuse_tests";
 	RegisterClassExW(&window_class);
-	gpu_window = CreateWindowExW(0, L"spud_misuse_tests", L"spud_misuse_tests", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 64, 64, NULL, NULL,
+	gpu_window = CreateWindowExW(0, L"cr_misuse_tests", L"cr_misuse_tests", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 64, 64, NULL, NULL,
 	                             GetModuleHandleW(NULL), NULL);
 #endif
 }
 
 static void freed_teardown(void) {
-	spudgpu_destroy_device(gpu_device);
-	spudgpu_destroy_instance(gpu_instance);
+	crgpu_device_destroy(gpu_device);
+	crgpu_instance_destroy(gpu_instance);
 #if defined(_WIN32)
 	if (gpu_window)
 		DestroyWindow(gpu_window);
@@ -257,62 +257,62 @@ static void freed_teardown(void) {
 		TranslateMessage(&message);
 		DispatchMessageW(&message);
 	}
-	UnregisterClassW(L"spud_misuse_tests", GetModuleHandleW(NULL));
+	UnregisterClassW(L"cr_misuse_tests", GetModuleHandleW(NULL));
 #endif
 	keeping_release_all();
 }
 
 static bool have_device(void) {
 	if (!gpu_device)
-		why = "no SpudGPU device on adapter 0";
+		why = "no CrGPU device on adapter 0";
 	return gpu_device != NULL;
 }
 
-static spudgpu_buffer make_buffer(void) {
-	spudgpu_buffer_desc desc;
+static crgpu_buffer make_buffer(void) {
+	crgpu_buffer_desc desc;
 	memset(&desc, 0, sizeof(desc));
-	desc.base.type        = SPUD_STRUCT_TYPE_GPU_BUFFER_DESC;
-	desc.usage            = SPUDGPU_BUFFER_USAGE_UNIFORM;
-	desc.memory_kind      = SPUDGPU_MEMORY_KIND_UPLOAD;
+	desc.base.type        = CR_STRUCT_TYPE_GPU_BUFFER_DESC;
+	desc.usage            = CRGPU_BUFFER_USAGE_UNIFORM;
+	desc.memory_kind      = CRGPU_MEMORY_KIND_UPLOAD;
 	desc.size             = 256;
-	spudgpu_buffer buffer = NULL;
-	if (spudgpu_create_buffer(gpu_device, &desc, &buffer) != SPUD_SUCCESS)
+	crgpu_buffer buffer = NULL;
+	if (crgpu_buffer_create(gpu_device, &desc, &buffer) != CR_SUCCESS)
 		return NULL;
 	return buffer;
 }
 
-static spudgpu_image make_image(void) {
-	spudgpu_image_desc desc;
+static crgpu_image make_image(void) {
+	crgpu_image_desc desc;
 	memset(&desc, 0, sizeof(desc));
-	desc.base.type          = SPUD_STRUCT_TYPE_GPU_IMAGE_DESC;
-	desc.usage              = SPUDGPU_IMAGE_USAGE_SAMPLED;
-	desc.type               = SPUDGPU_IMAGE_TYPE_2D;
-	desc.format             = SPUDGPU_FORMAT_R8G8B8A8_UNORM;
-	desc.clear_value.format = SPUDGPU_FORMAT_R8G8B8A8_UNORM;
+	desc.base.type          = CR_STRUCT_TYPE_GPU_IMAGE_DESC;
+	desc.usage              = CRGPU_IMAGE_USAGE_SAMPLED;
+	desc.type               = CRGPU_IMAGE_TYPE_2D;
+	desc.format             = CRGPU_FORMAT_R8G8B8A8_UNORM;
+	desc.clear_value.format = CRGPU_FORMAT_R8G8B8A8_UNORM;
 	desc.width              = 4;
 	desc.height             = 4;
 	desc.depth              = 1;
 	desc.array_layers       = 1;
 	desc.mip_levels         = 1;
-	spudgpu_image image     = NULL;
-	if (spudgpu_create_image(gpu_device, &desc, &image) != SPUD_SUCCESS)
+	crgpu_image image     = NULL;
+	if (crgpu_image_create(gpu_device, &desc, &image) != CR_SUCCESS)
 		return NULL;
 	return image;
 }
 
-static spudgpu_shader_module make_module(const spudgpu_test_shader *shader) {
-	const spudgpu_shader_module_desc desc = spudgpu_test_module_desc(shader, gpu_shader_format, NULL);
-	spudgpu_shader_module module          = NULL;
-	if (spudgpu_create_shader_module(gpu_device, &desc, &module) != SPUD_SUCCESS)
+static crgpu_shader_module make_module(const crgpu_test_shader *shader) {
+	const crgpu_shader_module_desc desc = crgpu_test_module_desc(shader, gpu_shader_format, NULL);
+	crgpu_shader_module module          = NULL;
+	if (crgpu_shader_module_create(gpu_device, &desc, &module) != CR_SUCCESS)
 		return NULL;
 	return module;
 }
 
 /* [count] bindings of [type], 0 up, seen by [stages]. */
-static spudgpu_descriptor_set_layout make_set_layout(const SPUDGPU_DESCRIPTOR_TYPE *types, uint32_t count, SPUDGPU_SHADER_STAGE stages) {
-	spudgpu_descriptor_set_layout_desc desc;
+static crgpu_descriptor_set_layout make_set_layout(const CRGPU_DESCRIPTOR_TYPE *types, uint32_t count, CRGPU_SHADER_STAGE stages) {
+	crgpu_descriptor_set_layout_desc desc;
 	memset(&desc, 0, sizeof(desc));
-	desc.base.type = SPUD_STRUCT_TYPE_GPU_DESCRIPTOR_SET_LAYOUT_DESC;
+	desc.base.type = CR_STRUCT_TYPE_GPU_DESCRIPTOR_SET_LAYOUT_DESC;
 	for (uint32_t i = 0; i < count; ++i) {
 		desc.bindings[i].binding         = i;
 		desc.bindings[i].descriptor_type = types[i];
@@ -320,32 +320,32 @@ static spudgpu_descriptor_set_layout make_set_layout(const SPUDGPU_DESCRIPTOR_TY
 		desc.bindings[i].stage_flags     = stages;
 	}
 	desc.binding_count                   = count;
-	spudgpu_descriptor_set_layout layout = NULL;
-	if (spudgpu_create_descriptor_set_layout(gpu_device, &desc, &layout) != SPUD_SUCCESS)
+	crgpu_descriptor_set_layout layout = NULL;
+	if (crgpu_descriptor_set_layout_create(gpu_device, &desc, &layout) != CR_SUCCESS)
 		return NULL;
 	return layout;
 }
 
-static spudgpu_command_allocator make_command_allocator(void) {
-	spudgpu_command_allocator_desc desc;
+static crgpu_command_allocator make_command_allocator(void) {
+	crgpu_command_allocator_desc desc;
 	memset(&desc, 0, sizeof(desc));
-	desc.base.type                      = SPUD_STRUCT_TYPE_GPU_COMMAND_ALLOCATOR_DESC;
-	desc.type                           = SPUDGPU_COMMAND_LIST_TYPE_DIRECT;
-	spudgpu_command_allocator allocator = NULL;
-	if (spudgpu_create_command_allocator(gpu_device, &desc, &allocator) != SPUD_SUCCESS)
+	desc.base.type                      = CR_STRUCT_TYPE_GPU_COMMAND_ALLOCATOR_DESC;
+	desc.type                           = CRGPU_COMMAND_LIST_TYPE_DIRECT;
+	crgpu_command_allocator allocator = NULL;
+	if (crgpu_command_allocator_create(gpu_device, &desc, &allocator) != CR_SUCCESS)
 		return NULL;
 	return allocator;
 }
 
-static spudgpu_surface make_surface(void) {
+static crgpu_surface make_surface(void) {
 #if defined(_WIN32)
 	if (!gpu_window) {
 		why = "no window";
 		return NULL;
 	}
-	spudgpu_surface surface = NULL;
-	if (spudgpu_create_surface(gpu_instance, gpu_window, NULL, &surface) != SPUD_SUCCESS) {
-		why = "spudgpu_create_surface failed";
+	crgpu_surface surface = NULL;
+	if (crgpu_surface_create(gpu_instance, gpu_window, NULL, &surface) != CR_SUCCESS) {
+		why = "crgpu_surface_create failed";
 		return NULL;
 	}
 	return surface;
@@ -355,43 +355,43 @@ static spudgpu_surface make_surface(void) {
 #endif
 }
 
-static spudaudio_instance make_audio_instance(void) {
-#if SPUDAUDIO_COMPILE_COREAUDIO
-	const SPUDAUDIO_NATIVE_API api = SPUDAUDIO_NATIVE_API_COREAUDIO;
-#elif SPUDAUDIO_COMPILE_WASAPI
-	const SPUDAUDIO_NATIVE_API api = SPUDAUDIO_NATIVE_API_WASAPI;
-#elif SPUDAUDIO_COMPILE_ALSA
-	const SPUDAUDIO_NATIVE_API api = SPUDAUDIO_NATIVE_API_ALSA;
-#elif SPUDAUDIO_COMPILE_REMOTEIO
-	const SPUDAUDIO_NATIVE_API api = SPUDAUDIO_NATIVE_API_REMOTEIO;
+static craudio_instance make_audio_instance(void) {
+#if CRAUDIO_COMPILE_COREAUDIO
+	const CRAUDIO_NATIVE_API api = CRAUDIO_NATIVE_API_COREAUDIO;
+#elif CRAUDIO_COMPILE_WASAPI
+	const CRAUDIO_NATIVE_API api = CRAUDIO_NATIVE_API_WASAPI;
+#elif CRAUDIO_COMPILE_ALSA
+	const CRAUDIO_NATIVE_API api = CRAUDIO_NATIVE_API_ALSA;
+#elif CRAUDIO_COMPILE_REMOTEIO
+	const CRAUDIO_NATIVE_API api = CRAUDIO_NATIVE_API_REMOTEIO;
 #else
-	const SPUDAUDIO_NATIVE_API api = SPUDAUDIO_NATIVE_API_NONE;
+	const CRAUDIO_NATIVE_API api = CRAUDIO_NATIVE_API_NONE;
 #endif
-	SPUDAUDIO_INSTANCE_DESC desc;
+	CRAUDIO_INSTANCE_DESC desc;
 	memset(&desc, 0, sizeof(desc));
-	desc.base.type              = SPUD_STRUCT_TYPE_AUDIO_INSTANCE_DESC;
+	desc.base.type              = CR_STRUCT_TYPE_AUDIO_INSTANCE_DESC;
 	desc.allocator              = &allocator;
 	desc.native_api             = api;
-	spudaudio_instance instance = NULL;
-	if (api == SPUDAUDIO_NATIVE_API_NONE || spudaudio_create_instance(&desc, &instance) != SPUD_SUCCESS) {
-		why = "no SpudAudio instance in this build";
+	craudio_instance instance = NULL;
+	if (api == CRAUDIO_NATIVE_API_NONE || craudio_instance_create(&desc, &instance) != CR_SUCCESS) {
+		why = "no CrAudio instance in this build";
 		return NULL;
 	}
 	return instance;
 }
 
 /* [instance]'s first output device, or NULL. */
-static spudaudio_device first_output(spudaudio_instance instance) {
-	spudaudio_device *devices = NULL;
+static craudio_device first_output(craudio_instance instance) {
+	craudio_device *devices = NULL;
 	uint32_t count            = 0;
-	if (spudaudio_enumerate_devices(instance, SPUDAUDIO_DIRECTION_OUTPUT, &devices, &count) != SPUD_SUCCESS || count == 0) {
+	if (craudio_device_enumerate(instance, CRAUDIO_DIRECTION_OUTPUT, &devices, &count) != CR_SUCCESS || count == 0) {
 		why = "no audio output device";
 		return NULL;
 	}
 	return devices[0];
 }
 
-static void silent_callback(spudaudio_stream stream, void *frames, uint32_t frame_count, const SPUDAUDIO_CALLBACK_INFO *info, void *user_data) {
+static void silent_callback(craudio_stream stream, void *frames, uint32_t frame_count, const CRAUDIO_CALLBACK_INFO *info, void *user_data) {
 	(void)stream;
 	(void)frames;
 	(void)frame_count;
@@ -399,64 +399,64 @@ static void silent_callback(spudaudio_stream stream, void *frames, uint32_t fram
 	(void)user_data;
 }
 
-static spudfile_instance make_file_instance(void) {
-	spudfile_instance_desc desc;
+static crfiles_instance make_file_instance(void) {
+	crfiles_instance_desc desc;
 	memset(&desc, 0, sizeof(desc));
-	desc.base.type             = SPUD_STRUCT_TYPE_FILES_INSTANCE_DESC;
+	desc.base.type             = CR_STRUCT_TYPE_FILES_INSTANCE_DESC;
 	desc.allocator             = &allocator;
-	spudfile_instance instance = NULL;
-	if (spudfile_instance_create(&desc, &instance) != SPUD_SUCCESS) {
-		why = "spudfile_instance_create failed";
+	crfiles_instance instance = NULL;
+	if (crfiles_instance_create(&desc, &instance) != CR_SUCCESS) {
+		why = "crfiles_instance_create failed";
 		return NULL;
 	}
 	return instance;
 }
 
-#define FREED_FILE "spud_misuse_tests.tmp"
+#define FREED_FILE "cr_misuse_tests.tmp"
 
 /* A file of 4096 bytes, made in the working directory, or NULL. */
-static spudfile_file make_file(spudfile_instance instance) {
-	spudfile_open_desc desc;
+static crfiles_file make_file(crfiles_instance instance) {
+	crfiles_open_desc desc;
 	memset(&desc, 0, sizeof(desc));
-	desc.base.type     = SPUD_STRUCT_TYPE_FILES_OPEN_DESC;
+	desc.base.type     = CR_STRUCT_TYPE_FILES_OPEN_DESC;
 	desc.path          = FREED_FILE;
-	desc.access        = SPUDFILE_ACCESS_READ_WRITE;
-	desc.create        = SPUDFILE_CREATE_TRUNCATE;
-	desc.share         = SPUDFILE_SHARE_READ;
-	spudfile_file file = NULL;
-	if (spudfile_file_open(instance, &desc, &file) != SPUD_SUCCESS) {
+	desc.access        = CRFILES_ACCESS_READ_WRITE;
+	desc.create        = CRFILES_CREATE_TRUNCATE;
+	desc.share         = CRFILES_SHARE_READ;
+	crfiles_file file = NULL;
+	if (crfiles_file_open(instance, &desc, &file) != CR_SUCCESS) {
 		why = "no file could be made in the working directory";
 		return NULL;
 	}
-	if (spudfile_file_set_size(file, 4096) != SPUD_SUCCESS) {
-		why = "spudfile_file_set_size failed";
-		spudfile_file_close(file);
+	if (crfiles_file_set_size(file, 4096) != CR_SUCCESS) {
+		why = "crfiles_file_set_size failed";
+		crfiles_file_close(file);
 		return NULL;
 	}
 	return file;
 }
 
-static spudnet_instance make_net_instance(void) {
-	spudnet_instance_desc desc;
+static crnet_instance make_net_instance(void) {
+	crnet_instance_desc desc;
 	memset(&desc, 0, sizeof(desc));
-	desc.base.type            = SPUD_STRUCT_TYPE_NET_INSTANCE_DESC;
+	desc.base.type            = CR_STRUCT_TYPE_NET_INSTANCE_DESC;
 	desc.allocator            = &allocator;
-	spudnet_instance instance = NULL;
-	if (spudnet_instance_create(&desc, &instance, NULL) != SPUD_SUCCESS) {
-		why = "spudnet_instance_create failed";
+	crnet_instance instance = NULL;
+	if (crnet_instance_create(&desc, &instance, NULL) != CR_SUCCESS) {
+		why = "crnet_instance_create failed";
 		return NULL;
 	}
 	return instance;
 }
 
-static spudnet_http_client make_http_client(spudnet_instance instance) {
-	spudnet_http_client_desc desc;
+static crnet_http_client make_http_client(crnet_instance instance) {
+	crnet_http_client_desc desc;
 	memset(&desc, 0, sizeof(desc));
-	desc.base.type             = SPUD_STRUCT_TYPE_NET_HTTP_CLIENT_DESC;
-	desc.proxy.mode            = SPUDNET_PROXY_NONE;
-	spudnet_http_client client = NULL;
-	if (spudnet_http_client_create(instance, &desc, &client) != SPUD_SUCCESS) {
-		why = "spudnet_http_client_create failed";
+	desc.base.type             = CR_STRUCT_TYPE_NET_HTTP_CLIENT_DESC;
+	desc.proxy.mode            = CRNET_PROXY_NONE;
+	crnet_http_client client = NULL;
+	if (crnet_http_client_create(instance, &desc, &client) != CR_SUCCESS) {
+		why = "crnet_http_client_create failed";
 		return NULL;
 	}
 	return client;
@@ -466,490 +466,490 @@ static spudnet_http_client make_http_client(spudnet_instance instance) {
 # For each handle type, the body of a C function returning that type: a
 # handle made through the public API and destroyed, or NULL with `why` set.
 FACTORIES = {
-    # ---- SpudAudio
-    'spudaudio_instance': r'''
-	spudaudio_instance instance = make_audio_instance();
+    # ---- CrAudio
+    'craudio_instance': r'''
+	craudio_instance instance = make_audio_instance();
 	if (instance)
-		spudaudio_destroy_instance(instance);
+		craudio_instance_destroy(instance);
 	return instance;''',
-    'spudaudio_device': r'''
+    'craudio_device': r'''
 	/* A device is the instance's: it goes with it. */
-	spudaudio_instance instance = make_audio_instance();
+	craudio_instance instance = make_audio_instance();
 	if (!instance)
 		return NULL;
-	spudaudio_device device = first_output(instance);
-	spudaudio_destroy_instance(instance);
+	craudio_device device = first_output(instance);
+	craudio_instance_destroy(instance);
 	return device;''',
-    'spudaudio_stream': r'''
-	spudaudio_instance instance = make_audio_instance();
+    'craudio_stream': r'''
+	craudio_instance instance = make_audio_instance();
 	if (!instance)
 		return NULL;
-	spudaudio_device device = first_output(instance);
-	spudaudio_stream stream = NULL;
+	craudio_device device = first_output(instance);
+	craudio_stream stream = NULL;
 	if (device) {
-		SPUDAUDIO_DEVICE_PROPERTIES properties;
+		CRAUDIO_DEVICE_PROPERTIES properties;
 		memset(&properties, 0, sizeof(properties));
-		properties.base.type = SPUD_STRUCT_TYPE_AUDIO_DEVICE_PROPERTIES;
-		spudaudio_get_device_properties(device, &properties);
-		SPUDAUDIO_STREAM_DESC desc;
+		properties.base.type = CR_STRUCT_TYPE_AUDIO_DEVICE_PROPERTIES;
+		craudio_device_get_properties(device, &properties);
+		CRAUDIO_STREAM_DESC desc;
 		memset(&desc, 0, sizeof(desc));
-		desc.base.type = SPUD_STRUCT_TYPE_AUDIO_STREAM_DESC;
+		desc.base.type = CR_STRUCT_TYPE_AUDIO_STREAM_DESC;
 		desc.device    = device;
 		desc.format    = properties.native_format;
-		if (desc.format.sample_format == SPUDAUDIO_SAMPLE_FORMAT_UNKNOWN) {
-			desc.format.sample_format = SPUDAUDIO_SAMPLE_FORMAT_F32;
+		if (desc.format.sample_format == CRAUDIO_SAMPLE_FORMAT_UNKNOWN) {
+			desc.format.sample_format = CRAUDIO_SAMPLE_FORMAT_F32;
 			desc.format.sample_rate   = 48000;
 			desc.format.channel_count = 2;
 			desc.format.interleaved   = true;
 		}
 		/* The platform's own thread where it is the only mechanism. */
-#if SPUDAUDIO_COMPILE_COREAUDIO || SPUDAUDIO_COMPILE_REMOTEIO
-		desc.thread.priority = SPUDAUDIO_THREAD_PRIORITY_PLATFORM;
+#if CRAUDIO_COMPILE_COREAUDIO || CRAUDIO_COMPILE_REMOTEIO
+		desc.thread.priority = CRAUDIO_THREAD_PRIORITY_PLATFORM;
 #else
-		desc.thread.priority = SPUDAUDIO_THREAD_PRIORITY_NORMAL;
+		desc.thread.priority = CRAUDIO_THREAD_PRIORITY_NORMAL;
 #endif
 		desc.callback        = silent_callback;
 		desc.period_frames   = desc.format.sample_rate / 100;
 		/* Each rejected field takes the probe's suggestion, a few rounds. */
 		for (int round = 0; round < 8; ++round) {
-			SPUDAUDIO_STREAM_CONFIG config;
+			CRAUDIO_STREAM_CONFIG config;
 			memset(&config, 0, sizeof(config));
-			config.base.type   = SPUD_STRUCT_TYPE_AUDIO_STREAM_CONFIG;
-			const SPUDRESULT r = spudaudio_probe_stream(&desc, &config);
-			if (r == SPUD_SUCCESS)
+			config.base.type   = CR_STRUCT_TYPE_AUDIO_STREAM_CONFIG;
+			const CR_RESULT r = craudio_stream_probe(&desc, &config);
+			if (r == CR_SUCCESS)
 				break;
-			if (r == SPUDRESULT_SAUD_FORMAT_NOT_SUPPORTED && config.format.sample_format != SPUDAUDIO_SAMPLE_FORMAT_UNKNOWN)
+			if (r == CR_RESULT_AUDIO_FORMAT_NOT_SUPPORTED && config.format.sample_format != CRAUDIO_SAMPLE_FORMAT_UNKNOWN)
 				desc.format = config.format;
-			else if (r == SPUDRESULT_SAUD_PERIOD_OUT_OF_RANGE && config.period_frames)
+			else if (r == CR_RESULT_AUDIO_PERIOD_OUT_OF_RANGE && config.period_frames)
 				desc.period_frames = config.period_frames;
-			else if (r == SPUDRESULT_SAUD_BUFFER_OUT_OF_RANGE)
+			else if (r == CR_RESULT_AUDIO_BUFFER_OUT_OF_RANGE)
 				desc.buffer_frames = config.buffer_frames;
 			else
 				break;
 		}
-		if (spudaudio_create_stream(&desc, &stream) == SPUD_SUCCESS)
-			spudaudio_destroy_stream(stream);
+		if (craudio_stream_create(&desc, &stream) == CR_SUCCESS)
+			craudio_stream_destroy(stream);
 		else
 			why = "the output device took no stream";
 	}
-	spudaudio_destroy_instance(instance);
+	craudio_instance_destroy(instance);
 	return stream;''',
-    # ---- SpudFiles
-    'spudfile_instance': r'''
-	spudfile_instance instance = make_file_instance();
+    # ---- CrFiles
+    'crfiles_instance': r'''
+	crfiles_instance instance = make_file_instance();
 	if (instance)
-		spudfile_instance_destroy(instance);
+		crfiles_instance_destroy(instance);
 	return instance;''',
-    'spudfile_file': r'''
-	spudfile_instance instance = make_file_instance();
+    'crfiles_file': r'''
+	crfiles_instance instance = make_file_instance();
 	if (!instance)
 		return NULL;
-	spudfile_file file = make_file(instance);
+	crfiles_file file = make_file(instance);
 	if (file)
-		spudfile_file_close(file);
-	spudfile_path_remove(instance, FREED_FILE);
-	spudfile_instance_destroy(instance);
+		crfiles_file_close(file);
+	crfiles_path_remove(instance, FREED_FILE);
+	crfiles_instance_destroy(instance);
 	return file;''',
-    'spudfile_mapping': r'''
-	spudfile_instance instance = make_file_instance();
+    'crfiles_mapping': r'''
+	crfiles_instance instance = make_file_instance();
 	if (!instance)
 		return NULL;
-	spudfile_file file       = make_file(instance);
-	spudfile_mapping mapping = NULL;
+	crfiles_file file       = make_file(instance);
+	crfiles_mapping mapping = NULL;
 	if (file) {
-		if (spudfile_file_map(file, 0, 4096, &mapping) == SPUD_SUCCESS)
-			spudfile_mapping_release(mapping);
+		if (crfiles_file_map(file, 0, 4096, &mapping) == CR_SUCCESS)
+			crfiles_mapping_release(mapping);
 		else
-			why = "spudfile_file_map failed";
-		spudfile_file_close(file);
+			why = "crfiles_file_map failed";
+		crfiles_file_close(file);
 	}
-	spudfile_path_remove(instance, FREED_FILE);
-	spudfile_instance_destroy(instance);
+	crfiles_path_remove(instance, FREED_FILE);
+	crfiles_instance_destroy(instance);
 	return mapping;''',
-    'spudfile_listing': r'''
-	spudfile_instance instance = make_file_instance();
+    'crfiles_listing': r'''
+	crfiles_instance instance = make_file_instance();
 	if (!instance)
 		return NULL;
-	spudfile_listing_desc desc;
+	crfiles_listing_desc desc;
 	memset(&desc, 0, sizeof(desc));
-	desc.base.type           = SPUD_STRUCT_TYPE_FILES_LISTING_DESC;
+	desc.base.type           = CR_STRUCT_TYPE_FILES_LISTING_DESC;
 	desc.path                = ".";
-	spudfile_listing listing = NULL;
-	if (spudfile_listing_open(instance, &desc, &listing) == SPUD_SUCCESS)
-		spudfile_listing_close(listing);
+	crfiles_listing listing = NULL;
+	if (crfiles_listing_open(instance, &desc, &listing) == CR_SUCCESS)
+		crfiles_listing_close(listing);
 	else
-		why = "spudfile_listing_open failed on the working directory";
-	spudfile_instance_destroy(instance);
+		why = "crfiles_listing_open failed on the working directory";
+	crfiles_instance_destroy(instance);
 	return listing;''',
-    'spudfile_library': r'''
-	/* A system library by name, there on every platform SpudFiles builds
+    'crfiles_library': r'''
+	/* A system library by name, there on every platform CrFiles builds
 	 * for, searched for by the platform. */
-	spudfile_instance instance = make_file_instance();
+	crfiles_instance instance = make_file_instance();
 	if (!instance)
 		return NULL;
-	spudfile_library_desc desc;
+	crfiles_library_desc desc;
 	memset(&desc, 0, sizeof(desc));
-	desc.base.type = SPUD_STRUCT_TYPE_FILES_LIBRARY_DESC;
-#if SPUDLIB_PLATFORM_WIN32
+	desc.base.type = CR_STRUCT_TYPE_FILES_LIBRARY_DESC;
+#if CARROTTUS_PLATFORM_WIN32
 	desc.path = "kernel32.dll";
-#elif SPUDLIB_PLATFORM_APPLE
+#elif CARROTTUS_PLATFORM_APPLE
 	desc.path = "libSystem.B.dylib";
 #else
 	desc.path = "libc.so.6";
 #endif
-	desc.binding             = SPUDFILE_LIBRARY_BINDING_NOW;
-	desc.scope               = SPUDFILE_LIBRARY_SCOPE_LOCAL;
-	desc.dependencies        = SPUDFILE_LIBRARY_DEPENDENCIES_PLATFORM_ORDER;
-	spudfile_library library = NULL;
-	if (spudfile_library_open(instance, &desc, &library) == SPUD_SUCCESS)
-		spudfile_library_close(library);
+	desc.binding             = CRFILES_LIBRARY_BINDING_NOW;
+	desc.scope               = CRFILES_LIBRARY_SCOPE_LOCAL;
+	desc.dependencies        = CRFILES_LIBRARY_DEPENDENCIES_PLATFORM_ORDER;
+	crfiles_library library = NULL;
+	if (crfiles_library_open(instance, &desc, &library) == CR_SUCCESS)
+		crfiles_library_close(library);
 	else
-		why = "spudfile_library_open failed on the system's C library";
-	spudfile_instance_destroy(instance);
+		why = "crfiles_library_open failed on the system's C library";
+	crfiles_instance_destroy(instance);
 	return library;''',
-    # ---- SpudGPU
-    'spudgpu_instance': r'''
-	spudgpu_instance instance = make_gpu_instance();
+    # ---- CrGPU
+    'crgpu_instance': r'''
+	crgpu_instance instance = make_gpu_instance();
 	if (!instance) {
-		why = "spudgpu_create_instance failed";
+		why = "crgpu_instance_create failed";
 		return NULL;
 	}
-	spudgpu_destroy_instance(instance);
+	crgpu_instance_destroy(instance);
 	return instance;''',
-    'spudgpu_adapter': r'''
+    'crgpu_adapter': r'''
 	/* An adapter is the instance's: it goes with it. */
-	spudgpu_instance instance = make_gpu_instance();
+	crgpu_instance instance = make_gpu_instance();
 	if (!instance) {
-		why = "spudgpu_create_instance failed";
+		why = "crgpu_instance_create failed";
 		return NULL;
 	}
-	const spudgpu_adapter *adapters = NULL;
+	const crgpu_adapter *adapters = NULL;
 	uint32_t count                  = 0;
-	spudgpu_enumerate_adapters(instance, &adapters, &count);
-	spudgpu_adapter adapter = count > 0 ? adapters[0] : NULL;
+	crgpu_adapter_enumerate(instance, &adapters, &count);
+	crgpu_adapter adapter = count > 0 ? adapters[0] : NULL;
 	if (!adapter)
 		why = "no adapter";
-	spudgpu_destroy_instance(instance);
+	crgpu_instance_destroy(instance);
 	return adapter;''',
-    'spudgpu_device': r'''
+    'crgpu_device': r'''
 	/* Its own instance: the shared one's adapter 0 already has a device. */
-	spudgpu_instance instance = make_gpu_instance();
+	crgpu_instance instance = make_gpu_instance();
 	if (!instance) {
-		why = "spudgpu_create_instance failed";
+		why = "crgpu_instance_create failed";
 		return NULL;
 	}
-	spudgpu_device device = make_gpu_device(instance, 0);
+	crgpu_device device = make_gpu_device(instance, 0);
 	if (device)
-		spudgpu_destroy_device(device);
+		crgpu_device_destroy(device);
 	else
 		why = "no device on adapter 0";
-	spudgpu_destroy_instance(instance);
+	crgpu_instance_destroy(instance);
 	return device;''',
-    'spudgpu_command_queue': r'''
+    'crgpu_command_queue': r'''
 	/* A queue is the device's: it goes with it. */
-	spudgpu_instance instance = make_gpu_instance();
+	crgpu_instance instance = make_gpu_instance();
 	if (!instance) {
-		why = "spudgpu_create_instance failed";
+		why = "crgpu_instance_create failed";
 		return NULL;
 	}
-	spudgpu_device device       = make_gpu_device(instance, 0);
-	spudgpu_command_queue queue = NULL;
+	crgpu_device device       = make_gpu_device(instance, 0);
+	crgpu_command_queue queue = NULL;
 	if (device) {
-		spudgpu_get_command_queue(device, SPUDGPU_COMMAND_LIST_TYPE_DIRECT, 0, &queue);
-		spudgpu_destroy_device(device);
+		crgpu_command_queue_get(device, CRGPU_COMMAND_LIST_TYPE_DIRECT, 0, &queue);
+		crgpu_device_destroy(device);
 	}
 	if (!queue)
 		why = "no device on adapter 0";
-	spudgpu_destroy_instance(instance);
+	crgpu_instance_destroy(instance);
 	return queue;''',
-    'spudgpu_buffer': r'''
+    'crgpu_buffer': r'''
 	if (!have_device())
 		return NULL;
-	spudgpu_buffer buffer = make_buffer();
+	crgpu_buffer buffer = make_buffer();
 	if (buffer)
-		spudgpu_destroy_buffer(buffer);
+		crgpu_buffer_destroy(buffer);
 	else
-		why = "spudgpu_create_buffer failed";
+		why = "crgpu_buffer_create failed";
 	return buffer;''',
-    'spudgpu_buffer_view': r'''
+    'crgpu_buffer_view': r'''
 	if (!have_device())
 		return NULL;
-	spudgpu_buffer buffer = make_buffer();
+	crgpu_buffer buffer = make_buffer();
 	if (!buffer) {
-		why = "spudgpu_create_buffer failed";
+		why = "crgpu_buffer_create failed";
 		return NULL;
 	}
-	spudgpu_buffer_view_desc desc;
+	crgpu_buffer_view_desc desc;
 	memset(&desc, 0, sizeof(desc));
-	desc.base.type           = SPUD_STRUCT_TYPE_GPU_BUFFER_VIEW_DESC;
+	desc.base.type           = CR_STRUCT_TYPE_GPU_BUFFER_VIEW_DESC;
 	desc.parent_buffer       = buffer;
 	desc.stride              = 16;
 	desc.size                = 256;
-	spudgpu_buffer_view view = NULL;
-	if (spudgpu_create_buffer_view(buffer, &desc, &view) == SPUD_SUCCESS)
-		spudgpu_destroy_buffer_view(view);
+	crgpu_buffer_view view = NULL;
+	if (crgpu_buffer_view_create(buffer, &desc, &view) == CR_SUCCESS)
+		crgpu_buffer_view_destroy(view);
 	else
-		why = "spudgpu_create_buffer_view failed";
-	spudgpu_destroy_buffer(buffer);
+		why = "crgpu_buffer_view_create failed";
+	crgpu_buffer_destroy(buffer);
 	return view;''',
-    'spudgpu_image': r'''
+    'crgpu_image': r'''
 	if (!have_device())
 		return NULL;
-	spudgpu_image image = make_image();
+	crgpu_image image = make_image();
 	if (image)
-		spudgpu_destroy_image(image);
+		crgpu_image_destroy(image);
 	else
-		why = "spudgpu_create_image failed";
+		why = "crgpu_image_create failed";
 	return image;''',
-    'spudgpu_image_view': r'''
+    'crgpu_image_view': r'''
 	if (!have_device())
 		return NULL;
-	spudgpu_image image = make_image();
+	crgpu_image image = make_image();
 	if (!image) {
-		why = "spudgpu_create_image failed";
+		why = "crgpu_image_create failed";
 		return NULL;
 	}
-	spudgpu_image_view_desc desc;
+	crgpu_image_view_desc desc;
 	memset(&desc, 0, sizeof(desc));
-	desc.base.type                           = SPUD_STRUCT_TYPE_GPU_IMAGE_VIEW_DESC;
+	desc.base.type                           = CR_STRUCT_TYPE_GPU_IMAGE_VIEW_DESC;
 	desc.parent_image                        = image;
-	desc.type                                = SPUDGPU_IMAGE_VIEW_TYPE_2D;
-	desc.subresource_range.aspect_mask       = SPUDGPU_IMAGE_ASPECT_COLOR;
+	desc.type                                = CRGPU_IMAGE_VIEW_TYPE_2D;
+	desc.subresource_range.aspect_mask       = CRGPU_IMAGE_ASPECT_COLOR;
 	desc.subresource_range.mip_level_count   = 1;
 	desc.subresource_range.array_layer_count = 1;
-	spudgpu_image_view view                  = NULL;
-	if (spudgpu_create_image_view(image, &desc, &view) == SPUD_SUCCESS)
-		spudgpu_destroy_image_view(view);
+	crgpu_image_view view                  = NULL;
+	if (crgpu_image_view_create(image, &desc, &view) == CR_SUCCESS)
+		crgpu_image_view_destroy(view);
 	else
-		why = "spudgpu_create_image_view failed";
-	spudgpu_destroy_image(image);
+		why = "crgpu_image_view_create failed";
+	crgpu_image_destroy(image);
 	return view;''',
-    'spudgpu_heap': r'''
+    'crgpu_heap': r'''
 	if (!have_device())
 		return NULL;
-	spudgpu_heap_desc desc;
+	crgpu_heap_desc desc;
 	memset(&desc, 0, sizeof(desc));
-	desc.base.type      = SPUD_STRUCT_TYPE_GPU_HEAP_DESC;
-	desc.memory_kind    = SPUDGPU_MEMORY_KIND_DEVICE;
-	desc.resource_class = SPUDGPU_HEAP_RESOURCE_CLASS_BUFFERS;
-	desc.size           = SPUDGPU_HEAP_SIZE_GRANULARITY;
-	spudgpu_heap heap   = NULL;
-	if (spudgpu_create_heap(gpu_device, &desc, &heap) == SPUD_SUCCESS)
-		spudgpu_destroy_heap(heap);
+	desc.base.type      = CR_STRUCT_TYPE_GPU_HEAP_DESC;
+	desc.memory_kind    = CRGPU_MEMORY_KIND_DEVICE;
+	desc.resource_class = CRGPU_HEAP_RESOURCE_CLASS_BUFFERS;
+	desc.size           = CRGPU_HEAP_SIZE_GRANULARITY;
+	crgpu_heap heap   = NULL;
+	if (crgpu_heap_create(gpu_device, &desc, &heap) == CR_SUCCESS)
+		crgpu_heap_destroy(heap);
 	else
-		why = "spudgpu_create_heap failed";
+		why = "crgpu_heap_create failed";
 	return heap;''',
-    'spudgpu_command_allocator': r'''
+    'crgpu_command_allocator': r'''
 	if (!have_device())
 		return NULL;
-	spudgpu_command_allocator allocator = make_command_allocator();
+	crgpu_command_allocator allocator = make_command_allocator();
 	if (allocator)
-		spudgpu_destroy_command_allocator(allocator);
+		crgpu_command_allocator_destroy(allocator);
 	else
-		why = "spudgpu_create_command_allocator failed";
+		why = "crgpu_command_allocator_create failed";
 	return allocator;''',
-    'spudgpu_command_list': r'''
+    'crgpu_command_list': r'''
 	if (!have_device())
 		return NULL;
-	spudgpu_command_allocator allocator = make_command_allocator();
+	crgpu_command_allocator allocator = make_command_allocator();
 	if (!allocator) {
-		why = "spudgpu_create_command_allocator failed";
+		why = "crgpu_command_allocator_create failed";
 		return NULL;
 	}
-	spudgpu_command_list cmd = NULL;
-	if (spudgpu_create_command_list(allocator, &cmd) == SPUD_SUCCESS)
-		spudgpu_destroy_command_list(cmd);
+	crgpu_command_list cmd = NULL;
+	if (crgpu_command_list_create(allocator, &cmd) == CR_SUCCESS)
+		crgpu_command_list_destroy(cmd);
 	else
-		why = "spudgpu_create_command_list failed";
-	spudgpu_destroy_command_allocator(allocator);
+		why = "crgpu_command_list_create failed";
+	crgpu_command_allocator_destroy(allocator);
 	return cmd;''',
-    'spudgpu_fence': r'''
+    'crgpu_fence': r'''
 	if (!have_device())
 		return NULL;
-	spudgpu_fence fence = NULL;
-	if (spudgpu_create_fence(gpu_device, SPUDGPU_FENCE_FLAG_NONE, 0, &fence) == SPUD_SUCCESS)
-		spudgpu_destroy_fence(fence);
+	crgpu_fence fence = NULL;
+	if (crgpu_fence_create(gpu_device, CRGPU_FENCE_FLAG_NONE, 0, &fence) == CR_SUCCESS)
+		crgpu_fence_destroy(fence);
 	else
-		why = "spudgpu_create_fence failed";
+		why = "crgpu_fence_create failed";
 	return fence;''',
-    'spudgpu_semaphore': r'''
+    'crgpu_semaphore': r'''
 	if (!have_device())
 		return NULL;
-	spudgpu_semaphore semaphore = NULL;
-	if (spudgpu_create_semaphore(gpu_device, &semaphore) == SPUD_SUCCESS)
-		spudgpu_destroy_semaphore(semaphore);
+	crgpu_semaphore semaphore = NULL;
+	if (crgpu_semaphore_create(gpu_device, &semaphore) == CR_SUCCESS)
+		crgpu_semaphore_destroy(semaphore);
 	else
-		why = "spudgpu_create_semaphore failed";
+		why = "crgpu_semaphore_create failed";
 	return semaphore;''',
-    'spudgpu_timestamp_set': r'''
+    'crgpu_timestamp_set': r'''
 	if (!have_device())
 		return NULL;
-	if (!(gpu_features & SPUDGPU_FEATURE_PASS_TIMESTAMPS)) {
+	if (!(gpu_features & CRGPU_FEATURE_PASS_TIMESTAMPS)) {
 		why = "adapter 0 has no pass timestamps";
 		return NULL;
 	}
-	spudgpu_timestamp_set set = NULL;
-	if (spudgpu_create_timestamp_set(gpu_device, gpu_queue, 2, &set) == SPUD_SUCCESS)
-		spudgpu_destroy_timestamp_set(set);
+	crgpu_timestamp_set set = NULL;
+	if (crgpu_timestamp_set_create(gpu_device, gpu_queue, 2, &set) == CR_SUCCESS)
+		crgpu_timestamp_set_destroy(set);
 	else
-		why = "spudgpu_create_timestamp_set failed";
+		why = "crgpu_timestamp_set_create failed";
 	return set;''',
-    'spudgpu_acceleration_structure': r'''
+    'crgpu_acceleration_structure': r'''
 	/* Its own instance and device, on the first adapter with ray queries
 	 * (the shared device is adapter 0's, which may have none), both gone
 	 * after: only the handle is read once it is destroyed. */
-	spudgpu_instance instance = make_gpu_instance();
+	crgpu_instance instance = make_gpu_instance();
 	if (!instance) {
-		why = "no SpudGPU instance";
+		why = "no CrGPU instance";
 		return NULL;
 	}
-	const spudgpu_adapter *adapters = NULL;
+	const crgpu_adapter *adapters = NULL;
 	uint32_t count                  = 0;
-	spudgpu_enumerate_adapters(instance, &adapters, &count);
-	spudgpu_adapter adapter = NULL;
+	crgpu_adapter_enumerate(instance, &adapters, &count);
+	crgpu_adapter adapter = NULL;
 	for (uint32_t i = 0; i < count && !adapter; ++i) {
-		SPUDGPU_ADAPTER_PROPERTIES properties;
+		CRGPU_ADAPTER_PROPERTIES properties;
 		memset(&properties, 0, sizeof(properties));
-		properties.base.type = SPUD_STRUCT_TYPE_GPU_ADAPTER_PROPERTIES;
-		if (spudgpu_get_adapter_properties(adapters[i], &properties) == SPUD_SUCCESS &&
-		    (properties.supported_features & SPUDGPU_FEATURE_RAY_QUERY))
+		properties.base.type = CR_STRUCT_TYPE_GPU_ADAPTER_PROPERTIES;
+		if (crgpu_adapter_get_properties(adapters[i], &properties) == CR_SUCCESS &&
+		    (properties.supported_features & CRGPU_FEATURE_RAY_QUERY))
 			adapter = adapters[i];
 	}
-	spudgpu_acceleration_structure structure = NULL;
+	crgpu_acceleration_structure structure = NULL;
 	if (!adapter) {
 		why = "no adapter has ray queries";
 	} else {
-		spudgpu_device_desc device_desc;
+		crgpu_device_desc device_desc;
 		memset(&device_desc, 0, sizeof(device_desc));
-		device_desc.base.type          = SPUD_STRUCT_TYPE_GPU_DEVICE_DESC;
-		device_desc.required_features  = SPUDGPU_FEATURE_RAY_QUERY;
+		device_desc.base.type          = CR_STRUCT_TYPE_GPU_DEVICE_DESC;
+		device_desc.required_features  = CRGPU_FEATURE_RAY_QUERY;
 		device_desc.direct_queue_count = 1;
-		spudgpu_device device          = NULL;
-		if (spudgpu_create_device(adapter, &device_desc, &device) != SPUD_SUCCESS) {
-			why = "spudgpu_create_device with SPUDGPU_FEATURE_RAY_QUERY failed";
+		crgpu_device device          = NULL;
+		if (crgpu_device_create(adapter, &device_desc, &device) != CR_SUCCESS) {
+			why = "crgpu_device_create with CRGPU_FEATURE_RAY_QUERY failed";
 		} else {
-			spudgpu_acceleration_structure_desc desc;
+			crgpu_acceleration_structure_desc desc;
 			memset(&desc, 0, sizeof(desc));
-			desc.base.type = SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_DESC;
-			desc.level     = SPUDGPU_ACCELERATION_STRUCTURE_LEVEL_BOTTOM;
+			desc.base.type = CR_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_DESC;
+			desc.level     = CRGPU_ACCELERATION_STRUCTURE_LEVEL_BOTTOM;
 			desc.size      = 4096;
-			if (spudgpu_create_acceleration_structure(device, &desc, &structure) == SPUD_SUCCESS)
-				spudgpu_destroy_acceleration_structure(structure);
+			if (crgpu_acceleration_structure_create(device, &desc, &structure) == CR_SUCCESS)
+				crgpu_acceleration_structure_destroy(structure);
 			else
-				why = "spudgpu_create_acceleration_structure failed";
-			spudgpu_destroy_device(device);
+				why = "crgpu_acceleration_structure_create failed";
+			crgpu_device_destroy(device);
 		}
 	}
-	spudgpu_destroy_instance(instance);
+	crgpu_instance_destroy(instance);
 	return structure;''',
-    'spudgpu_sampler': r'''
+    'crgpu_sampler': r'''
 	if (!have_device())
 		return NULL;
-	spudgpu_sampler_desc desc;
+	crgpu_sampler_desc desc;
 	memset(&desc, 0, sizeof(desc));
-	desc.base.type          = SPUD_STRUCT_TYPE_GPU_SAMPLER_DESC;
-	desc.mag_filter         = SPUDGPU_FILTER_NEAREST;
-	desc.min_filter         = SPUDGPU_FILTER_NEAREST;
-	desc.mipmap_filter      = SPUDGPU_FILTER_NEAREST;
-	desc.address_mode_u     = SPUDGPU_ADDRESS_MODE_CLAMP_TO_EDGE;
-	desc.address_mode_v     = SPUDGPU_ADDRESS_MODE_CLAMP_TO_EDGE;
-	desc.address_mode_w     = SPUDGPU_ADDRESS_MODE_CLAMP_TO_EDGE;
+	desc.base.type          = CR_STRUCT_TYPE_GPU_SAMPLER_DESC;
+	desc.mag_filter         = CRGPU_FILTER_NEAREST;
+	desc.min_filter         = CRGPU_FILTER_NEAREST;
+	desc.mipmap_filter      = CRGPU_FILTER_NEAREST;
+	desc.address_mode_u     = CRGPU_ADDRESS_MODE_CLAMP_TO_EDGE;
+	desc.address_mode_v     = CRGPU_ADDRESS_MODE_CLAMP_TO_EDGE;
+	desc.address_mode_w     = CRGPU_ADDRESS_MODE_CLAMP_TO_EDGE;
 	desc.max_anisotropy     = 1.0f;
-	spudgpu_sampler sampler = NULL;
-	if (spudgpu_create_sampler(gpu_device, &desc, &sampler) == SPUD_SUCCESS)
-		spudgpu_destroy_sampler(sampler);
+	crgpu_sampler sampler = NULL;
+	if (crgpu_sampler_create(gpu_device, &desc, &sampler) == CR_SUCCESS)
+		crgpu_sampler_destroy(sampler);
 	else
-		why = "spudgpu_create_sampler failed";
+		why = "crgpu_sampler_create failed";
 	return sampler;''',
-    'spudgpu_shader_module': r'''
+    'crgpu_shader_module': r'''
 	if (!have_device())
 		return NULL;
-	spudgpu_shader_module module =
-	    make_module(&spudgpu_test_objects_double_comp);
+	crgpu_shader_module module =
+	    make_module(&crgpu_test_objects_double_comp);
 	if (module)
-		spudgpu_destroy_shader_module(module);
+		crgpu_shader_module_destroy(module);
 	else
-		why = "spudgpu_create_shader_module failed";
+		why = "crgpu_shader_module_create failed";
 	return module;''',
-    'spudgpu_descriptor_set_layout': r'''
+    'crgpu_descriptor_set_layout': r'''
 	if (!have_device())
 		return NULL;
-	const SPUDGPU_DESCRIPTOR_TYPE types[1] = {SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER};
-	spudgpu_descriptor_set_layout layout   = make_set_layout(types, 1, SPUDGPU_SHADER_STAGE_FRAGMENT);
+	const CRGPU_DESCRIPTOR_TYPE types[1] = {CRGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER};
+	crgpu_descriptor_set_layout layout   = make_set_layout(types, 1, CRGPU_SHADER_STAGE_FRAGMENT);
 	if (layout)
-		spudgpu_destroy_descriptor_set_layout(layout);
+		crgpu_descriptor_set_layout_destroy(layout);
 	else
-		why = "spudgpu_create_descriptor_set_layout failed";
+		why = "crgpu_descriptor_set_layout_create failed";
 	return layout;''',
-    'spudgpu_descriptor_pool': r'''
+    'crgpu_descriptor_pool': r'''
 	if (!have_device())
 		return NULL;
-	spudgpu_descriptor_pool_desc desc;
+	crgpu_descriptor_pool_desc desc;
 	memset(&desc, 0, sizeof(desc));
-	desc.base.type                     = SPUD_STRUCT_TYPE_GPU_DESCRIPTOR_POOL_DESC;
+	desc.base.type                     = CR_STRUCT_TYPE_GPU_DESCRIPTOR_POOL_DESC;
 	desc.max_sets                      = 1;
-	desc.pool_sizes[0].descriptor_type = SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	desc.pool_sizes[0].descriptor_type = CRGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	desc.pool_sizes[0].count           = 1;
 	desc.pool_size_count               = 1;
-	spudgpu_descriptor_pool pool       = NULL;
-	if (spudgpu_create_descriptor_pool(gpu_device, &desc, &pool) == SPUD_SUCCESS)
-		spudgpu_destroy_descriptor_pool(pool);
+	crgpu_descriptor_pool pool       = NULL;
+	if (crgpu_descriptor_pool_create(gpu_device, &desc, &pool) == CR_SUCCESS)
+		crgpu_descriptor_pool_destroy(pool);
 	else
-		why = "spudgpu_create_descriptor_pool failed";
+		why = "crgpu_descriptor_pool_create failed";
 	return pool;''',
-    'spudgpu_compute_pipeline': r'''
+    'crgpu_compute_pipeline': r'''
 	if (!have_device())
 		return NULL;
-	spudgpu_shader_module module =
-	    make_module(&spudgpu_test_objects_double_comp);
-	const SPUDGPU_DESCRIPTOR_TYPE types[2] = {SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER, SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER};
-	spudgpu_descriptor_set_layout layout   = make_set_layout(types, 2, SPUDGPU_SHADER_STAGE_COMPUTE);
-	spudgpu_compute_pipeline pipeline      = NULL;
+	crgpu_shader_module module =
+	    make_module(&crgpu_test_objects_double_comp);
+	const CRGPU_DESCRIPTOR_TYPE types[2] = {CRGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER, CRGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER};
+	crgpu_descriptor_set_layout layout   = make_set_layout(types, 2, CRGPU_SHADER_STAGE_COMPUTE);
+	crgpu_compute_pipeline pipeline      = NULL;
 	if (module && layout) {
-		spudgpu_compute_pipeline_desc desc;
+		crgpu_compute_pipeline_desc desc;
 		memset(&desc, 0, sizeof(desc));
-		desc.base.type                           = SPUD_STRUCT_TYPE_GPU_COMPUTE_PIPELINE_DESC;
+		desc.base.type                           = CR_STRUCT_TYPE_GPU_COMPUTE_PIPELINE_DESC;
 		desc.compute_module                      = module;
 		desc.descriptor_set_layouts[0]           = layout;
 		desc.descriptor_set_layout_count         = 1;
-		desc.push_constant_ranges[0].stage_flags = SPUDGPU_SHADER_STAGE_COMPUTE;
+		desc.push_constant_ranges[0].stage_flags = CRGPU_SHADER_STAGE_COMPUTE;
 		desc.push_constant_ranges[0].size        = 2 * sizeof(uint32_t);
 		desc.push_constant_range_count           = 1;
-		if (spudgpu_create_compute_pipeline(gpu_device, &desc, &pipeline) == SPUD_SUCCESS)
-			spudgpu_destroy_compute_pipeline(pipeline);
+		if (crgpu_compute_pipeline_create(gpu_device, &desc, &pipeline) == CR_SUCCESS)
+			crgpu_compute_pipeline_destroy(pipeline);
 		else
-			why = "spudgpu_create_compute_pipeline failed";
+			why = "crgpu_compute_pipeline_create failed";
 	} else {
 		why = "no shader module or set layout for a compute pipeline";
 	}
-	spudgpu_destroy_descriptor_set_layout(layout);
-	spudgpu_destroy_shader_module(module);
+	crgpu_descriptor_set_layout_destroy(layout);
+	crgpu_shader_module_destroy(module);
 	return pipeline;''',
-    'spudgpu_shader_pipeline': r'''
+    'crgpu_graphics_pipeline': r'''
 	if (!have_device())
 		return NULL;
-	/* tests/shaders/objects_draw.vert and .frag, as spudgpu_objects_test
+	/* tests/shaders/objects_draw.vert and .frag, as crgpu_objects_test
 	 * draws with them. */
-	spudgpu_shader_module vertex =
-	    make_module(&spudgpu_test_objects_draw_vert);
-	spudgpu_shader_module fragment =
-	    make_module(&spudgpu_test_objects_draw_frag);
-	const SPUDGPU_DESCRIPTOR_TYPE types[3] = {SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER, SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-	                                          SPUDGPU_DESCRIPTOR_TYPE_SAMPLER};
-	spudgpu_descriptor_set_layout layout   = make_set_layout(types, 3, SPUDGPU_SHADER_STAGE_FRAGMENT);
-	spudgpu_shader_pipeline pipeline       = NULL;
+	crgpu_shader_module vertex =
+	    make_module(&crgpu_test_objects_draw_vert);
+	crgpu_shader_module fragment =
+	    make_module(&crgpu_test_objects_draw_frag);
+	const CRGPU_DESCRIPTOR_TYPE types[3] = {CRGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER, CRGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+	                                          CRGPU_DESCRIPTOR_TYPE_SAMPLER};
+	crgpu_descriptor_set_layout layout   = make_set_layout(types, 3, CRGPU_SHADER_STAGE_FRAGMENT);
+	crgpu_graphics_pipeline pipeline       = NULL;
 	if (vertex && fragment && layout) {
-		spudgpu_shader_pipeline_desc desc;
+		crgpu_graphics_pipeline_desc desc;
 		memset(&desc, 0, sizeof(desc));
-		desc.base.type                           = SPUD_STRUCT_TYPE_GPU_SHADER_PIPELINE_DESC;
+		desc.base.type                           = CR_STRUCT_TYPE_GPU_GRAPHICS_PIPELINE_DESC;
 		desc.vertex_module                       = vertex;
 		desc.fragment_module                     = fragment;
 		desc.vertex_attributes[0].location       = 0;
 		desc.vertex_attributes[0].binding        = 0;
-		desc.vertex_attributes[0].format         = SPUDGPU_FORMAT_R32G32_FLOAT;
+		desc.vertex_attributes[0].format         = CRGPU_FORMAT_R32G32_FLOAT;
 		desc.vertex_attributes[1].location       = 1;
 		desc.vertex_attributes[1].binding        = 1;
-		desc.vertex_attributes[1].format         = SPUDGPU_FORMAT_R32G32_FLOAT;
+		desc.vertex_attributes[1].format         = CRGPU_FORMAT_R32G32_FLOAT;
 		desc.vertex_attribute_count              = 2;
 		desc.vertex_bindings[0].binding          = 0;
 		desc.vertex_bindings[0].stride           = 2 * sizeof(float);
@@ -957,196 +957,196 @@ FACTORIES = {
 		desc.vertex_bindings[1].stride           = 2 * sizeof(float);
 		desc.vertex_bindings[1].per_instance     = true;
 		desc.vertex_binding_count                = 2;
-		desc.primitive_topology                  = SPUDGPU_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-		desc.cull_mode                           = SPUDGPU_CULL_MODE_NONE;
-		desc.depth_compare_op                    = SPUDGPU_COMPARE_OP_ALWAYS;
-		desc.color_attachment_formats[0]         = SPUDGPU_FORMAT_R8G8B8A8_UNORM;
+		desc.primitive_topology                  = CRGPU_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+		desc.cull_mode                           = CRGPU_CULL_MODE_NONE;
+		desc.depth_compare_op                    = CRGPU_COMPARE_OP_ALWAYS;
+		desc.color_attachment_formats[0]         = CRGPU_FORMAT_R8G8B8A8_UNORM;
 		desc.color_attachment_count              = 1;
-		desc.depth_format                        = SPUDGPU_FORMAT_D32_FLOAT;
+		desc.depth_format                        = CRGPU_FORMAT_D32_FLOAT;
 		desc.descriptor_set_layouts[0]           = layout;
 		desc.descriptor_set_layout_count         = 1;
-		desc.push_constant_ranges[0].stage_flags = SPUDGPU_SHADER_STAGE_VERTEX | SPUDGPU_SHADER_STAGE_FRAGMENT;
+		desc.push_constant_ranges[0].stage_flags = CRGPU_SHADER_STAGE_VERTEX | CRGPU_SHADER_STAGE_FRAGMENT;
 		desc.push_constant_ranges[0].size        = 8 * sizeof(float);
 		desc.push_constant_range_count           = 1;
-		if (spudgpu_create_shader_pipeline(gpu_device, &desc, &pipeline) == SPUD_SUCCESS)
-			spudgpu_destroy_shader_pipeline(pipeline);
+		if (crgpu_graphics_pipeline_create(gpu_device, &desc, &pipeline) == CR_SUCCESS)
+			crgpu_graphics_pipeline_destroy(pipeline);
 		else
-			why = "spudgpu_create_shader_pipeline failed";
+			why = "crgpu_graphics_pipeline_create failed";
 	} else {
 		why = "no shader modules or set layout for a pipeline";
 	}
-	spudgpu_destroy_descriptor_set_layout(layout);
-	spudgpu_destroy_shader_module(fragment);
-	spudgpu_destroy_shader_module(vertex);
+	crgpu_descriptor_set_layout_destroy(layout);
+	crgpu_shader_module_destroy(fragment);
+	crgpu_shader_module_destroy(vertex);
 	return pipeline;''',
-    'spudgpu_surface': r'''
+    'crgpu_surface': r'''
 	if (!gpu_instance) {
-		why = "spudgpu_create_instance failed";
+		why = "crgpu_instance_create failed";
 		return NULL;
 	}
-	spudgpu_surface surface = make_surface();
+	crgpu_surface surface = make_surface();
 	if (surface)
-		spudgpu_destroy_surface(surface);
+		crgpu_surface_destroy(surface);
 	return surface;''',
-    'spudgpu_swap_chain': r'''
+    'crgpu_swap_chain': r'''
 	if (!have_device())
 		return NULL;
-	if (!(gpu_features & SPUDGPU_FEATURE_PRESENT)) {
+	if (!(gpu_features & CRGPU_FEATURE_PRESENT)) {
 		why = "adapter 0 can't present";
 		return NULL;
 	}
-	spudgpu_surface surface = make_surface();
+	crgpu_surface surface = make_surface();
 	if (!surface)
 		return NULL;
-	spudgpu_swap_chain_desc desc;
+	crgpu_swap_chain_desc desc;
 	memset(&desc, 0, sizeof(desc));
-	desc.base.type = SPUD_STRUCT_TYPE_GPU_SWAP_CHAIN_DESC;
+	desc.base.type = CR_STRUCT_TYPE_GPU_SWAP_CHAIN_DESC;
 	desc.surface   = surface;
 	desc.queue     = gpu_queue;
 	desc.width     = 64;
 	desc.height    = 64;
-#if SPUDGPU_COMPILE_METAL_API
+#if CRGPU_COMPILE_METAL_API
 	desc.buffer_count = 1;
 #else
 	desc.buffer_count = 2;
 #endif
-	desc.format                   = SPUDGPU_FORMAT_B8G8R8A8_UNORM;
-	desc.present_mode             = SPUDGPU_PRESENT_MODE_FIFO;
-	desc.present_scaling          = SPUDGPU_PRESENT_SCALING_ONE_TO_ONE;
-	desc.fullscreen_mode          = SPUDGPU_FULLSCREEN_MODE_WINDOWED;
-	spudgpu_swap_chain swap_chain = NULL;
-	if (spudgpu_create_swap_chain(gpu_device, &desc, &swap_chain) == SPUD_SUCCESS)
-		spudgpu_destroy_swap_chain(swap_chain);
+	desc.format                   = CRGPU_FORMAT_B8G8R8A8_UNORM;
+	desc.present_mode             = CRGPU_PRESENT_MODE_FIFO;
+	desc.present_scaling          = CRGPU_PRESENT_SCALING_ONE_TO_ONE;
+	desc.fullscreen_mode          = CRGPU_FULLSCREEN_MODE_WINDOWED;
+	crgpu_swap_chain swap_chain = NULL;
+	if (crgpu_swap_chain_create(gpu_device, &desc, &swap_chain) == CR_SUCCESS)
+		crgpu_swap_chain_destroy(swap_chain);
 	else
-		why = "spudgpu_create_swap_chain failed";
-	spudgpu_destroy_surface(surface);
+		why = "crgpu_swap_chain_create failed";
+	crgpu_surface_destroy(surface);
 	return swap_chain;''',
-    # ---- SpudInput
-    'spudinput_instance': r'''
-#if SPUDINPUT_COMPILE_GAMECONTROLLER
-	const SPUDINPUT_NATIVE_API api = SPUDINPUT_NATIVE_API_GAMECONTROLLER;
-#elif SPUDINPUT_COMPILE_GAMEINPUT
-	const SPUDINPUT_NATIVE_API api = SPUDINPUT_NATIVE_API_GAMEINPUT;
-#elif SPUDINPUT_COMPILE_XINPUT
-	const SPUDINPUT_NATIVE_API api = SPUDINPUT_NATIVE_API_XINPUT;
-#elif SPUDINPUT_COMPILE_EVDEV
-	const SPUDINPUT_NATIVE_API api = SPUDINPUT_NATIVE_API_EVDEV;
+    # ---- CrInput
+    'crinput_instance': r'''
+#if CRINPUT_COMPILE_GAMECONTROLLER
+	const CRINPUT_NATIVE_API api = CRINPUT_NATIVE_API_GAMECONTROLLER;
+#elif CRINPUT_COMPILE_GAMEINPUT
+	const CRINPUT_NATIVE_API api = CRINPUT_NATIVE_API_GAMEINPUT;
+#elif CRINPUT_COMPILE_XINPUT
+	const CRINPUT_NATIVE_API api = CRINPUT_NATIVE_API_XINPUT;
+#elif CRINPUT_COMPILE_EVDEV
+	const CRINPUT_NATIVE_API api = CRINPUT_NATIVE_API_EVDEV;
 #else
-	const SPUDINPUT_NATIVE_API api = SPUDINPUT_NATIVE_API_NONE;
+	const CRINPUT_NATIVE_API api = CRINPUT_NATIVE_API_NONE;
 #endif
-	SPUDINPUT_INSTANCE_DESC desc;
+	CRINPUT_INSTANCE_DESC desc;
 	memset(&desc, 0, sizeof(desc));
-	desc.base.type  = SPUD_STRUCT_TYPE_INPUT_INSTANCE_DESC;
+	desc.base.type  = CR_STRUCT_TYPE_INPUT_INSTANCE_DESC;
 	desc.allocator  = &allocator;
 	desc.native_api = api;
-#if SPUDINPUT_COMPILE_XINPUT || SPUDINPUT_COMPILE_EVDEV
+#if CRINPUT_COMPILE_XINPUT || CRINPUT_COMPILE_EVDEV
 	desc.read_in_background = true; /* these always read */
 #endif
-	spudinput_instance instance = NULL;
-	if (api == SPUDINPUT_NATIVE_API_NONE || spudinput_instance_create(&desc, &instance) != SPUD_SUCCESS) {
-		why = "no SpudInput instance in this build";
+	crinput_instance instance = NULL;
+	if (api == CRINPUT_NATIVE_API_NONE || crinput_instance_create(&desc, &instance) != CR_SUCCESS) {
+		why = "no CrInput instance in this build";
 		return NULL;
 	}
-	spudinput_instance_destroy(instance);
+	crinput_instance_destroy(instance);
 	return instance;''',
-    # ---- SpudNet
-    'spudnet_instance': r'''
-	spudnet_instance instance = make_net_instance();
+    # ---- CrNet
+    'crnet_instance': r'''
+	crnet_instance instance = make_net_instance();
 	if (instance)
-		spudnet_instance_destroy(instance);
+		crnet_instance_destroy(instance);
 	return instance;''',
-    'spudnet_resolver': r'''
-	spudnet_instance instance = make_net_instance();
+    'crnet_resolver': r'''
+	crnet_instance instance = make_net_instance();
 	if (!instance)
 		return NULL;
-	spudnet_resolver_desc desc;
+	crnet_resolver_desc desc;
 	memset(&desc, 0, sizeof(desc));
-	desc.base.type            = SPUD_STRUCT_TYPE_NET_RESOLVER_DESC;
+	desc.base.type            = CR_STRUCT_TYPE_NET_RESOLVER_DESC;
 	desc.host                 = "localhost";
-	spudnet_resolver resolver = NULL;
-	if (spudnet_resolver_create(instance, &desc, &resolver) == SPUD_SUCCESS) {
+	crnet_resolver resolver = NULL;
+	if (crnet_resolver_create(instance, &desc, &resolver) == CR_SUCCESS) {
 		/* Run once, aborted first so that it returns at once, and
 		 * destroyed: then it is freed. */
-		spudnet_resolver_abort(resolver);
-		spudnet_resolver_run(resolver);
-		spudnet_resolver_destroy(resolver);
+		crnet_resolver_abort(resolver);
+		crnet_resolver_run(resolver);
+		crnet_resolver_destroy(resolver);
 	} else {
-		why = "spudnet_resolver_create failed";
+		why = "crnet_resolver_create failed";
 	}
-	spudnet_instance_destroy(instance);
+	crnet_instance_destroy(instance);
 	return resolver;''',
-    'spudnet_tcp_listener': r'''
-	spudnet_instance instance = make_net_instance();
+    'crnet_tcp_listener': r'''
+	crnet_instance instance = make_net_instance();
 	if (!instance)
 		return NULL;
-	spudnet_tcp_listener_desc desc;
+	crnet_tcp_listener_desc desc;
 	memset(&desc, 0, sizeof(desc));
-	desc.base.type                = SPUD_STRUCT_TYPE_NET_TCP_LISTENER_DESC;
+	desc.base.type                = CR_STRUCT_TYPE_NET_TCP_LISTENER_DESC;
 	desc.address                  = "127.0.0.1";
 	desc.backlog                  = 1;
-	spudnet_tcp_listener listener = NULL;
-	if (spudnet_tcp_listener_create(instance, &desc, &listener, NULL) == SPUD_SUCCESS)
-		spudnet_tcp_listener_destroy(listener);
+	crnet_tcp_listener listener = NULL;
+	if (crnet_tcp_listener_create(instance, &desc, &listener, NULL) == CR_SUCCESS)
+		crnet_tcp_listener_destroy(listener);
 	else
 		why = "no loopback listener";
-	spudnet_instance_destroy(instance);
+	crnet_instance_destroy(instance);
 	return listener;''',
-    'spudnet_tcp_socket': r'''
-	spudnet_instance instance = make_net_instance();
+    'crnet_tcp_socket': r'''
+	crnet_instance instance = make_net_instance();
 	if (!instance)
 		return NULL;
-	spudnet_tcp_socket socket = NULL;
-	if (spudnet_tcp_socket_create(instance, &socket) == SPUD_SUCCESS)
-		spudnet_tcp_socket_destroy(socket);
+	crnet_tcp_socket socket = NULL;
+	if (crnet_tcp_socket_create(instance, &socket) == CR_SUCCESS)
+		crnet_tcp_socket_destroy(socket);
 	else
-		why = "spudnet_tcp_socket_create failed";
-	spudnet_instance_destroy(instance);
+		why = "crnet_tcp_socket_create failed";
+	crnet_instance_destroy(instance);
 	return socket;''',
-    'spudnet_http_client': r'''
-	spudnet_instance instance = make_net_instance();
+    'crnet_http_client': r'''
+	crnet_instance instance = make_net_instance();
 	if (!instance)
 		return NULL;
-	spudnet_http_client client = make_http_client(instance);
+	crnet_http_client client = make_http_client(instance);
 	if (client)
-		spudnet_http_client_destroy(client);
-	spudnet_instance_destroy(instance);
+		crnet_http_client_destroy(client);
+	crnet_instance_destroy(instance);
 	return client;''',
-    'spudnet_http_transfer': r'''
-	spudnet_instance instance = make_net_instance();
+    'crnet_http_transfer': r'''
+	crnet_instance instance = make_net_instance();
 	if (!instance)
 		return NULL;
-	spudnet_http_client client     = make_http_client(instance);
-	spudnet_http_transfer transfer = NULL;
+	crnet_http_client client     = make_http_client(instance);
+	crnet_http_transfer transfer = NULL;
 	if (client) {
-		if (spudnet_http_transfer_create(client, &transfer) == SPUD_SUCCESS)
-			spudnet_http_transfer_destroy(transfer);
+		if (crnet_http_transfer_create(client, &transfer) == CR_SUCCESS)
+			crnet_http_transfer_destroy(transfer);
 		else
-			why = "spudnet_http_transfer_create failed";
-		spudnet_http_client_destroy(client);
+			why = "crnet_http_transfer_create failed";
+		crnet_http_client_destroy(client);
 	}
-	spudnet_instance_destroy(instance);
+	crnet_instance_destroy(instance);
 	return transfer;''',
-    'spudnet_websocket': r'''
-	spudnet_instance instance = make_net_instance();
+    'crnet_websocket': r'''
+	crnet_instance instance = make_net_instance();
 	if (!instance)
 		return NULL;
-	spudnet_websocket socket = NULL;
-	if (spudnet_websocket_create(instance, &socket) == SPUD_SUCCESS)
-		spudnet_websocket_destroy(socket);
+	crnet_websocket socket = NULL;
+	if (crnet_websocket_create(instance, &socket) == CR_SUCCESS)
+		crnet_websocket_destroy(socket);
 	else
-		why = "spudnet_websocket_create failed (no WebSocket in this build)";
-	spudnet_instance_destroy(instance);
+		why = "crnet_websocket_create failed (no WebSocket in this build)";
+	crnet_instance_destroy(instance);
 	return socket;''',
-    'spudnet_wait_set': r'''
-	spudnet_instance instance = make_net_instance();
+    'crnet_wait_set': r'''
+	crnet_instance instance = make_net_instance();
 	if (!instance)
 		return NULL;
-	spudnet_wait_set set = NULL;
-	if (spudnet_wait_set_create(instance, &set, NULL) == SPUD_SUCCESS)
-		spudnet_wait_set_destroy(set);
+	crnet_wait_set set = NULL;
+	if (crnet_wait_set_create(instance, &set, NULL) == CR_SUCCESS)
+		crnet_wait_set_destroy(set);
 	else
-		why = "spudnet_wait_set_create failed";
-	spudnet_instance_destroy(instance);
+		why = "crnet_wait_set_create failed";
+	crnet_instance_destroy(instance);
 	return set;''',
 }
 

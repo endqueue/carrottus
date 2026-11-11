@@ -1,4 +1,4 @@
-// S12's step 0 (SPUDGPU_DEVICE_TODO.md, "Hardware ray tracing"): a shadow
+// S12's step 0 (CRGPU_DEVICE_TODO.md, "Hardware ray tracing"): a shadow
 // ray from a fragment shader, the way ray-traced shadows trace. The ray
 // leaves the fragment's world position toward the light and stops at the
 // first hit anywhere along it (RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, as a
@@ -7,8 +7,8 @@
 // nothing is; alpha is 1.
 //
 // Bindings, the same on every target: set 0 binding 0 is the top level; the
-// push constants are SpudGPU's block (D3D12: b0 in space
-// SPUDGPU_MAX_DESCRIPTOR_SET_LAYOUTS, 4). The world position arrives at
+// push constants are Carrottus GPU's block (D3D12: b0 in space
+// CRGPU_MAX_DESCRIPTOR_SET_LAYOUTS, 4). The world position arrives at
 // location 0 (TEXCOORD0).
 
 struct RqShadowParams {
