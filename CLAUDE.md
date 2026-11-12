@@ -1499,9 +1499,14 @@ evening on the Mac (Known gaps below, `CRGPU_DEVICE_TODO.md`).
   between polls, and plays `FF_RUMBLE` in 2-second plays that each poll past
   a second renews. `crinput_test` passes on Fedora 44 with an Xbox Series
   X|S controller (xpad) connected: its name, ids, buttons, axes, analog
-  triggers and rumble were found and its state at rest read. Pressing
-  buttons, moving sticks and rumble have not been checked by anyone holding
-  it. Battery and lights were added the same day, from sysfs under the
+  triggers and rumble were found and its state at rest read. Held and
+  pressed on 2026-11-12 (Fedora 44, xpad, over USB), read by a checker over
+  this module's calls: all 15 buttons went down as their bits (the d-pad
+  from xpad's hat, Menu and the Xbox button included), each stick reached
+  -1 and +1 on both axes and each trigger 0 to 1, and both grip motors
+  ran at full and stopped, felt by the user (`CR_SUCCESS` on each call; no
+  trigger motors, which xpad doesn't drive). Labels came back empty, the
+  controller not reporting `CRINPUT_GAMEPAD_FEATURE_LABELS`. Battery and lights were added the same day, from sysfs under the
   node's input device and the device above it: the first `power_supply` of
   type Battery (files kept open, `pread` from 0 at each poll; `capacity`,
   else `capacity_level` as 5 steps), a multicolor LED with red, green and
