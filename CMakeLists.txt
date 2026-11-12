@@ -340,6 +340,13 @@ if(NOT TARGET carrottus)
         target_link_libraries(carrottus PRIVATE shlwapi ws2_32 winhttp crypt32 bcrypt)
     elseif (UNIX AND NOT APPLE)
         target_compile_definitions(carrottus PUBLIC CARROTTUS_PLATFORM_LINUX=1)
+        # glibc's extensions (pread, pwrite, st_mtim, renameat2 and
+        # RENAME_NOREPLACE for CrFiles' POSIX backend) are declared only
+        # under _GNU_SOURCE, which must be set before the first system
+        # header. A #define in a source file comes too late: the
+        # precompiled header (crgpu.h, below) is read ahead of it and pulls
+        # in stdio.h. PRIVATE: it is this library's build, not its callers'.
+        target_compile_definitions(carrottus PRIVATE _GNU_SOURCE)
         # CrNet's HTTP and WebSocket clients (and its instance): libcurl4-openssl-dev /
         # libcurl-devel, and pthreads for the WebSocket's lock. All of CrNet
         # needs libcurl 7.84 or later: a crnet_instance may be made while

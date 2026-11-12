@@ -1,8 +1,8 @@
 #if CARROTTUS_PLATFORM_LINUX || CARROTTUS_PLATFORM_APPLE
 
-#if CARROTTUS_PLATFORM_LINUX && !defined(_GNU_SOURCE)
-#define _GNU_SOURCE // pread, pwrite, the st_mtim member, renameat2
-#endif
+// On Linux, pread, pwrite, the st_mtim member and renameat2 need
+// _GNU_SOURCE, which CMakeLists.txt sets for the whole target: a #define
+// here would come after the precompiled header's system headers.
 
 #include "../../crfilesshared.h"
 
