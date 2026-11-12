@@ -196,6 +196,9 @@ static CR_RESULT crgpumetal___internal_list_adapters(crgpu_instance_metal *insta
 		}
 		adapter->head.allocator = instance->head.allocator;
 		CR_BIRTH(adapter);
+#if _DEBUG
+		adapter->_debug_instance = instance;
+#endif
 		adapter->_device_mtl    = [mtl_devices[i] retain];
 		atomic_init(&adapter->_in_use, false);
 		crgpumetal___internal_read_adapter_facts(adapter);
@@ -220,6 +223,7 @@ CR_RESULT crgpu_instance_create(
 		return CR_RESULT_OUT_OF_MEMORY;
 	instance->head.allocator = *desc->allocator;
 	CR_BIRTH(instance);
+	CR_QUARANTINE_INIT(&instance->_quarantine, &instance->head.allocator);
 
 	const CR_RESULT list_sr = crgpumetal___internal_list_adapters(instance);
 	if (list_sr != CR_SUCCESS) {
@@ -238,6 +242,7 @@ CR_RESULT crgpu_instance_destroy(crgpu_instance instance) {
 		return CR_SUCCESS;
 	crgpumetal___internal_destroy_adapters(instance);
 	CR_KILL(instance);
+	CR_QUARANTINE_RELEASE(&instance->_quarantine);
 	const CR_ALLOCATOR allocator = instance->head.allocator;
 	cr_string_free(&allocator, instance->head.debug_name);
 	CR_DELETE(&allocator, crgpu_instance_metal, instance);
@@ -350,10 +355,14 @@ static void crgpumetal___internal_free_device(crgpu_device_metal *device, bool b
 	if (budget_made)
 		crgpu___internal_budget_destroy(&device->_budget);
 	[device->_device_mtl release];
-	atomic_store(&device->_adapter->_in_use, false);
+	// Every object made from the device is gone (the caller destroys them
+	// first), so nothing retires into its quarantine any more.
+	CR_QUARANTINE_RELEASE(&device->_quarantine);
+	crgpu_adapter_metal *adapter = device->_adapter;
 	const CR_ALLOCATOR allocator = device->head.allocator;
 	cr_string_free(&allocator, device->head.debug_name);
-	CR_DELETE(&allocator, crgpu_device_metal, device);
+	CR_RETIRE(CR_QUARANTINE_OF(device), &allocator, crgpu_device_metal, device);
+	atomic_store(&adapter->_in_use, false);
 }
 
 CR_RESULT crgpu_device_create(
@@ -377,7 +386,8 @@ CR_RESULT crgpu_device_create(
 		return CR_RESULT_OUT_OF_MEMORY;
 	}
 	device->head.allocator = adapter->head.allocator;
-	CR_BIRTH(device);
+	CR_BIRTH_IN(device, &adapter->_debug_instance->_quarantine);
+	CR_QUARANTINE_INIT(&device->_quarantine, &device->head.allocator);
 	device->_adapter       = adapter;
 	device->_device_mtl    = [adapter->_device_mtl retain];
 	device->_features      = desc->required_features;

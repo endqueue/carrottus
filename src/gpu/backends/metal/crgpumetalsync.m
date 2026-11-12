@@ -40,7 +40,7 @@ CR_RESULT crgpu_fence_create(
 		goto failedattempt;
 	}
 	fence_metal->head.allocator = device->head.allocator;
-	CR_BIRTH(fence_metal);
+	CR_BIRTH_IN(fence_metal, &device->_quarantine);
 	fence_metal->_parent_device = (crgpu_device_metal *)device;
 	fence_metal->_flags         = flags;
 
@@ -78,7 +78,7 @@ void crgpu_fence_destroy(crgpu_fence fence) {
 		CR_KILL(fence);
 		const CR_ALLOCATOR allocator = fence_metal->head.allocator;
 		cr_string_free(&allocator, fence_metal->head.debug_name);
-		CR_DELETE(&allocator, crgpu_fence_metal, fence_metal);
+		CR_RETIRE(CR_QUARANTINE_OF(fence_metal), &allocator, crgpu_fence_metal, fence_metal);
 	}
 }
 
@@ -228,7 +228,7 @@ CR_RESULT crgpu_semaphore_create(
 		goto failedattempt;
 	}
 	semaphore_metal->head.allocator = device->head.allocator;
-	CR_BIRTH(semaphore_metal);
+	CR_BIRTH_IN(semaphore_metal, &device->_quarantine);
 	semaphore_metal->_parent_device = (crgpu_device_metal *)device;
 
 	semaphore_metal->_event_mtl = [semaphore_metal->_parent_device->_device_mtl newEvent];
@@ -259,7 +259,7 @@ void crgpu_semaphore_destroy(crgpu_semaphore semaphore) {
 		CR_KILL(semaphore);
 		const CR_ALLOCATOR allocator = semaphore_metal->head.allocator;
 		cr_string_free(&allocator, semaphore_metal->head.debug_name);
-		CR_DELETE(&allocator, crgpu_semaphore_metal, semaphore_metal);
+		CR_RETIRE(CR_QUARANTINE_OF(semaphore_metal), &allocator, crgpu_semaphore_metal, semaphore_metal);
 	}
 }
 

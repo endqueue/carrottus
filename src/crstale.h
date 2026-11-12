@@ -47,7 +47,7 @@
 //   command allocators and lists, fences, semaphores, timestamp sets,
 //   acceleration structures, swap chains and the back-buffer images and
 //   views a swap chain releases): the device. A device and a surface: their
-//   instance. (Vulkan and D3D12; the Metal backend still frees at once.)
+//   instance. (Every backend: Vulkan, D3D12 and Metal.)
 // - Carrottus Files: a file, a listing, a mapping and a library: their instance.
 // - Carrottus Net: a TCP listener or socket (an accepted one too), an HTTP
 //   client and its transfers, a WebSocket, a wait set: their instance.

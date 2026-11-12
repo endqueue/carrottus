@@ -40,6 +40,10 @@ static void crgpumetal___internal_destroy_swap_chain(crgpu_swap_chain_metal *swa
 		return;
 	// Everything below was made through the swap chain's allocator.
 	const CR_ALLOCATOR allocator = swap_chain_metal->head.allocator;
+	// A destroyed swap chain's semaphores, fence, images and views go to its
+	// device's quarantine with it (crstale.h); NULL on a create's failure
+	// path, which frees them at once.
+	CR_QUARANTINE_KEEP(quarantine, swap_chain_metal);
 	if (swap_chain_metal->_current_drawable) {
 		[swap_chain_metal->_current_drawable release];
 	}
@@ -49,7 +53,7 @@ static void crgpumetal___internal_destroy_swap_chain(crgpu_swap_chain_metal *swa
 			[swap_chain_metal->_image_available_semaphore->_event_mtl release];
 		}
 		cr_string_free(&allocator, swap_chain_metal->_image_available_semaphore->head.debug_name);
-		CR_DELETE(&allocator, crgpu_semaphore_metal, swap_chain_metal->_image_available_semaphore);
+		CR_RETIRE(quarantine, &allocator, crgpu_semaphore_metal, swap_chain_metal->_image_available_semaphore);
 	}
 	if (swap_chain_metal->_render_finished_semaphore) {
 		CR_KILL(swap_chain_metal->_render_finished_semaphore);
@@ -57,7 +61,7 @@ static void crgpumetal___internal_destroy_swap_chain(crgpu_swap_chain_metal *swa
 			[swap_chain_metal->_render_finished_semaphore->_event_mtl release];
 		}
 		cr_string_free(&allocator, swap_chain_metal->_render_finished_semaphore->head.debug_name);
-		CR_DELETE(&allocator, crgpu_semaphore_metal, swap_chain_metal->_render_finished_semaphore);
+		CR_RETIRE(quarantine, &allocator, crgpu_semaphore_metal, swap_chain_metal->_render_finished_semaphore);
 	}
 	if (swap_chain_metal->_in_flight_fence) {
 		CR_KILL(swap_chain_metal->_in_flight_fence);
@@ -65,7 +69,7 @@ static void crgpumetal___internal_destroy_swap_chain(crgpu_swap_chain_metal *swa
 			[swap_chain_metal->_in_flight_fence->_shared_event_mtl release];
 		}
 		cr_string_free(&allocator, swap_chain_metal->_in_flight_fence->head.debug_name);
-		CR_DELETE(&allocator, crgpu_fence_metal, swap_chain_metal->_in_flight_fence);
+		CR_RETIRE(quarantine, &allocator, crgpu_fence_metal, swap_chain_metal->_in_flight_fence);
 	}
 	if (swap_chain_metal->_back_buffer_images) {
 		CR_KILL(swap_chain_metal->_back_buffer_images);
@@ -75,13 +79,13 @@ static void crgpumetal___internal_destroy_swap_chain(crgpu_swap_chain_metal *swa
 		CR_KILL(swap_chain_metal->_back_buffer_image_views);
 		cr_string_free(&allocator, swap_chain_metal->_back_buffer_image_views->head.debug_name);
 	}
-	CR_DELETE_ARRAY(
-	    &allocator, crgpu_image_metal, swap_chain_metal->_back_buffer_images, swap_chain_metal->_desc.buffer_count);
-	CR_DELETE_ARRAY(
-	    &allocator, crgpu_image_view_metal, swap_chain_metal->_back_buffer_image_views,
+	CR_RETIRE_ARRAY(
+	    quarantine, &allocator, crgpu_image_metal, swap_chain_metal->_back_buffer_images, swap_chain_metal->_desc.buffer_count);
+	CR_RETIRE_ARRAY(
+	    quarantine, &allocator, crgpu_image_view_metal, swap_chain_metal->_back_buffer_image_views,
 	    swap_chain_metal->_desc.buffer_count);
 	cr_string_free(&allocator, swap_chain_metal->head.debug_name);
-	CR_DELETE(&allocator, crgpu_swap_chain_metal, swap_chain_metal);
+	CR_RETIRE(quarantine, &allocator, crgpu_swap_chain_metal, swap_chain_metal);
 }
 
 CR_RESULT crgpu_surface_create(
@@ -106,7 +110,7 @@ CR_RESULT crgpu_surface_create(
 		goto failedattempt;
 	}
 	surface_metal->head.allocator   = instance->head.allocator;
-	CR_BIRTH(surface_metal);
+	CR_BIRTH_IN(surface_metal, &instance->_quarantine);
 	surface_metal->_parent_instance = (crgpu_instance_metal *)instance;
 	surface_metal->_window_handle   = window_handle;
 	surface_metal->_display_handle  = display_handle;
@@ -133,7 +137,7 @@ void crgpu_surface_destroy(crgpu_surface surface) {
 		CR_KILL(surface);
 		const CR_ALLOCATOR allocator = surface_metal->head.allocator;
 		cr_string_free(&allocator, surface_metal->head.debug_name);
-		CR_DELETE(&allocator, crgpu_surface_metal, surface_metal);
+		CR_RETIRE(CR_QUARANTINE_OF(surface_metal), &allocator, crgpu_surface_metal, surface_metal);
 	}
 }
 
@@ -215,7 +219,7 @@ CR_RESULT crgpu_swap_chain_create(
 		goto failedattempt;
 	}
 	swap_chain_metal->head.allocator    = device->head.allocator;
-	CR_BIRTH(swap_chain_metal);
+	CR_BIRTH_IN(swap_chain_metal, &device->_quarantine);
 	swap_chain_metal->_parent_device    = (crgpu_device_metal *)device;
 	swap_chain_metal->_desc             = *desc;
 	swap_chain_metal->_desc.buffer_count = 1; // Truthful, not the caller's raw request - see above.

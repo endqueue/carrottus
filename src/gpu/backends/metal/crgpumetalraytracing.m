@@ -223,7 +223,7 @@ static void crgpumetal___rq_release(crgpu_acceleration_structure_metal *structur
 		CR_DELETE_ARRAY(&allocator, id<MTLResource>, structure->_bottom_levels_mtl, structure->_state.max_bottom_levels);
 	crgpu___internal_acceleration_structure_state_free(&structure->_state, &allocator);
 	cr_string_free(&allocator, structure->head.debug_name);
-	CR_DELETE(&allocator, crgpu_acceleration_structure_metal, structure);
+	CR_RETIRE(CR_QUARANTINE_OF(structure), &allocator, crgpu_acceleration_structure_metal, structure);
 }
 
 // crgpu_acceleration_structure_create and the placed one after their
@@ -240,7 +240,7 @@ static CR_RESULT crgpumetal___rq_create(
 	if (!structure)
 		return CR_RESULT_OUT_OF_MEMORY;
 	structure->head.allocator = *allocator;
-	CR_BIRTH(structure);
+	CR_BIRTH_IN(structure, &device->_quarantine);
 	structure->_parent_device = device;
 	structure->_heap          = (crgpu_heap)heap;
 	if (!crgpu___internal_acceleration_structure_state_init(&structure->_state, &structure->head.allocator, desc)) {

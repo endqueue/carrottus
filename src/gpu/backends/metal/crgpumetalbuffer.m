@@ -78,7 +78,7 @@ CR_RESULT crgpu_buffer_create(
 		goto failedattempt;
 	}
 	buffer_metal->head.allocator = device_metal->head.allocator;
-	CR_BIRTH(buffer_metal);
+	CR_BIRTH_IN(buffer_metal, &device_metal->_quarantine);
 	buffer_metal->_parent_device = device_metal;
 	buffer_metal->_desc          = *desc;
 
@@ -122,7 +122,7 @@ void crgpu_buffer_destroy(crgpu_buffer buffer) {
 		CR_KILL(buffer);
 		const CR_ALLOCATOR allocator = buffer_metal->head.allocator;
 		cr_string_free(&allocator, buffer_metal->head.debug_name);
-		CR_DELETE(&allocator, crgpu_buffer_metal, buffer_metal);
+		CR_RETIRE(CR_QUARANTINE_OF(buffer_metal), &allocator, crgpu_buffer_metal, buffer_metal);
 	}
 }
 CR_RESULT crgpu_buffer_get_desc(
@@ -187,7 +187,7 @@ CR_RESULT crgpu_buffer_view_create(
 		goto failedattempt;
 	}
 	result->head.allocator      = parent_buffer_metal->head.allocator;
-	CR_BIRTH(result);
+	CR_BIRTH_IN(result, &parent_buffer_metal->_parent_device->_quarantine);
 	result->_desc               = *desc;
 	result->_desc.parent_buffer = buffer; // Authoritative - see crgpu_buffer_view_metal.
 	result->_parent_device      = parent_buffer_metal->_parent_device;
@@ -210,7 +210,7 @@ void crgpu_buffer_view_destroy(crgpu_buffer_view buffer_view) {
 	CR_KILL(buffer_view);
 	const CR_ALLOCATOR allocator = buffer_view->head.allocator;
 	cr_string_free(&allocator, buffer_view->head.debug_name);
-	CR_DELETE(&allocator, crgpu_buffer_view_metal, buffer_view);
+	CR_RETIRE(CR_QUARANTINE_OF(buffer_view), &allocator, crgpu_buffer_view_metal, buffer_view);
 }
 CR_RESULT crgpu_buffer_view_get_desc(
     crgpu_buffer_view buffer_view,

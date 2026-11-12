@@ -187,7 +187,7 @@ CR_RESULT crgpu_command_allocator_create(
 	if (!allocator_metal)
 		return CR_RESULT_OUT_OF_MEMORY;
 	allocator_metal->head.allocator = device->head.allocator;
-	CR_BIRTH(allocator_metal);
+	CR_BIRTH_IN(allocator_metal, &device->_quarantine);
 	allocator_metal->_parent_device = (crgpu_device_metal *)device;
 	allocator_metal->_desc          = *desc;
 	allocator_metal->_parent_queue  = queue;
@@ -207,7 +207,7 @@ void crgpu_command_allocator_destroy(crgpu_command_allocator allocator) {
 		CR_KILL(allocator);
 		const CR_ALLOCATOR memory_allocator = allocator_metal->head.allocator;
 		cr_string_free(&memory_allocator, allocator_metal->head.debug_name);
-		CR_DELETE(&memory_allocator, crgpu_command_allocator_metal, allocator_metal);
+		CR_RETIRE(CR_QUARANTINE_OF(allocator_metal), &memory_allocator, crgpu_command_allocator_metal, allocator_metal);
 	}
 }
 
@@ -249,7 +249,7 @@ CR_RESULT crgpu_command_list_create(
 		goto failedattempt;
 	}
 	cmd_list_metal->head.allocator    = allocator->head.allocator;
-	CR_BIRTH(cmd_list_metal);
+	CR_BIRTH_IN(cmd_list_metal, &allocator->_parent_device->_quarantine);
 	cmd_list_metal->_parent_allocator = (crgpu_command_allocator_metal *)allocator;
 
 	cmd_list_metal->_pass_desc_mtl = [[MTLRenderPassDescriptor alloc] init];
@@ -312,7 +312,7 @@ void crgpu_command_list_destroy(crgpu_command_list cmd) {
 		CR_KILL(cmd);
 		const CR_ALLOCATOR allocator = cmd_list_metal->head.allocator;
 		cr_string_free(&allocator, cmd_list_metal->head.debug_name);
-		CR_DELETE(&allocator, crgpu_command_list_metal, cmd_list_metal);
+		CR_RETIRE(CR_QUARANTINE_OF(cmd_list_metal), &allocator, crgpu_command_list_metal, cmd_list_metal);
 	}
 }
 

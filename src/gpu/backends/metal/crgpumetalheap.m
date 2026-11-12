@@ -138,7 +138,7 @@ CR_RESULT crgpu_heap_create(
 	if (!heap)
 		return CR_RESULT_OUT_OF_MEMORY;
 	heap->head.allocator        = device_metal->head.allocator;
-	CR_BIRTH(heap);
+	CR_BIRTH_IN(heap, &device_metal->_quarantine);
 	heap->_parent_device        = device_metal;
 	heap->_desc                 = *desc;
 	heap->_resource_options_mtl =
@@ -185,7 +185,7 @@ void crgpu_heap_destroy(crgpu_heap heap) {
 	const CR_ALLOCATOR allocator = heap_metal->head.allocator;
 	cr_string_free(&allocator, heap_metal->head.debug_name);
 	[heap_metal->_heap_mtl release];
-	CR_DELETE(&allocator, crgpu_heap_metal, heap_metal);
+	CR_RETIRE(CR_QUARANTINE_OF(heap_metal), &allocator, crgpu_heap_metal, heap_metal);
 }
 
 CR_RESULT crgpu_heap_get_desc(
@@ -296,7 +296,7 @@ CR_RESULT crgpu_buffer_create_placed(
 	if (!buffer_metal)
 		return CR_RESULT_OUT_OF_MEMORY;
 	buffer_metal->head.allocator = heap_metal->head.allocator;
-	CR_BIRTH(buffer_metal);
+	CR_BIRTH_IN(buffer_metal, &heap_metal->_parent_device->_quarantine);
 	buffer_metal->_parent_device = heap_metal->_parent_device;
 	buffer_metal->_desc          = *desc;
 	buffer_metal->_buffer_mtl    = [heap_metal->_heap_mtl newBufferWithLength:(NSUInteger)desc->size
@@ -363,7 +363,7 @@ CR_RESULT crgpu_image_create_placed(
 		return CR_RESULT_OUT_OF_MEMORY;
 	}
 	image_metal->head.allocator = heap_metal->head.allocator;
-	CR_BIRTH(image_metal);
+	CR_BIRTH_IN(image_metal, &heap_metal->_parent_device->_quarantine);
 	image_metal->_parent_device = heap_metal->_parent_device;
 	image_metal->_desc          = *desc;
 	image_metal->_texture_mtl   = [heap_metal->_heap_mtl newTextureWithDescriptor:texture_desc offset:(NSUInteger)offset];

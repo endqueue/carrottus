@@ -145,7 +145,7 @@ CR_RESULT crgpu_image_create(
 		goto failedattempt;
 	}
 	image_metal->head.allocator = device_metal->head.allocator;
-	CR_BIRTH(image_metal);
+	CR_BIRTH_IN(image_metal, &device_metal->_quarantine);
 	image_metal->_parent_device = device_metal;
 	image_metal->_desc          = *desc;
 
@@ -192,7 +192,7 @@ void crgpu_image_destroy(crgpu_image image) {
 		CR_KILL(image);
 		const CR_ALLOCATOR allocator = image_metal->head.allocator;
 		cr_string_free(&allocator, image_metal->head.debug_name);
-		CR_DELETE(&allocator, crgpu_image_metal, image_metal);
+		CR_RETIRE(CR_QUARANTINE_OF(image_metal), &allocator, crgpu_image_metal, image_metal);
 	}
 }
 
@@ -287,7 +287,7 @@ CR_RESULT crgpu_image_view_create(
 		goto failedattempt;
 	}
 	view_metal->head.allocator     = parent_image_metal->head.allocator;
-	CR_BIRTH(view_metal);
+	CR_BIRTH_IN(view_metal, &parent_image_metal->_parent_device->_quarantine);
 	view_metal->_parent_image      = parent_image_metal;
 	view_metal->_parent_device     = parent_image_metal->_parent_device;
 	view_metal->_desc              = *desc;
@@ -340,7 +340,7 @@ void crgpu_image_view_destroy(crgpu_image_view image_view) {
 		CR_KILL(image_view);
 		const CR_ALLOCATOR allocator = view_metal->head.allocator;
 		cr_string_free(&allocator, view_metal->head.debug_name);
-		CR_DELETE(&allocator, crgpu_image_view_metal, view_metal);
+		CR_RETIRE(CR_QUARANTINE_OF(view_metal), &allocator, crgpu_image_view_metal, view_metal);
 	}
 }
 

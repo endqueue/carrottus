@@ -106,7 +106,7 @@ CR_RESULT crgpu_sampler_create(
 		return CR_RESULT_OUT_OF_MEMORY;
 	}
 	sampler_metal->head.allocator     = device_metal->head.allocator;
-	CR_BIRTH(sampler_metal);
+	CR_BIRTH_IN(sampler_metal, &device_metal->_quarantine);
 	sampler_metal->_sampler_state_mtl = [state retain];
 	sampler_metal->_parent_device     = device_metal;
 	CRGPU___LIVE_ADD(&device_metal->_live, CRGPU___OBJECT_SAMPLER);
@@ -131,7 +131,7 @@ void crgpu_sampler_destroy(crgpu_sampler sampler) {
 	CR_KILL(sampler);
 	const CR_ALLOCATOR allocator = sampler_metal->head.allocator;
 	cr_string_free(&allocator, sampler_metal->head.debug_name);
-	CR_DELETE(&allocator, crgpu_sampler_metal, sampler_metal);
+	CR_RETIRE(CR_QUARANTINE_OF(sampler_metal), &allocator, crgpu_sampler_metal, sampler_metal);
 }
 
 static MTLBindingAccess crgpumetal___internal_descriptor_argument_access(CRGPU_DESCRIPTOR_TYPE type) {
@@ -196,7 +196,7 @@ CR_RESULT crgpu_descriptor_set_layout_create(
 		goto failedattempt;
 	}
 	layout_metal->head.allocator = device->head.allocator;
-	CR_BIRTH(layout_metal);
+	CR_BIRTH_IN(layout_metal, &device->_quarantine);
 	layout_metal->_parent_device = (crgpu_device_metal *)device;
 	layout_metal->_desc          = *desc;
 
@@ -309,7 +309,7 @@ void crgpu_descriptor_set_layout_destroy(crgpu_descriptor_set_layout layout) {
 		CR_KILL(layout);
 		const CR_ALLOCATOR allocator = layout_metal->head.allocator;
 		cr_string_free(&allocator, layout_metal->head.debug_name);
-		CR_DELETE(&allocator, crgpu_descriptor_set_layout_metal, layout_metal);
+		CR_RETIRE(CR_QUARANTINE_OF(layout_metal), &allocator, crgpu_descriptor_set_layout_metal, layout_metal);
 	}
 }
 
@@ -350,7 +350,7 @@ CR_RESULT crgpu_descriptor_pool_create(
 		goto failedattempt;
 	}
 	pool_metal->head.allocator      = device->head.allocator;
-	CR_BIRTH(pool_metal);
+	CR_BIRTH_IN(pool_metal, &device->_quarantine);
 	pool_metal->_parent_device      = (crgpu_device_metal *)device;
 	pool_metal->_desc               = *desc;
 	pool_metal->_budget_descriptors = budget_descriptors;
@@ -405,7 +405,7 @@ static void crgpumetal___internal_free_tracked_sets(crgpu_descriptor_pool_metal 
 		}
 		const CR_ALLOCATOR allocator = set_metal->head.allocator;
 		cr_string_free(&allocator, set_metal->head.debug_name);
-		CR_DELETE(&allocator, crgpu_descriptor_set_metal, set_metal);
+		CR_RETIRE(CR_QUARANTINE_OF(set_metal), &allocator, crgpu_descriptor_set_metal, set_metal);
 	}
 	pool_metal->_allocated_set_count = 0;
 }
@@ -432,7 +432,7 @@ void crgpu_descriptor_pool_destroy(crgpu_descriptor_pool pool) {
 	const CR_ALLOCATOR allocator = pool_metal->head.allocator;
 	CR_DELETE_ARRAY(&allocator, crgpu_descriptor_set_metal *, pool_metal->_tracked_sets_mtl, pool_metal->_desc.max_sets);
 	cr_string_free(&allocator, pool_metal->head.debug_name);
-	CR_DELETE(&allocator, crgpu_descriptor_pool_metal, pool_metal);
+	CR_RETIRE(CR_QUARANTINE_OF(pool_metal), &allocator, crgpu_descriptor_pool_metal, pool_metal);
 }
 
 CR_RESULT crgpu_descriptor_set_create(
@@ -473,7 +473,7 @@ CR_RESULT crgpu_descriptor_set_create(
 			return CR_RESULT_GPU_INTERNAL_DESCRIPTOR_SET_ALLOCATION_FAIL;
 
 		set_metal->head.allocator = pool_metal->head.allocator;
-		CR_BIRTH(set_metal);
+		CR_BIRTH_IN(set_metal, &pool_metal->_parent_device->_quarantine);
 		set_metal->_parent_pool   = pool_metal;
 		set_metal->_layout      = layout_metal;
 		set_metal->_argument_buffer_mtl =

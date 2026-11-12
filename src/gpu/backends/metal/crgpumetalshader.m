@@ -157,7 +157,7 @@ CR_RESULT crgpu_shader_module_create(
 	if (!module_metal)
 		return CR_RESULT_OUT_OF_MEMORY;
 	module_metal->head.allocator = device_metal->head.allocator;
-	CR_BIRTH(module_metal);
+	CR_BIRTH_IN(module_metal, &device_metal->_quarantine);
 	module_metal->_parent_device = device_metal;
 	module_metal->_desc          = *desc;
 	// The caller's pointers are borrowed for the call: neither is kept.
@@ -235,7 +235,7 @@ void crgpu_shader_module_destroy(crgpu_shader_module shader_module) {
 		CR_KILL(shader_module);
 		const CR_ALLOCATOR allocator = module_metal->head.allocator;
 		cr_string_free(&allocator, module_metal->head.debug_name);
-		CR_DELETE(&allocator, crgpu_shader_module_metal, module_metal);
+		CR_RETIRE(CR_QUARANTINE_OF(module_metal), &allocator, crgpu_shader_module_metal, module_metal);
 	}
 }
 
@@ -382,7 +382,7 @@ CR_RESULT crgpu_graphics_pipeline_create(
 		goto failedattempt;
 	}
 	pipeline_metal->head.allocator = device_metal->head.allocator;
-	CR_BIRTH(pipeline_metal);
+	CR_BIRTH_IN(pipeline_metal, &device_metal->_quarantine);
 	pipeline_metal->_parent_device = device_metal;
 	pipeline_metal->_desc          = *desc;
 
@@ -563,7 +563,7 @@ void crgpu_graphics_pipeline_destroy(crgpu_graphics_pipeline pipeline) {
 		CR_KILL(pipeline);
 		const CR_ALLOCATOR allocator = pipeline_metal->head.allocator;
 		cr_string_free(&allocator, pipeline_metal->head.debug_name);
-		CR_DELETE(&allocator, crgpu_shader_pipeline_metal, pipeline_metal);
+		CR_RETIRE(CR_QUARANTINE_OF(pipeline_metal), &allocator, crgpu_shader_pipeline_metal, pipeline_metal);
 	}
 }
 
@@ -602,7 +602,7 @@ CR_RESULT crgpu_compute_pipeline_create(
 		goto failedattempt;
 	}
 	pipeline_metal->head.allocator = device_metal->head.allocator;
-	CR_BIRTH(pipeline_metal);
+	CR_BIRTH_IN(pipeline_metal, &device_metal->_quarantine);
 	pipeline_metal->_parent_device = device_metal;
 	pipeline_metal->_desc          = *desc;
 	pipeline_metal->_local_size_x  = compute_module_metal->_workgroup_size_x;
@@ -671,7 +671,7 @@ void crgpu_compute_pipeline_destroy(crgpu_compute_pipeline pipeline) {
 		CR_KILL(pipeline);
 		const CR_ALLOCATOR allocator = pipeline_metal->head.allocator;
 		cr_string_free(&allocator, pipeline_metal->head.debug_name);
-		CR_DELETE(&allocator, crgpu_compute_pipeline_metal, pipeline_metal);
+		CR_RETIRE(CR_QUARANTINE_OF(pipeline_metal), &allocator, crgpu_compute_pipeline_metal, pipeline_metal);
 	}
 }
 

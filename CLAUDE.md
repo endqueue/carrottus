@@ -658,7 +658,10 @@ GameInput and evdev builds were not run.
   header doesn't say a stream goes before its instance). Release
   unchanged. Built and run on Windows (D3D12, Vulkan, WinHTTP, Winsock,
   files); the POSIX sockets, libcurl and URLSession halves are written,
-  not compiled; Metal and the audio backends still free at once. Still
+  not compiled; the audio backends still free at once. Metal's half
+  built and run on the Mac on 2026-11-11 (Apple M5 Pro): before it,
+  `crgpu_objects_test`'s quarantine case failed in every Debug build
+  there, a new buffer made in the dead one's block. Still
   best effort for a handle with no owner: the misuse harness keeps its
   own block-keeping allocator for those.
 - **Every handle starts with a `cr_object_head`** (`src/crallocator.h`): its

@@ -72,6 +72,11 @@ typedef struct crgpu_instance_t {
 	// frees them with itself.
 	crgpu_adapter *_adapters;
 	uint32_t _adapter_count;
+#if _DEBUG
+	// Its destroyed devices' and surfaces' blocks, freed with it
+	// (crstale.h, card X27).
+	cr_quarantine _quarantine;
+#endif
 } crgpu_instance_metal;
 
 typedef struct crgpu_adapter_t {
@@ -86,6 +91,11 @@ typedef struct crgpu_adapter_t {
 	// crgpu_device_destroy. The adapter is shared, hidden state, so this is
 	// Carrottus GPU's to guard.
 	atomic_bool _in_use;
+#if _DEBUG
+	// The instance that listed it, whose quarantine takes its destroyed
+	// devices (crstale.h, card X27).
+	struct crgpu_instance_t *_debug_instance;
+#endif
 } crgpu_adapter_metal;
 
 typedef struct crgpu_device_t {
@@ -114,6 +124,9 @@ typedef struct crgpu_device_t {
 	// Objects made from the device and not yet destroyed, by kind;
 	// crgpu_device_destroy reports and asserts on any left.
 	crgpu___live_objects _live;
+	// The blocks of the objects made from the device and destroyed, freed
+	// with it (crstale.h, card X27).
+	cr_quarantine _quarantine;
 #endif
 } crgpu_device_metal;
 

@@ -53,7 +53,7 @@ CR_RESULT crgpu_timestamp_set_create(
 	if (!set)
 		return CR_RESULT_OUT_OF_MEMORY;
 	set->head.allocator = device_metal->head.allocator;
-	CR_BIRTH(set);
+	CR_BIRTH_IN(set, &device_metal->_quarantine);
 
 	MTLCounterSampleBufferDescriptor *buffer_desc = [[MTLCounterSampleBufferDescriptor alloc] init];
 	id<MTLCounterSet> counter_set                 = crgpumetal___internal_timestamp_counter_set(device_metal->_device_mtl);
@@ -91,7 +91,7 @@ void crgpu_timestamp_set_destroy(crgpu_timestamp_set set) {
 	CR_KILL(set);
 	const CR_ALLOCATOR allocator = set_metal->head.allocator;
 	cr_string_free(&allocator, set_metal->head.debug_name);
-	CR_DELETE(&allocator, crgpu_timestamp_set_metal, set_metal);
+	CR_RETIRE(CR_QUARANTINE_OF(set_metal), &allocator, crgpu_timestamp_set_metal, set_metal);
 }
 
 void crgpu_command_list_reset_timestamps(
