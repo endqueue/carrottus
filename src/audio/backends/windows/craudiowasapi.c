@@ -5,6 +5,8 @@
 #include "../../../crstructbase.h"
 
 #define COBJMACROS
+// lpVtbl a pointer to const, so the watch's vtable is read-only data.
+#define CONST_VTABLE
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <audioclient.h>
@@ -803,7 +805,7 @@ static HRESULT STDMETHODCALLTYPE wasapi_watch_on_property_changed(IMMNotificatio
 	return S_OK;
 }
 
-static IMMNotificationClientVtbl wasapi_watch_vtbl = {
+static const IMMNotificationClientVtbl wasapi_watch_vtbl = {
     .QueryInterface         = wasapi_watch_query_interface,
     .AddRef                 = wasapi_watch_add_ref,
     .Release                = wasapi_watch_release,

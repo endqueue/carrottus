@@ -96,9 +96,10 @@ void crperf_get_ram_usage(
 
 uint64_t crperf_get_current_time_milliseconds() {
 #if CARROTTUS_PLATFORM_WIN32
-	static LARGE_INTEGER frequency;
-	if (frequency.QuadPart == 0)
-		QueryPerformanceFrequency(&frequency);
+	// Fixed at boot and read from shared memory, so asked each call rather
+	// than cached in a static.
+	LARGE_INTEGER frequency;
+	QueryPerformanceFrequency(&frequency);
 	LARGE_INTEGER counter;
 	QueryPerformanceCounter(&counter);
 	return (uint64_t)((counter.QuadPart * 1000) / frequency.QuadPart);
