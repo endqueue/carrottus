@@ -913,7 +913,8 @@ there (they now refuse, as the header says); a recording call and a
 submission allocated their converted arrays every time (now kept on the
 command list or queue: one allocation a submit on D3D12, six on Vulkan,
 before); Vulkan's swap chain desc reported the caller's image count, not
-its own (card S13 asks whether it should honour the caller's at all). The
+its own (card S13, decided 2026-11-12: the caller's count, refused outside
+the surface's range, with a query; `CRGPU_DEVICE_TODO.md`, not built). The
 75 Carrottus GPU calls no test made are made by `crgpu_objects_test` since that
 day (a drawn grid read back, every draw kind, placed resources, compute, a
 swap chain on a hidden window, the surface callback on Vulkan), on Windows

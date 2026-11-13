@@ -1012,6 +1012,32 @@ GPU's family (Apple's feature set tables). A translation, no policy: a
 caller compares its own sizes against it. Built when a caller first needs
 it, with the struct's ABI break listed then. Not built.
 
+## A swap chain's image count (card S13, decided 2026-11-12 with you: b)
+
+`crgpu_swap_chain_desc::buffer_count` is the caller's on every backend,
+refused where the surface can't take it, with a query to choose by:
+
+- `crgpu_surface_get_image_count_range(device, surface, &min, &max)`,
+  beside `crgpu_surface_get_present_scalings()`: Vulkan's
+  `VkSurfaceCapabilitiesKHR::minImageCount` and `maxImageCount` (0, no
+  limit, reported as `UINT32_MAX`); D3D12's flip model's 2 to
+  `DXGI_MAX_SWAP_CHAIN_BUFFERS` (16); Metal 1 to 1 while its backend takes
+  only 1 (`CAMetalLayer`'s `maximumDrawableCount` of 2 or 3 is the room if
+  it ever takes more).
+- Vulkan's `crgpu_swap_chain_create` asks for exactly `buffer_count`
+  (`minImageCount` in `VkSwapchainCreateInfoKHR`), no longer
+  `minImageCount + 1` (`crgpuvulkanswapchain.c`); a count outside the
+  range is refused with `CR_RESULT_DESC_INVALID_PARAMETERS` on every
+  backend, checked the same way and in the same order. The driver may
+  still make more images than asked (Vulkan's rule), which the desc's
+  getter already reports.
+- A draft for approval first (card X21): the new call, the contract change
+  of `buffer_count` (a listed break: a caller asking for fewer than its
+  surface's minimum now fails), its tests (the range on a hidden window's
+  surface on every adapter, a count past each end refused, the count got
+  back). Each caller asks the query and chooses (Rend's swap chain, the
+  samples, LatranPlayer, Linxer's hosts). Not built.
+
 ## Later, not in this change
 
 - **A polled "the adapters changed" call.** Recovery by a new instance is
