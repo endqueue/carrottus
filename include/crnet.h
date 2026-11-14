@@ -77,12 +77,13 @@ extern "C" {
  *   Nothing in one has a default: Carrottus Net never picks an address, a port, a
  *   backlog, a time limit or a size limit for the caller.
  * - Strings and buffers passed in are only read during the call.
- * - Every call returns at once or blocks the thread it was made on; Carrottus Net
- *   starts no thread and has no non-blocking mode
+ * - Every call returns at once or blocks the thread it was made on, for no
+ *   longer than its time limit; Carrottus Net starts no thread
  *   (@ref crnet_threads "Threads"). A call that can wait takes a time
- *   limit (@ref crnet_time "Time limits") and can be ended by the
- *   object's `_abort`, called while the wait is in progress
- *   (@ref crnet_aborting "Aborting").
+ *   limit (@ref crnet_time "Time limits"), and with CRNET_NO_WAIT never
+ *   waits: what has to wait for the other side is begun and left to go
+ *   on, and a later call carries it on. Every wait can be ended by the
+ *   object's `_abort` (@ref crnet_aborting "Aborting").
  * - Failures are CR_RESULT values: the general ones, and the
  *   `CR_RESULT_CRNET_*` group in crcore.h. What the platform itself
  *   reported behind one is kept and can be read back
@@ -206,7 +207,12 @@ extern "C" {
  *   how many there are, what they cost and when they end is not Carrottus Net's
  *   to decide. (The platform's HTTP stack has threads and queues of its
  *   own. They are the stack's, and nothing of the caller's, its allocator
- *   included, is called on them.)
+ *   included, is called on them.) A step begun and left
+ *   (@ref crnet_time "Time limits") goes on where the stack goes on by
+ *   itself - WinHTTP's and NSURLSession's threads, the system's TCP
+ *   connect - and otherwise in the caller's next call on the object:
+ *   libcurl moves only inside a call. Either way nothing of the caller's
+ *   runs anywhere but its own calls.
  * - Nothing here calls back. No function pointer is taken anywhere in this
  *   header, so no code of the caller's runs anywhere but where the caller
  *   called from.
@@ -363,6 +369,14 @@ typedef enum CRNET_ERROR_SIDE {
  * the libcurl it finds at run time lacks CURL_VERSION_THREADSAFE. Nothing
  * of Carrottus Net works on Linux without an instance, so that includes the TCP
  * sockets.
+ *
+ * Known problem, beside it: a Linux machine whose libcurl was built
+ * without the threaded resolver or c-ares (no CURL_VERSION_ASYNCHDNS) has
+ * TCP sockets and the resolver, but no HTTP or WebSocket. Such a libcurl
+ * looks names up inside the calls that drive it, blocking for as long as a
+ * name server takes, so crnet_http_client_create() and
+ * crnet_websocket_create() refuse it rather than let a call with
+ * CRNET_NO_WAIT wait.
  * @{
  */
 
@@ -460,7 +474,7 @@ void crnet_instance_destroy(crnet_instance instance);
  *
  * CRNET_NO_WAIT (0) means the call may not wait at all. It does whatever
  * can be done on the spot and returns CR_RESULT_NET_TIMED_OUT if that
- * is nothing:
+ * leaves its part undone:
  *
  * - crnet_tcp_socket_recv(), crnet_websocket_recv() and
  *   crnet_http_transfer_recv() hand over what has already arrived;
@@ -469,14 +483,42 @@ void crnet_instance_destroy(crnet_instance instance);
  *   come.
  * - crnet_tcp_socket_send() and crnet_http_transfer_send() send as much
  *   as will be taken right now.
- * - The calls that can't finish without the other side answering -
- *   crnet_tcp_socket_connect(), crnet_http_transfer_start(),
- *   crnet_websocket_connect(), and crnet_websocket_send() (a message
- *   half sent can't be taken back) - do nothing, change nothing and return
- *   CR_RESULT_NET_TIMED_OUT.
+ * - The calls that begin a step the other side has to answer -
+ *   crnet_tcp_socket_connect(), crnet_websocket_connect(),
+ *   crnet_http_transfer_start() - begin it and return; and
+ *   crnet_websocket_send() takes the whole message, or nothing when the
+ *   one before it hasn't gone yet. See "Steps" below.
  *
  * This is what replaces a non-blocking mode: a loop that can't stall (a
- * frame loop) passes CRNET_NO_WAIT.
+ * frame loop) passes CRNET_NO_WAIT to every call, and sleeps, when it has
+ * nothing to do, in crnet_wait_set_wait().
+ *
+ * @par Steps
+ * Four calls begin something the other side has to answer before it is
+ * done - a step: crnet_tcp_socket_connect() and crnet_websocket_connect()
+ * open a connection, crnet_http_transfer_start() gets a request out, and
+ * crnet_websocket_send() gets a message onto its connection. Each begins
+ * its step whatever its limit and waits for it no longer than the limit.
+ * When the limit runs out first it returns CR_RESULT_NET_TIMED_OUT and the
+ * step goes on; a later call carries it on, within that call's own limit,
+ * and returns how it ended:
+ *
+ * | Step begun by                | Carried on by                                                  |
+ * |------------------------------|----------------------------------------------------------------|
+ * | crnet_tcp_socket_connect()   | crnet_tcp_socket_connect_continue()                            |
+ * | crnet_websocket_connect()    | crnet_websocket_connect_continue()                             |
+ * | crnet_http_transfer_start()  | the next call in the order of use: _send or _receive_response |
+ * | crnet_websocket_send()       | the next crnet_websocket_send(), crnet_websocket_flush()       |
+ *
+ * Nothing has failed when a step is left going, and nothing of the
+ * caller's is held: what the step needs was copied by the call that began
+ * it. A caller that no longer wants it aborts the object or destroys it,
+ * which drops the step. No limit spans a step: each call has its own, and
+ * a caller with a deadline for the whole keeps it.
+ *
+ * So CR_RESULT_NET_TIMED_OUT, from any call in this header, means the same
+ * two things: the caller's limit is what ended the call, and the object is
+ * as usable as it was - calling again is in order.
  *
  * CRNET_WAIT_FOREVER means Carrottus Net sets no limit. The call still ends
  * when the network does - the operating system gives up on a connection
@@ -1051,7 +1093,8 @@ void crnet_tcp_listener_destroy(crnet_tcp_listener listener);
  * @brief One connection, from either side.
  *
  * Calls made on a socket that isn't connected (before connect has
- * succeeded, or after it failed), other than abort and destroy, return
+ * succeeded, while it is under way, or after it failed), other than abort,
+ * destroy, get_error and crnet_tcp_socket_connect_continue(), return
  * CR_RESULT_NET_INVALID_TCP_SOCKET.
  * @{
  */
@@ -1088,7 +1131,23 @@ CR_RESULT crnet_tcp_socket_create(
     crnet_tcp_socket *out_socket);
 
 /**
- * @brief Connects to a listening address and port. Once per socket.
+ * @brief Begins connecting to a listening address and port, and waits up
+ * to `desc->timeout_ms` for the connection. Once per socket.
+ *
+ * The step (@ref crnet_time "Time limits", "Steps"): the system's own
+ * connection attempt, begun by this call and left to go on when the limit
+ * runs out. crnet_tcp_socket_connect_continue() carries it on and says how
+ * it ended. Until then the socket counts as not connected: every other
+ * call but abort, destroy and get_error returns
+ * CR_RESULT_NET_INVALID_TCP_SOCKET, and a second connect does too.
+ *
+ * A system may connect at once - a loopback connect() often completes
+ * inside the call - so this may return CR_SUCCESS with CRNET_NO_WAIT too.
+ * A caller treats CR_SUCCESS and CR_RESULT_NET_TIMED_OUT as the two answers
+ * it can get, whatever the limit.
+ *
+ * What is kept for the step: the socket's descriptor, already the
+ * socket's, and a flag saying its connect is under way. Nothing else.
  *
  * @param[in] socket The socket to connect.
  * @param[in] desc   The address, port and time limit. Only read during the
@@ -1105,8 +1164,9 @@ CR_RESULT crnet_tcp_socket_create(
  * @retval CR_RESULT_NET_INVALID_ADDRESS `desc->address` isn't a numeric
  *         address.
  * @retval CR_RESULT_NET_ABORTED crnet_tcp_socket_abort() was called.
- * @retval CR_RESULT_NET_TIMED_OUT `desc->timeout_ms` ran out, or was
- *         CRNET_NO_WAIT, with which nothing is done.
+ * @retval CR_RESULT_NET_TIMED_OUT The connection isn't made yet; the
+ *         attempt goes on. Carry it on with
+ *         crnet_tcp_socket_connect_continue().
  * @retval CR_RESULT_NET_CONNECT_FAILED The other end refuses or can't
  *         be reached.
  * @retval CR_RESULT_NET_SYSTEM_TIMED_OUT Nothing answered and the
@@ -1116,6 +1176,38 @@ CR_RESULT crnet_tcp_socket_create(
 CR_RESULT crnet_tcp_socket_connect(
     crnet_tcp_socket socket,
     const crnet_tcp_socket_connect_desc *desc);
+
+/**
+ * @brief Carries on a connect that returned CR_RESULT_NET_TIMED_OUT,
+ * waiting up to `timeout_ms` for its outcome.
+ *
+ * It is the non-blocking connect's second half - wait for the socket to
+ * turn writable, then read how the attempt ended - as one call, and takes
+ * only what a continuation needs: the desc was taken whole by connect.
+ *
+ * Thread: a call on the whole socket, as connect is: only
+ * crnet_tcp_socket_abort() may overlap it.
+ *
+ * @param[in] socket     The socket whose connect is under way.
+ * @param[in] timeout_ms The longest to wait (@ref crnet_time "Time
+ *                       limits"); CRNET_NO_WAIT only looks.
+ *
+ * @retval CR_SUCCESS The socket is connected.
+ * @retval CR_RESULT_NET_INVALID_TCP_SOCKET `socket` is NULL; connect was
+ *         never called on it; or connect, or an earlier continue, has
+ *         already returned the outcome.
+ * @retval CR_RESULT_NET_ABORTED crnet_tcp_socket_abort() was called.
+ * @retval CR_RESULT_NET_TIMED_OUT Still not made; the attempt goes on and
+ *         this may be called again.
+ * @retval CR_RESULT_NET_CONNECT_FAILED The other end refused or couldn't be
+ *         reached; crnet_tcp_socket_get_error() (receiving side) has the
+ *         system's reason. Only destroy is left.
+ * @retval CR_RESULT_NET_SYSTEM_TIMED_OUT Nothing answered and the
+ *         operating system stopped trying. Only destroy is left.
+ */
+CR_RESULT crnet_tcp_socket_connect_continue(
+    crnet_tcp_socket socket,
+    uint32_t timeout_ms);
 
 /**
  * @brief Waits for the connection to take data, then sends as much of `data`
@@ -1715,9 +1807,8 @@ typedef struct crnet_proxy_desc {
  * of one transfer at a time per client is enforced on libcurl and
  * NSURLSession but not on WinHTTP, which would carry several and doesn't
  * check; a server's answer that comes before the request body is all sent
- * may be lost (see crnet_http_transfer_send()); several `Set-Cookie`
- * headers can't be read apart on any platform; and an HTTP transfer can't go
- * in a wait set.
+ * may be lost (see crnet_http_transfer_send()); and several `Set-Cookie`
+ * headers can't be read apart on any platform.
  *
  * Two objects. A crnet_http_client holds the stack's connections, so
  * that requests to one server reuse them. A crnet_http_transfer is one
@@ -1744,11 +1835,14 @@ typedef struct crnet_proxy_desc {
  * | crnet_http_transfer_recv()                   | the response body, until it returns 0 bytes                                                |
  * | crnet_http_transfer_destroy()                | ends the transfer and frees it                                                             |
  *
+ * A start that returns CR_RESULT_NET_TIMED_OUT has started the transfer:
+ * the request is under way, and the next call in this order - send, or
+ * receive_response - carries it on before its own part.
+ *
  * A call made out of that order (other than abort, get_error and destroy)
  * returns CR_RESULT_NET_INVALID_HTTP_TRANSFER. A transfer is good for
- * one request: after any call on it fails - other than by running out of
- * time where that call's own comment says it may be tried again - only
- * destroy is left.
+ * one request: after any call on it fails, other than with
+ * CR_RESULT_NET_TIMED_OUT, only destroy is left.
  *
  * Time limits belong to each call, as everywhere in this header. There is
  * none for the exchange as a whole; a caller that has one keeps it, and
@@ -1810,7 +1904,9 @@ typedef struct crnet_http_client_desc {
  *         contradicts itself, or a root isn't a certificate.
  * @retval CR_RESULT_OUT_OF_MEMORY The client could not be allocated.
  * @retval CR_RESULT_NET_UNSUPPORTED libcurl: its TLS library can't do
- *         what `desc->tls` asks.
+ *         what `desc->tls` asks; or the libcurl found at run time looks host
+ *         names up synchronously (no CURL_VERSION_ASYNCHDNS), so a call with
+ *         CRNET_NO_WAIT could block in the lookup. Nothing is recorded.
  * @return Another CR_RESULT where the stack refused to make its own session
  *         object.
  */
@@ -1931,11 +2027,25 @@ CR_RESULT crnet_http_transfer_create(
     crnet_http_transfer *out_transfer);
 
 /**
- * @brief Starts the request: the request line and the headers, on a
- * connection the client already had open to that server or a new one. Known
+ * @brief Starts the request: hands the request line and the headers to the
+ * stack, on a connection the client already had open to that server or a
+ * new one, and waits up to `desc->timeout_ms` for them to be out. Known
  * problem: starting a second transfer on a client that already has one in
  * progress is refused with CR_RESULT_NET_INVALID_HTTP_TRANSFER on
  * libcurl and NSURLSession, and is not checked on WinHTTP.
+ *
+ * The step (@ref crnet_time "Time limits", "Steps"): getting the request
+ * out - looking the host up, connecting, TLS, sending the line and headers
+ * - which the stack carries on by itself (WinHTTP, NSURLSession) or in
+ * later calls (libcurl). Started whichever this returns, CR_SUCCESS or
+ * CR_RESULT_NET_TIMED_OUT: the transfer moves on to the next call in the
+ * order of use, which carries a start that isn't finished on before its
+ * own part and reports what it failed with. NSURLSession says nothing of
+ * connecting, so there this returns CR_SUCCESS at once whatever the limit.
+ *
+ * What is kept for the step: nothing new. The URL, method and headers are
+ * copied by the stack at this call, and the transfer already keeps its
+ * handles and events.
  *
  * How much of this has happened by the time start returns is the stack's:
  * some connect and send the headers here, some put it off until there is
@@ -1951,10 +2061,12 @@ CR_RESULT crnet_http_transfer_create(
  * @param[in] desc     The request. It and everything it points at only have
  *                     to last until this returns.
  *
- * @retval CR_SUCCESS The request has started.
+ * @retval CR_SUCCESS The request is out, or (NSURLSession) handed to the
+ *         stack.
  * @retval CR_RESULT_NET_INVALID_HTTP_TRANSFER `transfer` is NULL, it
- *         has already been started, or (libcurl, NSURLSession) its client
- *         has another transfer in progress.
+ *         has already been started (a start that returned
+ *         CR_RESULT_NET_TIMED_OUT included), or (libcurl, NSURLSession) its
+ *         client has another transfer in progress.
  * @retval CR_RESULT_NULL_DESC `desc` is NULL.
  * @retval CR_RESULT_STRUCT_WRONG_TYPE `desc->base.type` is not
  *         CR_STRUCT_TYPE_NET_HTTP_TRANSFER_DESC.
@@ -1966,9 +2078,9 @@ CR_RESULT crnet_http_transfer_create(
  *         doesn't go with `body`, or text isn't UTF-8.
  * @retval CR_RESULT_NET_INVALID_URL `desc->url` is not a URL, or not
  *         http:// or https://.
- * @retval CR_RESULT_NET_TIMED_OUT `desc->timeout_ms` ran out, which
- *         ends the transfer - the request may or may not have reached the
- *         server - or was CRNET_NO_WAIT, with which nothing is done.
+ * @retval CR_RESULT_NET_TIMED_OUT The transfer has started and the
+ *         request isn't out yet; the next call in the order of use carries
+ *         it on.
  * @retval CR_RESULT_OUT_OF_MEMORY An allocation failed.
  * @return Otherwise one of the network failures under
  *         @ref crnet_stack "HTTP and WebSocket", or
@@ -2002,6 +2114,13 @@ CR_RESULT crnet_http_transfer_start(
  * caller that needs to hear a refusal before sending a large body asks the
  * server first, in a request of its own.
  *
+ * A start that returned CR_RESULT_NET_TIMED_OUT is carried on first, out of
+ * this call's limit: until the request is out, no body is taken and this
+ * returns CR_RESULT_NET_TIMED_OUT (nothing taken; send again). A failure of
+ * the start - the network failures under @ref crnet_stack "HTTP and
+ * WebSocket", CR_RESULT_NET_HTTP_FAILED - comes from here, and ends the
+ * transfer.
+ *
  * @param[in]  transfer   The transfer, started and with a body to send.
  * @param[in]  data       The bytes to send.
  * @param[in]  size       How many bytes `data` holds.
@@ -2021,10 +2140,12 @@ CR_RESULT crnet_http_transfer_start(
  * @retval CR_RESULT_NET_ABORTED crnet_http_transfer_abort() was
  *         called.
  * @retval CR_RESULT_ZERO_SIZE `data` is NULL or `size` is 0.
- * @retval CR_RESULT_NET_TIMED_OUT None of it was taken; the transfer is
- *         as it was and send may be tried again.
- * @return Otherwise CR_RESULT_NET_SEND_FAILED or one of the network
- *         failures under @ref crnet_stack "HTTP and WebSocket".
+ * @retval CR_RESULT_NET_TIMED_OUT None of it was taken (or the request
+ *         isn't out yet); the transfer is as it was and send may be tried
+ *         again.
+ * @return Otherwise CR_RESULT_NET_SEND_FAILED, CR_RESULT_NET_HTTP_FAILED
+ *         or one of the network failures under @ref crnet_stack "HTTP and
+ *         WebSocket".
  */
 CR_RESULT crnet_http_transfer_send(
     crnet_http_transfer transfer,
@@ -2039,6 +2160,9 @@ CR_RESULT crnet_http_transfer_send(
  *
  * For a request with no body, or an empty one, it follows start directly.
  * With CRNET_HTTP_BODY_UNSIZED this call is what ends the body.
+ *
+ * A start that returned CR_RESULT_NET_TIMED_OUT is carried on first, out
+ * of this call's limit, and its failure comes from here.
  *
  * @param[in] transfer   The transfer, started and with its body sent.
  * @param[in] timeout_ms The longest to wait for the response
@@ -2261,14 +2385,16 @@ void crnet_http_transfer_destroy(crnet_http_transfer transfer);
  * crnet_websocket_connect_desc::follow_redirects); and the result codes
  * say `WS_` where the functions say `websocket`.
  *
- * The order of use: create, connect once, then send and recv for as long
- * as the connection lasts, then destroy. close is the polite ending and
+ * The order of use: create, connect once (continued with
+ * crnet_websocket_connect_continue() until it has an outcome), then send
+ * and recv for as long as the connection lasts, then destroy. close is the polite ending and
  * optional; destroy alone just drops the connection. A socket is good for
  * one connection: after connect fails, or the connection ends for any
  * reason, only destroy is left and a new connection is a new socket.
  *
  * Calls made on a socket that isn't connected (before connect has
- * succeeded, or after it failed), other than abort and destroy, return
+ * succeeded, while it is under way, or after it failed), other than abort,
+ * destroy, get_error and crnet_websocket_connect_continue(), return
  * CR_RESULT_NET_INVALID_WEBSOCKET.
  *
  * crnet_websocket_close() is not the counterpart of destroy: it is the
@@ -2276,11 +2402,12 @@ void crnet_http_transfer_destroy(crnet_http_transfer transfer);
  * is concerned, on a socket that stays the caller's to destroy.
  *
  * Thread: on one socket, a receiving call (crnet_websocket_recv()) may
- * overlap a sending call (crnet_websocket_send(),
- * crnet_websocket_close()), and each may overlap
- * crnet_websocket_abort(). Two receiving calls at once, two sending calls
- * at once, or any other call on the socket during either, are the caller's
- * to prevent.
+ * overlap a sending call (crnet_websocket_send(), crnet_websocket_flush(),
+ * crnet_websocket_close()), and each may overlap crnet_websocket_abort().
+ * Two receiving calls at once, two sending calls at once, or any other
+ * call on the socket during either, are the caller's to prevent.
+ * crnet_websocket_connect() and crnet_websocket_connect_continue() are
+ * calls on the whole socket: only abort may overlap them.
  * @{
  */
 
@@ -2367,7 +2494,10 @@ typedef struct crnet_websocket_connect_desc {
  * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_socket` is NULL.
  * @retval CR_RESULT_NET_INVALID_INSTANCE `instance` is NULL.
  * @retval CR_RESULT_NET_UNSUPPORTED This build's stack has no WebSocket
- *         (see the table under @ref crnet "Carrottus Net").
+ *         (see the table under @ref crnet "Carrottus Net"); or, libcurl,
+ *         the libcurl found at run time looks host names up synchronously
+ *         (no CURL_VERSION_ASYNCHDNS), so a call with CRNET_NO_WAIT could
+ *         block in the lookup. Nothing is recorded.
  * @retval CR_RESULT_OUT_OF_MEMORY The socket could not be allocated.
  */
 CR_RESULT crnet_websocket_create(
@@ -2375,10 +2505,21 @@ CR_RESULT crnet_websocket_create(
     crnet_websocket *out_socket);
 
 /**
- * @brief Opens the connection and waits for the server to accept it. Known
- * problem: the negotiated subprotocol and the opening response's headers
- * can't be read afterwards, so neither can the target of a redirect that
- * was handed back.
+ * @brief Begins opening the connection, and waits up to `desc->timeout_ms`
+ * for the server to accept it. Known problem: the negotiated subprotocol
+ * and the opening response's headers can't be read afterwards, so neither
+ * can the target of a redirect that was handed back.
+ *
+ * The step (@ref crnet_time "Time limits", "Steps"): the opening request
+ * and its answer - lookup, connect, TLS, the upgrade request, the 101 -
+ * which the stack carries on by itself (WinHTTP, NSURLSession) or in
+ * later calls (libcurl: the socket's multi handle, driven by each
+ * continue). When the limit runs out first this returns
+ * CR_RESULT_NET_TIMED_OUT and the opening goes on;
+ * crnet_websocket_connect_continue() carries it on and says how it ended.
+ * Until then the socket counts as not connected: send, recv, flush and
+ * close return CR_RESULT_NET_INVALID_WEBSOCKET, and a second connect does
+ * too.
  *
  * @param[in]  socket          The socket to connect. Once per socket.
  * @param[in]  desc            The URL, headers, limits and TLS and proxy
@@ -2389,8 +2530,9 @@ CR_RESULT crnet_websocket_create(
  *                             CR_RESULT_NET_WS_UPGRADE_REFUSED whatever
  *                             it answered instead, a 401 or, for a desc that
  *                             doesn't follow redirects, a 3xx; or 0 where no
- *                             answer arrived. After a followed redirect it
- *                             is the last server's. May be NULL.
+ *                             answer arrived, CR_RESULT_NET_TIMED_OUT
+ *                             included. After a followed redirect it is
+ *                             the last server's. May be NULL.
  *
  * @retval CR_SUCCESS The socket is connected.
  * @retval CR_RESULT_NET_INVALID_WEBSOCKET `socket` is NULL, or connect
@@ -2406,12 +2548,14 @@ CR_RESULT crnet_websocket_create(
  * @retval CR_RESULT_NET_INVALID_URL `desc->url` is not a URL, or not
  *         ws:// or wss://.
  * @retval CR_RESULT_NET_ABORTED crnet_websocket_abort() was called.
- * @retval CR_RESULT_NET_TIMED_OUT `desc->timeout_ms` ran out, or was
- *         CRNET_NO_WAIT, with which nothing is done.
+ * @retval CR_RESULT_NET_TIMED_OUT Not open yet; the opening goes on.
+ *         Carry it on with crnet_websocket_connect_continue().
  * @retval CR_RESULT_NET_WS_UPGRADE_REFUSED The server answered, but not
  *         with 101; `out_http_status` has what it answered.
  * @retval CR_RESULT_NET_UNSUPPORTED libcurl: its TLS library can't do
- *         what `desc->tls` asks.
+ *         what `desc->tls` asks. Found here, before the opening is begun,
+ *         so never from crnet_websocket_connect_continue().
+ * @retval CR_RESULT_OUT_OF_MEMORY An allocation failed.
  * @return Otherwise one of the network failures under
  *         @ref crnet_stack "HTTP and WebSocket".
  */
@@ -2421,19 +2565,112 @@ CR_RESULT crnet_websocket_connect(
     uint32_t *out_http_status);
 
 /**
- * @brief Sends one whole message and waits until the stack has taken it.
- * Known problem: a bad argument - `data` NULL with a `size` above 0, a size
- * the stack can't carry, text that isn't UTF-8 - returns
- * CR_RESULT_NET_SEND_FAILED, the same as a broken connection, and not
- * an invalid-argument result.
+ * @brief Carries on an opening that returned CR_RESULT_NET_TIMED_OUT,
+ * waiting up to `timeout_ms` for its outcome.
  *
- * Taken means handed to the connection, not acknowledged by the peer.
- * Unlike crnet_tcp_socket_send() it sends all of the message or fails.
+ * It takes the time limit and nothing else - the desc was taken whole by
+ * connect - and returns exactly what connect would have.
  *
- * A send that runs out of time has left part of a message on the wire,
- * which can't be taken back: CR_RESULT_NET_TIMED_OUT from a send
- * (other than with CRNET_NO_WAIT, which sends nothing) ends the
- * connection.
+ * On libcurl this is where the opening moves: a caller that stops calling
+ * it leaves the opening standing (and the server may give up on it). On
+ * WinHTTP and NSURLSession the opening goes on by itself and this reads
+ * where it has got to, and on WinHTTP completes the upgrade.
+ *
+ * Thread: a call on the whole socket, as connect is: only
+ * crnet_websocket_abort() may overlap it.
+ *
+ * @param[in]  socket          The socket whose opening is under way.
+ * @param[in]  timeout_ms      The longest to wait (@ref crnet_time "Time
+ *                             limits"); CRNET_NO_WAIT only looks (and on
+ *                             libcurl makes the one pass that costs no
+ *                             waiting).
+ * @param[out] out_http_status As connect's: 101 on success; with
+ *                             CR_RESULT_NET_WS_UPGRADE_REFUSED what the
+ *                             server answered instead; 0 where no answer
+ *                             has arrived, CR_RESULT_NET_TIMED_OUT
+ *                             included. May be NULL.
+ *
+ * @retval CR_SUCCESS The socket is connected.
+ * @retval CR_RESULT_NET_INVALID_WEBSOCKET `socket` is NULL; connect was
+ *         never called on it; or connect, or an earlier continue, has
+ *         already returned the outcome.
+ * @retval CR_RESULT_NET_ABORTED crnet_websocket_abort() was called.
+ * @retval CR_RESULT_NET_TIMED_OUT Not open yet; the opening goes on and
+ *         this may be called again.
+ * @retval CR_RESULT_NET_WS_UPGRADE_REFUSED The server answered, but not
+ *         with 101. Only destroy is left.
+ * @retval CR_RESULT_OUT_OF_MEMORY An allocation failed. Only destroy is
+ *         left.
+ * @return Otherwise one of the network failures under
+ *         @ref crnet_stack "HTTP and WebSocket", recorded on the receiving
+ *         side. Only destroy is left.
+ */
+CR_RESULT crnet_websocket_connect_continue(
+    crnet_websocket socket,
+    uint32_t timeout_ms,
+    uint32_t *out_http_status);
+
+/**
+ * @brief Takes one whole message to send, or none of it. Known problem: a
+ * bad argument - `data` NULL with a `size` above 0, a size the stack can't
+ * carry, text that isn't UTF-8 - returns CR_RESULT_NET_SEND_FAILED, the
+ * same as a broken connection, and not an invalid-argument result.
+ *
+ * One message is in flight at a time: taken by a send and not yet all
+ * handed to the connection. This call first carries on the one before it,
+ * out of its limit. If that one is still in flight when the limit runs
+ * out, this message is not taken: CR_RESULT_NET_TIMED_OUT, the connection
+ * as it was, and the caller sends the same message again later (when a
+ * wait set names the socket for CRNET_WAIT_FOR_ROOM, or on its next round).
+ * Otherwise this message is taken whole and the call returns CR_SUCCESS at
+ * once, without waiting for it to go out: its bytes have been copied, and
+ * `data` is the caller's again. A limit is only ever spent on the message
+ * before.
+ *
+ * Taken means copied, not sent and not acknowledged: the message goes on
+ * to the connection behind this call, and crnet_websocket_flush() says when
+ * it has gone. A message that fails on its way is reported by the next
+ * send, flush or close (CR_RESULT_NET_SEND_FAILED, the sending side's
+ * record), and the connection is over, as a failed send's is.
+ *
+ * @warning A message taken and not yet gone is dropped by
+ * crnet_websocket_destroy() and crnet_websocket_abort(). A caller that
+ * needs it delivered before it lets go flushes first.
+ *
+ * Where the copy is: WinHTTP and libcurl - a buffer of the socket's own,
+ * through the instance's allocator, kept until destroy (freed, on WinHTTP,
+ * only after WinHTTP has reported the handle closing); NSURLSession - the
+ * NSData of its message, which copies the bytes with the system's
+ * allocator and goes with the message once sent, so there the socket
+ * keeps nothing and each send allocates the system's memory, not the
+ * instance's. On libcurl the buffer holds the part curl_ws_send hasn't
+ * consumed, which libcurl requires be offered again.
+ *
+ * How the buffer is used, the same rules on WinHTTP and libcurl:
+ * - It is sized when a message is taken that doesn't fit: never at create,
+ *   and never for a socket that sends nothing. It grows to exactly the
+ *   message's size, with no growth factor. A message is only taken when
+ *   none is in flight, so the old block is freed before the new one is
+ *   allocated: the socket never holds two.
+ * - WinHTTP copies the whole message, since WinHTTP reads the buffer until
+ *   it reports the send complete. libcurl first offers the caller's own
+ *   bytes and copies only what wasn't consumed, so on a connection with
+ *   room nothing is copied; but the buffer is grown to the whole message
+ *   before the first byte is offered, so that an allocation that fails
+ *   leaves nothing on the wire and the message untaken.
+ * - Once a message of N bytes has been sent, the socket holds N bytes until
+ *   it is destroyed: a steady stream allocates nothing, and that is a cost
+ *   the caller carries. A caller that sends a rare large message and wants
+ *   the memory back sends it on a socket of its own, or destroys the
+ *   socket after it.
+ *
+ * The in-flight state and the failure of the message in flight are written
+ * by the stack's completion under the socket's lock, which then notifies
+ * the socket's wait set (ROOM); send, flush and close read them under the
+ * same lock, so a completion that lands during one of them is seen either
+ * before or after it, never half. An abort during a send or flush that is
+ * waiting ends the wait, the message in flight is dropped with the
+ * connection, and the call returns CR_RESULT_NET_ABORTED.
  *
  * Thread: may overlap crnet_websocket_recv() and
  * crnet_websocket_abort() on the same socket.
@@ -2441,28 +2678,73 @@ CR_RESULT crnet_websocket_connect(
  * @param[in] socket     The connected socket to send on.
  * @param[in] type       Text or binary. A text message has to be valid
  *                       UTF-8.
- * @param[in] data       The message's bytes. May be NULL when `size` is 0.
+ * @param[in] data       The message's bytes, only read during the call. May
+ *                       be NULL when `size` is 0.
  * @param[in] size       How many bytes `data` holds; 0 sends an empty
- *                       message.
- * @param[in] timeout_ms The longest to wait for the stack to take the
- *                       message (@ref crnet_time "Time limits").
+ *                       message. At most 4 GiB - 1 on WinHTTP.
+ * @param[in] timeout_ms The longest to wait for the message before this one
+ *                       to go (@ref crnet_time "Time limits");
+ *                       CRNET_NO_WAIT only looks.
  *
- * @retval CR_SUCCESS The stack has the whole message.
+ * @retval CR_SUCCESS The message is taken, whole.
  * @retval CR_RESULT_NET_INVALID_WEBSOCKET `socket` is NULL or isn't
  *         connected.
  * @retval CR_RESULT_NET_ABORTED crnet_websocket_abort() was called.
- * @retval CR_RESULT_NET_TIMED_OUT The time limit ran out, which ends
- *         the connection; or it was CRNET_NO_WAIT, and nothing was sent.
- * @retval CR_RESULT_OUT_OF_MEMORY An allocation failed.
- * @retval CR_RESULT_NET_SEND_FAILED Any other failure: a bad argument
- *         (see above), a connection that has ended or been closed, or one
- *         that broke.
+ * @retval CR_RESULT_NET_TIMED_OUT The message before is still in flight;
+ *         nothing of this one was taken, and the connection is as it was.
+ * @retval CR_RESULT_OUT_OF_MEMORY The socket's buffer couldn't grow to the
+ *         message; nothing was taken, and the connection is as it was. The
+ *         instance's allocator refused, not the platform: nothing is
+ *         recorded and no message is sent.
+ * @retval CR_RESULT_NET_SEND_FAILED A bad argument (see above), nothing
+ *         taken; or the message before failed on its way, or the connection
+ *         has ended, been closed or broken, and only destroy is left on the
+ *         sending side.
  */
 CR_RESULT crnet_websocket_send(
     crnet_websocket socket,
     CRNET_WEBSOCKET_MESSAGE type,
     const void *data,
     uint64_t size,
+    uint32_t timeout_ms);
+
+/**
+ * @brief Carries the message in flight on, and waits up to `timeout_ms`
+ * for it to have gone to the connection.
+ *
+ * libcurl moves a part-sent message only when it is called to, so a socket
+ * whose last message is still in flight needs a call that moves it without
+ * bringing a new one; and a caller needs to hear that a message it sent
+ * has gone, or failed, without sending another. On WinHTTP and
+ * NSURLSession the message goes on by itself and this only reads where it
+ * has got to.
+ *
+ * "Gone" means handed to the connection, not acknowledged by the peer. A
+ * caller that wants to know a message has gone before it goes on sends,
+ * then flushes with a limit.
+ *
+ * Thread: a sending call: may overlap crnet_websocket_recv() and
+ * crnet_websocket_abort() on the same socket; not send, close or another
+ * flush.
+ *
+ * @param[in] socket     The connected socket.
+ * @param[in] timeout_ms The longest to wait (@ref crnet_time "Time
+ *                       limits"); CRNET_NO_WAIT only looks (and on libcurl
+ *                       sends what fits right now).
+ *
+ * @retval CR_SUCCESS No message is in flight: the last one taken has gone,
+ *         or none was taken.
+ * @retval CR_RESULT_NET_INVALID_WEBSOCKET `socket` is NULL or isn't
+ *         connected.
+ * @retval CR_RESULT_NET_ABORTED crnet_websocket_abort() was called.
+ * @retval CR_RESULT_NET_TIMED_OUT A message is still in flight; it goes on
+ *         (on libcurl, when this or send is called again).
+ * @retval CR_RESULT_NET_SEND_FAILED The message in flight failed on its
+ *         way, or the connection has ended; the sending side's record has
+ *         the platform's reason. Only destroy is left on the sending side.
+ */
+CR_RESULT crnet_websocket_flush(
+    crnet_websocket socket,
     uint32_t timeout_ms);
 
 /**
@@ -2555,6 +2837,12 @@ CR_RESULT crnet_websocket_recv(
  * may drop the connection before it has gone out, and no stack says when
  * it has. A peer that must be told sends and receives that in messages.
  *
+ * A close frame goes after the message in flight, never into it. With a
+ * message still in flight this sends nothing and returns
+ * CR_RESULT_NET_TIMED_OUT, without waiting (close takes no limit); the
+ * socket is as it was - recv does not start returning
+ * CR_RESULT_NET_WS_CLOSED - and the caller flushes, then closes again.
+ *
  * Thread: may overlap crnet_websocket_recv() and
  * crnet_websocket_abort() on the same socket.
  *
@@ -2567,9 +2855,12 @@ CR_RESULT crnet_websocket_recv(
  * @retval CR_RESULT_NET_INVALID_WEBSOCKET `socket` is NULL or isn't
  *         connected.
  * @retval CR_RESULT_NET_ABORTED crnet_websocket_abort() was called.
- * @retval CR_RESULT_NET_SEND_FAILED `reason` is over 123 bytes; or the
- *         connection has already ended - the peer closed it, it broke, it
- *         was closed before - and there is nothing to send a frame on.
+ * @retval CR_RESULT_NET_TIMED_OUT A message is in flight; nothing was
+ *         sent.
+ * @retval CR_RESULT_NET_SEND_FAILED `reason` is over 123 bytes; the message
+ *         in flight failed on its way; or the connection has already ended
+ *         - the peer closed it, it broke, it was closed before - and there
+ *         is nothing to send a frame on.
  */
 CR_RESULT crnet_websocket_close(
     crnet_websocket socket,
@@ -2636,9 +2927,10 @@ void crnet_websocket_destroy(crnet_websocket socket);
 
 #endif // CRNET_EXT_WEBSOCKET
 
-/* A wait set waits on TCP objects and WebSockets and on nothing else, so a
- * build with neither has no wait set. */
-#if CRNET_EXT_TCP || CRNET_EXT_WEBSOCKET
+/* A wait set is on every platform: HTTP transfers are members wherever
+ * there is HTTP, and its own wake is a pipe (a loopback socket on Windows),
+ * which needs no network permission. Its TCP and WebSocket calls stay
+ * behind their own macros. */
 
 /**
  * @defgroup crnet_wait Wait set
@@ -2647,8 +2939,12 @@ void crnet_websocket_destroy(crnet_websocket socket);
  * and not epoll or kqueue, so each wait costs time in proportion to the
  * members - fine for hundreds, not for thousands; an object destroyed while
  * still in a set is not caught, and the set then polls a closed descriptor
- * or asks a freed WebSocket; an HTTP transfer can't be a member; a libcurl
- * WebSocket is not named for a close this side made.
+ * or asks a freed WebSocket; a libcurl WebSocket is not named for a close
+ * this side made; on Windows before Windows 10 version 2004, WSAPoll
+ * doesn't report a TCP connect that failed, so a connecting socket is
+ * named only for a connection made; a libcurl transfer may be named for
+ * libcurl's own timer with nothing to hand over; not run on watchOS, where
+ * the set holds HTTP transfers only.
  *
  * Every waiting call above waits on one object. A wait set is how one
  * call waits on several - a server's listener and all its connections -
@@ -2659,8 +2955,7 @@ void crnet_websocket_destroy(crnet_websocket socket);
  * crnet_wait_set_wait() only says which objects are worth calling, and
  * the caller then makes the ordinary calls on them with CRNET_NO_WAIT.
  *
- * TCP sockets, TCP listeners and WebSockets can be in one. An HTTP
- * transfer can't.
+ * TCP sockets, TCP listeners, WebSockets and HTTP transfers can be in one.
  *
  * How to use one, which is the same as for epoll or kqueue used carefully:
  *
@@ -2677,6 +2972,9 @@ void crnet_websocket_destroy(crnet_websocket socket);
  * - An object that has ended - aborted, closed by the peer, broken - is
  *   named too. The call made on it then says which, and the caller removes
  *   it.
+ * - A member whose connect is under way (a TCP socket, a WebSocket) is
+ *   named, whatever bits it was added with, once the connect has an
+ *   outcome. The call to make then is its `_connect_continue`.
  *
  * Whose is what:
  *
@@ -2691,7 +2989,13 @@ void crnet_websocket_destroy(crnet_websocket socket);
  *   a receiving call on it: no recv or accept on it may overlap a wait on
  *   the set. A sending call on it may overlap the wait, as it may a
  *   receive.
- * - An object goes in one set at a time.
+ * - Thread: while an HTTP transfer is in a set, a wait on the set counts
+ *   as a call on the transfer: no call on the transfer may overlap it.
+ * - Thread: while a socket whose connect is under way is in a set, a wait
+ *   on the set counts as a call on the whole socket: its
+ *   `_connect_continue` may not overlap the wait. Once the socket is
+ *   connected, the wait counts as a receiving call, as above.
+ * - An object goes in one set at a time, an HTTP transfer too.
  * @{
  */
 
@@ -2700,12 +3004,17 @@ typedef struct crnet_wait_set_t *crnet_wait_set;
 
 /** @brief What to be told about, and what crnet_wait_set_wait() reports. */
 typedef enum CRNET_WAIT_FOR {
-	/** There is something for recv or accept, or the object has ended. */
+	/** There is something for recv, accept or receive_response, or the
+	 * object has ended. */
 	CRNET_WAIT_FOR_INCOMING = 1,
-	/** crnet_tcp_socket_send() would take bytes now. TCP sockets only, and
-	 * for the stretch a caller has bytes it couldn't send: a connection
-	 * that isn't backed up has room all the time, and a set asked about
-	 * room on one returns at once every time. */
+	/** A sending call would make progress now: crnet_tcp_socket_send() or
+	 * crnet_http_transfer_send() would take bytes (a start under way
+	 * counts: its next call is send), or crnet_websocket_send() would take
+	 * a message (none in flight, or the one in flight can be carried on).
+	 * For the stretch a caller has something it couldn't send: a TCP socket
+	 * or transfer that isn't backed up, and a WebSocket with nothing in
+	 * flight, have room all the time, and a set asked about room on one
+	 * returns at once every time. */
 	CRNET_WAIT_FOR_ROOM = 2,
 } CRNET_WAIT_FOR;
 
@@ -2750,13 +3059,21 @@ void crnet_wait_set_destroy(crnet_wait_set set);
 #if CRNET_EXT_TCP
 
 /**
- * @brief Adds a connected TCP socket to the set.
+ * @brief Adds a TCP socket to the set, connected or with its connect under
+ * way. Known problem: on Windows before version 2004 a connect that failed
+ * is never named (WSAPoll), only one that succeeded.
+ *
+ * A socket whose connect is under way is named once the connect has an
+ * outcome, whatever `wait_for` says (call
+ * crnet_tcp_socket_connect_continue() then); after that, as `wait_for`
+ * says. While its connect is under way a wait on the set counts as a call
+ * on the whole socket.
  *
  * To change `wait_for`, remove the socket and add it again.
  *
  * @param[in] set      The set to add to.
- * @param[in] socket   The connected socket. It is removed from the set
- *                     before it is destroyed.
+ * @param[in] socket   The socket, connected or connecting. It is removed
+ *                     from the set before it is destroyed.
  * @param[in] wait_for One or both CRNET_WAIT_FOR bits.
  * @param[in] user     The caller's own, handed back in the events - a
  *                     pointer to whatever the caller keeps per connection.
@@ -2766,8 +3083,8 @@ void crnet_wait_set_destroy(crnet_wait_set set);
  * @retval CR_RESULT_NET_INVALID_WAIT_SET `set` is NULL.
  * @retval CR_RESULT_DESC_INVALID_PARAMETERS `wait_for` is 0 or has a bit
  *         that isn't a CRNET_WAIT_FOR one.
- * @retval CR_RESULT_NET_INVALID_TCP_SOCKET `socket` is NULL or isn't
- *         connected.
+ * @retval CR_RESULT_NET_INVALID_TCP_SOCKET `socket` is NULL, connect was
+ *         never called on it, or its connect failed.
  * @retval CR_RESULT_NET_INVALID_INSTANCE `socket` was made with another
  *         instance than the set's - as for every kind of member.
  * @retval CR_RESULT_NET_ALREADY_IN_WAIT_SET `socket` is already in this
@@ -2829,27 +3146,38 @@ void crnet_wait_set_remove_tcp_listener(crnet_wait_set set, crnet_tcp_listener l
 #if CRNET_EXT_WEBSOCKET
 
 /**
- * @brief Adds a connected WebSocket to the set. Known problem: a libcurl
- * WebSocket is polled by its descriptor, which doesn't show bytes libcurl or
- * the TLS layer has already read and says nothing when this side closes; it
- * is named once after it is added, and not for its own close.
+ * @brief Adds a WebSocket to the set, connected or with its opening under
+ * way. Known problem: a libcurl WebSocket is polled by its descriptor,
+ * which doesn't show bytes libcurl or the TLS layer has already read and
+ * says nothing when this side closes; it is named once after it is added,
+ * and not for its own close.
  *
  * It is reported CRNET_WAIT_FOR_INCOMING when crnet_websocket_recv() has
- * message data or the connection has ended. NSURLSession and WinHTTP only
- * say a message has arrived to someone who has asked for the next one, so
- * adding the socket asks, and the answer then waits in Carrottus Net for
- * crnet_websocket_recv() as it would after a recv that timed out.
+ * message data or the connection has ended, and CRNET_WAIT_FOR_ROOM when
+ * crnet_websocket_send() would take a message. A socket whose opening is
+ * under way is named once the opening has an outcome, whatever `wait_for`
+ * says (call crnet_websocket_connect_continue() then); until then a wait
+ * on the set counts as a call on the whole socket. NSURLSession and
+ * WinHTTP only say a message has arrived to someone who has asked for the
+ * next one, so a connected socket in a set for INCOMING asks, and the
+ * answer then waits in Carrottus Net for crnet_websocket_recv() as it would
+ * after a recv that timed out.
  *
- * @param[in] set    The set to add to.
- * @param[in] socket The connected WebSocket. It is removed from the set
- *                   before it is destroyed.
- * @param[in] user   The caller's own, handed back in the events. Never
- *                   dereferenced.
+ * To change `wait_for`, remove the socket and add it again.
+ *
+ * @param[in] set      The set to add to.
+ * @param[in] socket   The WebSocket, connected or connecting. It is
+ *                     removed from the set before it is destroyed.
+ * @param[in] wait_for One or both CRNET_WAIT_FOR bits.
+ * @param[in] user     The caller's own, handed back in the events. Never
+ *                     dereferenced.
  *
  * @retval CR_SUCCESS The socket is in the set.
  * @retval CR_RESULT_NET_INVALID_WAIT_SET `set` is NULL.
- * @retval CR_RESULT_NET_INVALID_WEBSOCKET `socket` is NULL or isn't
- *         connected.
+ * @retval CR_RESULT_DESC_INVALID_PARAMETERS `wait_for` is 0 or has a bit
+ *         that isn't a CRNET_WAIT_FOR one.
+ * @retval CR_RESULT_NET_INVALID_WEBSOCKET `socket` is NULL, connect was
+ *         never called on it, or its connect failed.
  * @retval CR_RESULT_NET_INVALID_INSTANCE `socket` was made with another
  *         instance than the set's.
  * @retval CR_RESULT_NET_ALREADY_IN_WAIT_SET `socket` is already in a
@@ -2859,6 +3187,7 @@ void crnet_wait_set_remove_tcp_listener(crnet_wait_set set, crnet_tcp_listener l
 CR_RESULT crnet_wait_set_add_websocket(
     crnet_wait_set set,
     crnet_websocket socket,
+    uint32_t wait_for,
     void *user);
 
 /**
@@ -2871,6 +3200,71 @@ CR_RESULT crnet_wait_set_add_websocket(
 void crnet_wait_set_remove_websocket(crnet_wait_set set, crnet_websocket socket);
 
 #endif // CRNET_EXT_WEBSOCKET
+
+/**
+ * @brief Adds an HTTP transfer to the set, from its start on. Known problem:
+ * on libcurl a transfer may be named for libcurl's own timer with nothing
+ * to hand over, and its descriptors are asked for afresh at every wait.
+ *
+ * A caller that advances its transfers without waiting has to sleep
+ * somewhere when none of them has anything for it, and this is where every
+ * other object of this header is slept on.
+ *
+ * It is reported CRNET_WAIT_FOR_INCOMING when
+ * crnet_http_transfer_receive_response() or crnet_http_transfer_recv()
+ * would return something other than CR_RESULT_NET_TIMED_OUT (the response
+ * or body has come, or the transfer has ended), and CRNET_WAIT_FOR_ROOM
+ * when crnet_http_transfer_send() would take bytes.
+ *
+ * How each stack wakes it: WinHTTP and NSURLSession through the set's
+ * wake, from their callbacks, as their WebSockets do; libcurl through the
+ * client's descriptors, asked for at every wait, the wait shortened to
+ * libcurl's own timer, and a piece of body libcurl has already handed over
+ * counting as INCOMING without a poll.
+ *
+ * Thread: while the transfer is in the set, crnet_wait_set_wait() counts
+ * as a call on it: no call on the transfer may overlap a wait on the set.
+ *
+ * @param[in] set      The set to add to.
+ * @param[in] transfer The transfer, started: a start that returned
+ *                     CR_RESULT_NET_TIMED_OUT has started it. It is removed
+ *                     from the set before it is destroyed.
+ * @param[in] wait_for One or both CRNET_WAIT_FOR bits.
+ * @param[in] user     The caller's own, handed back in the events. Never
+ *                     dereferenced.
+ *
+ * @retval CR_SUCCESS The transfer is in the set.
+ * @retval CR_RESULT_NET_INVALID_WAIT_SET `set` is NULL.
+ * @retval CR_RESULT_DESC_INVALID_PARAMETERS `wait_for` is 0 or has a bit
+ *         that isn't a CRNET_WAIT_FOR one.
+ * @retval CR_RESULT_NET_INVALID_HTTP_TRANSFER `transfer` is NULL, or
+ *         hasn't been started, or a call on it has failed (only destroy is
+ *         left).
+ * @retval CR_RESULT_NET_INVALID_INSTANCE `transfer` was made on a client
+ *         of another instance than the set's.
+ * @retval CR_RESULT_NET_ALREADY_IN_WAIT_SET `transfer` is already in a
+ *         set, this one or another.
+ * @retval CR_RESULT_OUT_OF_MEMORY The set could not grow.
+ */
+CR_RESULT crnet_wait_set_add_http_transfer(
+    crnet_wait_set set,
+    crnet_http_transfer transfer,
+    uint32_t wait_for,
+    void *user);
+
+/**
+ * @brief Removes an HTTP transfer from the set.
+ *
+ * After this returns, the transfer's stack makes no further wake of the
+ * set.
+ *
+ * @param[in] set      The set to remove from.
+ * @param[in] transfer The transfer to remove. One that isn't in the set, or
+ *                     NULL, is taken and nothing is done with it.
+ */
+void crnet_wait_set_remove_http_transfer(
+    crnet_wait_set set,
+    crnet_http_transfer transfer);
 
 /**
  * @brief Waits for any object in the set to be worth calling. Known problem:
@@ -2957,8 +3351,6 @@ void crnet_wait_set_get_error(
     crnet_error *out_error);
 
 /** @} */
-
-#endif // CRNET_EXT_TCP || CRNET_EXT_WEBSOCKET
 
 #if __cplusplus
 }

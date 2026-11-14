@@ -92,16 +92,7 @@ void crnet_instance_destroy(crnet_instance instance) {
 // Shared by HTTP and WebSocket
 // --------------------------------------------------------------------------
 
-/* When a wait that starts now runs out, in the two forms the waits here
- * take. */
-#if CRNET_EXT_WEBSOCKET // only a WebSocket's send waits this way
-static dispatch_time_t crnet_apple_dispatch_limit(uint32_t timeout_ms) {
-	if (timeout_ms == CRNET_WAIT_FOREVER)
-		return DISPATCH_TIME_FOREVER;
-	return dispatch_time(DISPATCH_TIME_NOW, (int64_t)timeout_ms * (int64_t)NSEC_PER_MSEC);
-}
-#endif
-
+/* When a wait that starts now runs out. Autoreleased. */
 static NSDate *crnet_apple_date_limit(uint32_t timeout_ms) {
 	if (timeout_ms == CRNET_WAIT_FOREVER)
 		return [NSDate distantFuture];
@@ -456,6 +447,10 @@ static BOOL crnet_apple_answer_challenge(
 	// A server certificate was turned away during this transfer, and why.
 	BOOL          tls_refused;
 	crnet_error tls_reason;
+
+	// The wait set the transfer is in, or NULL. Told, with the condition
+	// held, whenever what a call on the transfer would find has changed.
+	struct crnet_wait_set_t *wait_set;
 }
 @end
 
@@ -487,6 +482,7 @@ static BOOL crnet_apple_answer_challenge(
 	if (event & NSStreamEventErrorOccurred)
 		output_failed = YES;
 	[condition broadcast];
+	crnet_wait_set_notify(wait_set);
 	[condition unlock];
 }
 
@@ -582,6 +578,7 @@ static BOOL crnet_apple_answer_challenge(
 		state->response = (NSHTTPURLResponse *)[answer retain];
 	}
 	[state->condition broadcast];
+	crnet_wait_set_notify(state->wait_set);
 	[state->condition unlock];
 	completionHandler(NSURLSessionResponseAllow);
 }
@@ -601,6 +598,7 @@ static BOOL crnet_apple_answer_challenge(
 		state->piece        = [data retain];
 		state->piece_offset = 0;
 		[state->condition broadcast];
+		crnet_wait_set_notify(state->wait_set);
 		while (state->piece && !state->aborted && !state->discarding)
 			[state->condition wait];
 		[state->piece release];
@@ -620,6 +618,7 @@ static BOOL crnet_apple_answer_challenge(
 	state->completed = YES;
 	state->failure   = [error retain];
 	[state->condition broadcast];
+	crnet_wait_set_notify(state->wait_set);
 	[state->condition unlock];
 }
 
@@ -627,9 +626,12 @@ static BOOL crnet_apple_answer_challenge(
 
 struct crnet_http_client_t {
 	cr_object_head     head; // first: crnethttp.c reaches the allocator through it
+	crnet_instance     instance; // for a wait set, to tell its members' instances apart
 	NSURLSession        *session;
 	CrNetHTTPDelegate *delegate;
 };
+
+crnet_instance crnet_http_client_instance(crnet_http_client client) { return client ? client->instance : NULL; }
 
 /* The backend's side of a crnet_http_transfer_t. */
 struct crnet_apple_http {
@@ -675,6 +677,7 @@ CR_RESULT crnet_http_client_create(
 	}
 	client->head.allocator = *allocator;
 	CR_BIRTH_IN(client, &instance->quarantine);
+	client->instance = instance;
 
 	@autoreleasepool {
 		NSURLSessionConfiguration *configuration = crnet_apple_configuration(&proxy);
@@ -791,6 +794,7 @@ void crnet_http_backend_abort(struct crnet_http_transfer_t *transfer) {
 	// the broadcast wakes a delegate that was holding a piece.
 	[state->task cancel];
 	[state->condition broadcast];
+	crnet_wait_set_notify(state->wait_set);
 	[state->condition unlock];
 }
 
@@ -880,9 +884,11 @@ CR_RESULT crnet_http_backend_start(
 			return CR_RESULT_NET_ABORTED;
 
 		// NSURLSession connects when it is ready to and says nothing of it,
-		// so there is nothing here to wait for: a server that can't be
-		// reached is reported by the first call that needs it, as crnet.h
-		// allows.
+		// so there is nothing here to wait for, whatever the limit
+		// (CRNET_NO_WAIT included): a server that can't be reached is
+		// reported by the first call that needs it, as crnet.h allows, and
+		// there is never a start under way for send or receive_response to
+		// carry on.
 		[state->task resume];
 	}
 	return CR_SUCCESS;
@@ -992,6 +998,62 @@ CR_RESULT crnet_http_backend_receive_response(
 	}
 }
 
+// For a wait set (see the end of crnetshared.h). NSURLSession reports
+// through callbacks, so there is no socket to poll: the transfer's state
+// keeps its set, tells it above whenever a call would find something new,
+// and is asked here.
+
+void crnet_http_backend_wait_attach(struct crnet_http_transfer_t *transfer, struct crnet_wait_set_t *set) {
+	CrNetTransferState *state = ((struct crnet_apple_http *)transfer->backend)->state;
+	[state->condition lock];
+	state->wait_set = set;
+	[state->condition unlock];
+}
+
+void crnet_http_backend_wait_detach(struct crnet_http_transfer_t *transfer) {
+	CrNetTransferState *state = ((struct crnet_apple_http *)transfer->backend)->state;
+	// Every notification is made with the condition held, so none is under
+	// way once this has it.
+	[state->condition lock];
+	state->wait_set = NULL;
+	[state->condition unlock];
+}
+
+uint32_t crnet_http_backend_wait_prepare(struct crnet_http_transfer_t *transfer, uint32_t wait_for, struct crnet_wait_poll *poll) {
+	(void)wait_for;
+	(void)poll;
+	CrNetTransferState *state = ((struct crnet_apple_http *)transfer->backend)->state;
+	[state->condition lock];
+	const BOOL ended = state->aborted || state->completed;
+	uint32_t   ready = 0;
+	switch (transfer->phase) {
+	case CRNET_HTTP_PHASE_SENDING:
+		// receive_response comes next once the body is in; send, until then,
+		// takes bytes when the stream has room - or lets them through once
+		// the server has answered (see crnet_http_backend_send).
+		if (ended || state->response)
+			ready |= CRNET_WAIT_FOR_INCOMING;
+		if (ended || state->response || state->output_failed || !state->output || state->output.hasSpaceAvailable)
+			ready |= CRNET_WAIT_FOR_ROOM;
+		break;
+	case CRNET_HTTP_PHASE_AWAITING:
+		if (ended || state->response)
+			ready |= CRNET_WAIT_FOR_INCOMING;
+		ready |= CRNET_WAIT_FOR_ROOM; // send returns at once, out of order
+		break;
+	case CRNET_HTTP_PHASE_RESPONDED:
+		if (ended || state->piece)
+			ready |= CRNET_WAIT_FOR_INCOMING;
+		ready |= CRNET_WAIT_FOR_ROOM;
+		break;
+	default:
+		ready = CRNET_WAIT_FOR_INCOMING | CRNET_WAIT_FOR_ROOM;
+		break;
+	}
+	[state->condition unlock];
+	return ready;
+}
+
 CR_RESULT crnet_http_backend_recv(
     struct crnet_http_transfer_t *transfer,
     void *data,
@@ -1059,8 +1121,12 @@ CR_RESULT crnet_http_backend_recv(
 	BOOL aborted;
 
 	// The opening request: 0 not started or still waiting, 1 open, 2 failed.
+	// `outcome_taken` once connect or connect_continue has returned the
+	// outcome: until then the socket counts as not connected, whatever
+	// open_state says (crnet.h, "Steps").
 	BOOL      connect_called;
 	int       open_state;
+	BOOL      outcome_taken;
 	uint32_t  http_status;
 	NSError  *open_error;
 	// Set by connect before the session exists. A server certificate it
@@ -1072,8 +1138,19 @@ CR_RESULT crnet_http_backend_recv(
 	crnet_error receive_error;
 
 	// The wait set this socket is in, or NULL. Told, with the condition
-	// held, whenever what a receive would find has changed.
+	// held, whenever what a call would find has changed: the opening's
+	// outcome, a receive's answer, the message in flight gone.
 	struct crnet_wait_set_t *wait_set;
+
+	// One message in flight at a time (crnet.h, crnet_websocket_send()):
+	// taken by a send and not yet reported gone by NSURLSession, whose
+	// NSData holds the copy. Written by the send's completion, which
+	// captures this state (never the socket) and so may land after
+	// destroy; read by send, flush and close. A failure is kept for the
+	// sending call that finds it, and every later one.
+	BOOL          send_in_flight;
+	BOOL          send_failed;
+	crnet_error send_failure;
 
 	// From the connect desc: what becomes of an opening request the server
 	// answers with a redirect.
@@ -1087,7 +1164,7 @@ CR_RESULT crnet_http_backend_recv(
 	NSUInteger                message_offset;
 	CRNET_WEBSOCKET_MESSAGE message_type;
 
-	// Nothing more will arrive: a receive failed, or a send ran out of time.
+	// Nothing more will arrive: a receive failed, or this side closed.
 	BOOL finished;
 	BOOL too_big;
 	// The peer's close frame arrived / this side sent one.
@@ -1136,6 +1213,7 @@ CR_RESULT crnet_http_backend_recv(
 		http_status = 101;
 	}
 	[condition broadcast];
+	crnet_wait_set_notify(wait_set);
 	[condition unlock];
 }
 
@@ -1174,6 +1252,7 @@ CR_RESULT crnet_http_backend_recv(
 			http_status = (uint32_t)((NSHTTPURLResponse *)task.response).statusCode;
 	}
 	[condition broadcast];
+	crnet_wait_set_notify(wait_set);
 	[condition unlock];
 }
 
@@ -1274,6 +1353,50 @@ void crnet_websocket_abort(crnet_websocket socket) {
 	[state->condition unlock];
 }
 
+/* Waits until `limit` for the opening under way to have an outcome, and
+ * returns what connect returns. Called with the condition held, which it
+ * lets go. CR_RESULT_NET_TIMED_OUT leaves the opening going; an outcome is
+ * returned once, and a failed one ends the task. */
+static CR_RESULT crnet_apple_websocket_await_open(struct crnet_websocket_t *socket, NSDate *limit, uint32_t *out_http_status) {
+	CrNetWebSocketState *state = socket->state;
+	while (state->open_state == 0 && !state->aborted) {
+		if (![state->condition waitUntilDate:limit])
+			break;
+	}
+	BOOL          aborted    = state->aborted;
+	int           open_state = state->open_state;
+	uint32_t      status     = state->http_status;
+	NSError      *error      = [[state->open_error retain] autorelease];
+	BOOL          refused    = state->tls_refused;
+	crnet_error reason     = state->tls_reason;
+	if (!aborted && open_state != 0) {
+		state->outcome_taken = YES;
+		if (open_state != 1) {
+			// Refused or failed: this socket is spent.
+			state->finished = YES;
+			[socket->task cancel];
+		}
+	}
+	[state->condition unlock];
+
+	if (aborted)
+		return CR_RESULT_NET_ABORTED;
+	if (open_state == 0)
+		return CR_RESULT_NET_TIMED_OUT; // the opening goes on; status stays 0
+	if (out_http_status)
+		*out_http_status = status;
+	if (open_state == 1)
+		return CR_SUCCESS;
+	crnet_error *record = &socket->errors[CRNET_ERROR_SIDE_RECEIVING];
+	if (refused) {
+		*record = reason;
+		return CR_RESULT_NET_TLS_FAILED;
+	}
+	if (status != 0 && status != 101)
+		return CR_RESULT_NET_WS_UPGRADE_REFUSED;
+	return crnet_apple_record(record, crnet_apple_result(error, CR_RESULT_NET_CONNECT_FAILED), error);
+}
+
 CR_RESULT crnet_websocket_connect(
     crnet_websocket socket,
     const crnet_websocket_connect_desc *desc,
@@ -1327,11 +1450,7 @@ CR_RESULT crnet_websocket_connect(
 			[tls release];
 			return CR_RESULT_NET_INVALID_WEBSOCKET;
 		}
-		if (desc->timeout_ms == CRNET_NO_WAIT) {
-			[state->condition unlock];
-			[tls release];
-			return CR_RESULT_NET_TIMED_OUT;
-		}
+		// Begun whatever the limit, CRNET_NO_WAIT included (crnet.h, "Steps").
 		state->connect_called   = YES;
 		state->tls              = tls; // the state's from here
 		state->follow_redirects = desc->follow_redirects ? YES : NO;
@@ -1341,48 +1460,40 @@ CR_RESULT crnet_websocket_connect(
 		socket->session = [[NSURLSession sessionWithConfiguration:configuration delegate:state delegateQueue:nil] retain];
 		socket->task    = [[socket->session webSocketTaskWithRequest:request] retain];
 		if (!socket->session || !socket->task) {
-			state->open_state = 2;
+			state->open_state    = 2;
+			state->outcome_taken = YES;
 			[state->condition unlock];
 			return CR_RESULT_GENERAL_FAILURE;
 		}
 		socket->task.maximumMessageSize = desc->max_message_size > (uint64_t)NSIntegerMax ? NSIntegerMax : (NSInteger)desc->max_message_size;
 		[socket->task resume];
+		return crnet_apple_websocket_await_open(socket, crnet_apple_date_limit(desc->timeout_ms), out_http_status);
+	}
+}
 
-		NSDate *limit = crnet_apple_date_limit(desc->timeout_ms);
-		while (state->open_state == 0 && !state->aborted) {
-			if (![state->condition waitUntilDate:limit])
-				break;
-		}
-		BOOL      aborted    = state->aborted;
-		int       open_state = state->open_state;
-		uint32_t  status     = state->http_status;
-		NSError  *error      = [[state->open_error retain] autorelease];
-		BOOL          refused = state->tls_refused;
-		crnet_error reason  = state->tls_reason;
-		if (aborted || open_state != 1) {
-			// Out of time, refused or aborted: this socket is spent.
-			state->open_state = 2;
-			state->finished   = YES;
-			[socket->task cancel];
-		}
-		[state->condition unlock];
+CR_RESULT crnet_websocket_connect_continue(
+    crnet_websocket socket,
+    uint32_t timeout_ms,
+    uint32_t *out_http_status) {
+	if (out_http_status)
+		*out_http_status = 0;
+	if (!socket)
+		return CR_RESULT_NET_INVALID_WEBSOCKET;
+	if (CR_STALE(socket, "crnet_websocket_connect_continue", "socket"))
+		return CR_RESULT_NET_INVALID_WEBSOCKET;
 
-		if (out_http_status)
-			*out_http_status = status;
-		if (aborted)
+	@autoreleasepool {
+		CrNetWebSocketState *state = socket->state;
+		[state->condition lock];
+		if (state->aborted) {
+			[state->condition unlock];
 			return CR_RESULT_NET_ABORTED;
-		if (open_state == 1)
-			return CR_SUCCESS;
-		if (open_state == 0)
-			return CR_RESULT_NET_TIMED_OUT;
-		crnet_error *record = &socket->errors[CRNET_ERROR_SIDE_RECEIVING];
-		if (refused) {
-			*record = reason;
-			return CR_RESULT_NET_TLS_FAILED;
 		}
-		if (status != 0 && status != 101)
-			return CR_RESULT_NET_WS_UPGRADE_REFUSED;
-		return crnet_apple_record(record, crnet_apple_result(error, CR_RESULT_NET_CONNECT_FAILED), error);
+		if (!state->connect_called || state->outcome_taken) {
+			[state->condition unlock];
+			return CR_RESULT_NET_INVALID_WEBSOCKET;
+		}
+		return crnet_apple_websocket_await_open(socket, crnet_apple_date_limit(timeout_ms), out_http_status);
 	}
 }
 
@@ -1391,9 +1502,42 @@ CR_RESULT crnet_websocket_connect(
 static CR_RESULT crnet_apple_websocket_usable(CrNetWebSocketState *state) {
 	if (state->aborted)
 		return CR_RESULT_NET_ABORTED;
-	if (state->open_state != 1)
+	if (!state->outcome_taken || state->open_state != 1)
 		return CR_RESULT_NET_INVALID_WEBSOCKET;
 	return CR_SUCCESS;
+}
+
+/* What a sending call on a usable socket returns before anything else: the
+ * failure of a message that failed on its way, put in the sending side's
+ * record, or an ended connection's; CR_SUCCESS where it can go on. Called
+ * with the condition held. */
+static CR_RESULT crnet_apple_websocket_sending(struct crnet_websocket_t *socket) {
+	CrNetWebSocketState *state = socket->state;
+	if (state->send_failed) {
+		socket->errors[CRNET_ERROR_SIDE_SENDING] = state->send_failure;
+		return CR_RESULT_NET_SEND_FAILED;
+	}
+	if (state->finished)
+		return CR_RESULT_NET_SEND_FAILED;
+	return CR_SUCCESS;
+}
+
+/* Waits until `limit` for the message in flight to have gone, and says
+ * where it has got to: CR_SUCCESS for none in flight. Called with the
+ * condition held, which it keeps. */
+static CR_RESULT crnet_apple_websocket_carry_on(struct crnet_websocket_t *socket, NSDate *limit) {
+	CrNetWebSocketState *state = socket->state;
+	while (state->send_in_flight && !state->aborted && !state->send_failed) {
+		if (![state->condition waitUntilDate:limit])
+			break;
+	}
+	if (state->aborted)
+		return CR_RESULT_NET_ABORTED;
+	if (state->send_failed)
+		return crnet_apple_websocket_sending(socket);
+	if (state->send_in_flight)
+		return CR_RESULT_NET_TIMED_OUT;
+	return crnet_apple_websocket_sending(socket);
 }
 
 CR_RESULT crnet_websocket_send(
@@ -1412,67 +1556,85 @@ CR_RESULT crnet_websocket_send(
 	@autoreleasepool {
 		CrNetWebSocketState *state = socket->state;
 		[state->condition lock];
-		CR_RESULT usable = crnet_apple_websocket_usable(state);
-		if (!CR_FAILED(usable) && state->finished)
-			usable = CR_RESULT_NET_SEND_FAILED;
+		CR_RESULT result = crnet_apple_websocket_usable(state);
+		if (!CR_FAILED(result))
+			result = crnet_apple_websocket_sending(socket);
 		[state->condition unlock];
-		if (CR_FAILED(usable))
-			return usable;
-		if (timeout_ms == CRNET_NO_WAIT)
-			return CR_RESULT_NET_TIMED_OUT;
+		if (CR_FAILED(result))
+			return result;
+		// Refused before anything is taken, and before the message in
+		// flight is waited for: it is no business of this one's.
+		if (type == CRNET_WEBSOCKET_MESSAGE_TEXT && !crnet_utf8_valid((const uint8_t *)(size > 0 ? data : ""), (size_t)size))
+			return CR_RESULT_NET_SEND_FAILED;
 
+		// The message before first, out of this call's limit.
+		[state->condition lock];
+		result = crnet_apple_websocket_carry_on(socket, crnet_apple_date_limit(timeout_ms));
+		[state->condition unlock];
+		if (CR_FAILED(result))
+			return result;
+
+		// Nothing is in flight, and nothing else sends (one sending call
+		// at a time), so the copy is made without the condition held.
+		// NSURLSession's message keeps it with the system's allocator.
 		NSURLSessionWebSocketMessage *message = nil;
 		if (type == CRNET_WEBSOCKET_MESSAGE_TEXT) {
-			// nil when the bytes aren't UTF-8, which a text message must be.
 			NSString *text = [[[NSString alloc] initWithBytes:(size > 0 ? data : "") length:(NSUInteger)size encoding:NSUTF8StringEncoding] autorelease];
-			if (!text)
-				return CR_RESULT_NET_SEND_FAILED;
-			message = [[[NSURLSessionWebSocketMessage alloc] initWithString:text] autorelease];
+			if (text)
+				message = [[[NSURLSessionWebSocketMessage alloc] initWithString:text] autorelease];
 		} else {
 			NSData *bytes = [NSData dataWithBytes:(size > 0 ? data : "") length:(NSUInteger)size];
-			message       = [[[NSURLSessionWebSocketMessage alloc] initWithData:bytes] autorelease];
+			if (bytes)
+				message = [[[NSURLSessionWebSocketMessage alloc] initWithData:bytes] autorelease];
 		}
 		if (!message)
 			return CR_RESULT_OUT_OF_MEMORY;
 
-		// `failed` moves to the heap with the block, so a callback that
-		// arrives after this has given up waiting still has somewhere to
-		// write. An abort cancels the task, which fails the send and so
-		// ends the wait.
-		dispatch_semaphore_t  done   = dispatch_semaphore_create(0);
-		__block BOOL          failed = NO;
-		__block crnet_error failure;
-		[socket->task sendMessage:message
-		        completionHandler:^(NSError *error) {
-			        failed = error != nil;
-			        if (failed)
-				        crnet_apple_record(&failure, CR_RESULT_NET_SEND_FAILED, error);
-			        dispatch_semaphore_signal(done);
-		        }];
-		bool timed_out = dispatch_semaphore_wait(done, crnet_apple_dispatch_limit(timeout_ms)) != 0;
-		dispatch_release(done);
-
 		[state->condition lock];
-		BOOL aborted = state->aborted;
-		if (timed_out && !aborted) {
-			// Part of the message may be on the wire; the connection can't
-			// be trusted with another.
-			state->finished = YES;
-			[socket->task cancel];
-			[state->condition broadcast];
-			crnet_wait_set_notify(state->wait_set);
+		if (state->aborted) {
+			[state->condition unlock];
+			return CR_RESULT_NET_ABORTED;
 		}
+		state->send_in_flight = YES;
 		[state->condition unlock];
 
-		if (aborted)
-			return CR_RESULT_NET_ABORTED;
-		if (timed_out)
-			return CR_RESULT_NET_TIMED_OUT;
-		if (!failed)
-			return CR_SUCCESS;
-		// The block has run, so its record is this thread's to read.
-		socket->errors[CRNET_ERROR_SIDE_SENDING] = failure;
-		return CR_RESULT_NET_SEND_FAILED;
+		// The block keeps the state, not the socket: a completion after
+		// destroy writes into memory that is still there and is let go
+		// with the block. An abort cancels the task, which fails the
+		// message with NSURLErrorCancelled; every call reports the abort
+		// first.
+		[socket->task sendMessage:message
+		        completionHandler:^(NSError *error) {
+			        [state->condition lock];
+			        state->send_in_flight = NO;
+			        if (error && !state->send_failed) {
+				        state->send_failed = YES;
+				        crnet_apple_record(&state->send_failure, CR_RESULT_NET_SEND_FAILED, error);
+			        }
+			        [state->condition broadcast];
+			        crnet_wait_set_notify(state->wait_set);
+			        [state->condition unlock];
+		        }];
+		return CR_SUCCESS;
+	}
+}
+
+CR_RESULT crnet_websocket_flush(
+    crnet_websocket socket,
+    uint32_t timeout_ms) {
+	if (!socket)
+		return CR_RESULT_NET_INVALID_WEBSOCKET;
+	if (CR_STALE(socket, "crnet_websocket_flush", "socket"))
+		return CR_RESULT_NET_INVALID_WEBSOCKET;
+
+	@autoreleasepool {
+		CrNetWebSocketState *state = socket->state;
+		[state->condition lock];
+		CR_RESULT result = crnet_apple_websocket_usable(state);
+		if (!CR_FAILED(result))
+			result = crnet_apple_websocket_carry_on(socket, crnet_apple_date_limit(timeout_ms));
+		[state->condition unlock];
+		return result;
 	}
 }
 
@@ -1530,34 +1692,20 @@ static void crnet_apple_websocket_start_receive(struct crnet_websocket_t *socket
 // through callbacks, so there is no socket to poll: the socket keeps its
 // set, tells it above whenever a receive has an answer, and is asked here.
 
-CR_RESULT crnet_websocket_wait_attach(
-    crnet_websocket socket,
-    struct crnet_wait_set_t *set,
-    bool *out_has_native,
-    intptr_t *out_native,
-    bool *out_report_once) {
+CR_RESULT crnet_websocket_wait_attach(crnet_websocket socket, struct crnet_wait_set_t *set) {
 	CrNetWebSocketState *state = socket->state;
 	[state->condition lock];
 	CR_RESULT result = CR_SUCCESS;
-	if (state->aborted || state->open_state != 1)
+	// Connected or connecting; never connected, failed or aborted is
+	// refused.
+	if (state->aborted || !state->connect_called || (state->outcome_taken && state->open_state != 1))
 		result = CR_RESULT_NET_INVALID_WEBSOCKET;
 	else if (state->wait_set)
 		result = CR_RESULT_NET_ALREADY_IN_WAIT_SET;
-	if (!CR_FAILED(result)) {
+	else
 		state->wait_set = set;
-		// NSURLSession only says a message has arrived to a receive that
-		// was asked for; without one the set would never hear of it.
-		if (!state->has_message && !state->finished && !state->receive_pending)
-			crnet_apple_websocket_start_receive(socket);
-	}
 	[state->condition unlock];
-	if (CR_FAILED(result))
-		return result;
-
-	*out_has_native  = false;
-	*out_native      = 0;
-	*out_report_once = false;
-	return CR_SUCCESS;
+	return result;
 }
 
 void crnet_websocket_wait_detach(crnet_websocket socket) {
@@ -1569,10 +1717,30 @@ void crnet_websocket_wait_detach(crnet_websocket socket) {
 	[state->condition unlock];
 }
 
-bool crnet_websocket_wait_ready(crnet_websocket socket) {
+uint32_t crnet_websocket_wait_prepare(crnet_websocket socket, uint32_t wait_for, struct crnet_wait_poll *poll) {
+	(void)poll;
 	CrNetWebSocketState *state = socket->state;
 	[state->condition lock];
-	bool ready = state->aborted || state->has_message || state->finished;
+	uint32_t ready = 0;
+	if (state->aborted) {
+		ready = wait_for;
+	} else if (!state->outcome_taken) {
+		// Opening: named once it has an outcome, for whatever was asked.
+		if (state->open_state != 0)
+			ready = wait_for;
+	} else {
+		if (wait_for & CRNET_WAIT_FOR_INCOMING) {
+			if (state->has_message || state->finished)
+				ready |= CRNET_WAIT_FOR_INCOMING;
+			// NSURLSession only says a message has arrived to a receive
+			// that was asked for; without one the set would never hear of
+			// it. A receive left waiting is the one that will answer.
+			else if (!state->receive_pending && state->open_state == 1)
+				crnet_apple_websocket_start_receive(socket);
+		}
+		if ((wait_for & CRNET_WAIT_FOR_ROOM) && (!state->send_in_flight || state->send_failed || state->finished))
+			ready |= CRNET_WAIT_FOR_ROOM;
+	}
 	[state->condition unlock];
 	return ready;
 }
@@ -1683,8 +1851,14 @@ CR_RESULT crnet_websocket_close(
 		CrNetWebSocketState *state = socket->state;
 		[state->condition lock];
 		CR_RESULT usable = crnet_apple_websocket_usable(state);
-		if (!CR_FAILED(usable) && state->finished)
-			usable = CR_RESULT_NET_SEND_FAILED; // already ended: no connection to send a frame on
+		// A message that failed, or an ended connection: no connection to
+		// send a frame on.
+		if (!CR_FAILED(usable))
+			usable = crnet_apple_websocket_sending(socket);
+		// A close frame goes after the message in flight, never into it, and
+		// close takes no limit to wait for it with (crnet.h).
+		if (!CR_FAILED(usable) && state->send_in_flight)
+			usable = CR_RESULT_NET_TIMED_OUT;
 		if (!CR_FAILED(usable)) {
 			// The end of the connection for this side, whatever the task
 			// still reports afterwards: a message that arrived and wasn't

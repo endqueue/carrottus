@@ -15,7 +15,7 @@
 
 set -u
 if [ $# -lt 1 ]; then
-	echo "usage: $0 <path to crnet_test> [instance|bases|records|tcp|wait|resolver|http|tls|proxy|websocket|internet]" >&2
+	echo "usage: $0 <path to crnet_test> [instance|bases|records|tcp|wait|resolver|http|tls|proxy|websocket|resumable|internet]" >&2
 	exit 2
 fi
 here=$(cd "$(dirname "$0")" && pwd)

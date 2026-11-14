@@ -8,11 +8,14 @@
  *
  * A wait is one poll() over the sockets of the set's members and one socket
  * of the set's own, the wake socket, which is how anything else ends the
- * wait: crnet_wait_set_abort, crnet_wait_set_wake, and a WebSocket whose stack reports through
- * callbacks rather than through a socket the system can poll (NSURLSession,
- * WinHTTP). Such a member has no entry in the poll; it writes to the wake
- * socket when its state changes, and the wait asks it directly whether it
- * is ready (see the end of crnetshared.h).
+ * wait: crnet_wait_set_abort, crnet_wait_set_wake, and a WebSocket or HTTP
+ * transfer whose stack reports through callbacks rather than through a
+ * socket the system can poll (NSURLSession, WinHTTP). Before every poll
+ * each member is asked what to poll for it and whether it is ready
+ * already: a member that is called back writes to the wake socket when its
+ * state changes and answers from that state, and one whose stack has
+ * descriptors and timers of its own (libcurl) hands them over afresh (see
+ * the end of crnetshared.h).
  *
  * The wake socket is a pipe where there are pipes. Winsock can't poll one,
  * so there it is a UDP socket bound to the loopback address that sends
@@ -29,10 +32,10 @@
 #include "crnetshared.h"
 #include "crnet.h"
 
-// A wait set waits on TCP objects and WebSockets and on nothing else, so a
-// build with neither (watchOS) has no wait set, and each kind of member is
-// only here where its part of Carrottus Net is.
-#if CRNET_EXT_TCP || CRNET_EXT_WEBSOCKET
+// A wait set is on every platform: HTTP transfers are members wherever there
+// is HTTP, watchOS included, where TCP sockets and WebSockets aren't (each
+// kind of member is only here where its part of Carrottus Net is). Its wake
+// is a pipe, which is no network socket and needs no permission.
 
 #if CARROTTUS_PLATFORM_WIN32
 #include <winsock2.h>
@@ -87,6 +90,7 @@ enum crnet_wait_kind {
 	CRNET_WAIT_KIND_TCP_SOCKET,
 	CRNET_WAIT_KIND_TCP_LISTENER,
 	CRNET_WAIT_KIND_WEBSOCKET,
+	CRNET_WAIT_KIND_HTTP_TRANSFER,
 };
 
 struct crnet_wait_member {
@@ -94,15 +98,23 @@ struct crnet_wait_member {
 	void                  *object; // the handle it was added as
 	void                  *user;
 	uint32_t               wait_for;
-	// A socket for poll(), or none: a WebSocket that notifies and is asked.
-	bool     has_native;
-	intptr_t native;
-	// Named by the next wait whatever poll() says, then cleared.
-	bool report_once;
+	// Asked afresh before every poll: the bits it was ready with already,
+	// and when a timer of its stack's makes it worth naming (0: none).
+	uint32_t ready;
+	uint64_t timer_at_ms;
+};
+
+/* Whose each poll entry is, and how what poll() says of it is read. */
+struct crnet_wait_entry_info {
+	uint32_t member; // an index into `members`; UINT32_MAX for the wake socket
+	bool     incoming;
+	bool     room;
+	bool     outcome; // anything at all names the member for every bit
 };
 
 typedef EQ_ARRAY(struct crnet_wait_member) crnet_wait_member_array;
 typedef EQ_ARRAY(crnet_poll_entry) crnet_poll_entry_array;
+typedef EQ_ARRAY(struct crnet_wait_entry_info) crnet_wait_entry_info_array;
 
 struct crnet_wait_set_t {
 	cr_object_head head;
@@ -112,10 +124,12 @@ struct crnet_wait_set_t {
 	// below point at.
 	EQ_ALLOCATOR             allocator;
 	crnet_wait_member_array members;
-	// What poll() is handed: the wake socket, then a member's socket each.
-	// One more than the members' capacity, kept between waits so a wait
-	// allocates only when the set has grown.
-	crnet_poll_entry_array entries;
+	// What poll() is handed: the wake socket, then whatever the members ask
+	// for, with whose each one is beside it. Both grow together (one
+	// capacity) and are kept between waits, so a steady set allocates
+	// nothing.
+	crnet_poll_entry_array      entries;
+	crnet_wait_entry_info_array infos;
 
 #if CARROTTUS_PLATFORM_WIN32
 	SOCKET             wake; // INVALID_SOCKET until made
@@ -315,6 +329,7 @@ CR_RESULT crnet_wait_set_create(
 	set->allocator      = cr_eq_allocator(&set->head.allocator);
 	eq_array_init(&set->members, &set->allocator);
 	eq_array_init(&set->entries, &set->allocator);
+	eq_array_init(&set->infos, &set->allocator);
 	set->instance = instance;
 	crnet_wait_wake_reset(set);
 	if (!crnet_wait_wake_create(set)) {
@@ -334,17 +349,24 @@ void crnet_wait_set_destroy(crnet_wait_set set) {
 		return;
 	if (CR_STALE(set, "crnet_wait_set_destroy", "set"))
 		return;
-	// A WebSocket that notifies holds this set; each lets go before the
-	// wake socket it would write to is closed.
-#if CRNET_EXT_WEBSOCKET
+	// A member that notifies holds this set; each lets go before the wake
+	// socket it would write to is closed.
 	for (size_t i = 0; i < set->members.count; ++i) {
-		if (set->members.data[i].kind == CRNET_WAIT_KIND_WEBSOCKET)
-			crnet_websocket_wait_detach((crnet_websocket)set->members.data[i].object);
-	}
+		struct crnet_wait_member *member = &set->members.data[i];
+#if CRNET_EXT_WEBSOCKET
+		if (member->kind == CRNET_WAIT_KIND_WEBSOCKET)
+			crnet_websocket_wait_detach((crnet_websocket)member->object);
 #endif
+		if (member->kind == CRNET_WAIT_KIND_HTTP_TRANSFER) {
+			struct crnet_http_transfer_t *transfer = (struct crnet_http_transfer_t *)member->object;
+			crnet_http_backend_wait_detach(transfer);
+			transfer->wait_set = NULL;
+		}
+	}
 	crnet_wait_wake_destroy(set);
 	eq_array_free(&set->members);
 	eq_array_free(&set->entries);
+	eq_array_free(&set->infos);
 	CR_KILL(set);
 	const CR_ALLOCATOR allocator = set->head.allocator;
 	cr_string_free(&allocator, set->head.debug_name);
@@ -444,8 +466,9 @@ CR_RESULT crnet_wait_set_add_tcp_socket(
 		return CR_RESULT_NET_INVALID_TCP_SOCKET;
 	if (CR_STALE(socket, "crnet_wait_set_add_tcp_socket", "socket"))
 		return CR_RESULT_NET_INVALID_TCP_SOCKET;
+	// Connected or connecting; never connected, or failed, is refused.
 	intptr_t native = 0;
-	if (!crnet_tcp_socket_native(socket, &native))
+	if (crnet_tcp_socket_wait_state(socket, &native) == CRNET_TCP_WAIT_NONE)
 		return CR_RESULT_NET_INVALID_TCP_SOCKET;
 	if (crnet_tcp_socket_instance(socket) != set->instance)
 		return CR_RESULT_NET_INVALID_INSTANCE;
@@ -455,12 +478,10 @@ CR_RESULT crnet_wait_set_add_tcp_socket(
 	struct crnet_wait_member *member = crnet_wait_grow(set);
 	if (!member)
 		return CR_RESULT_OUT_OF_MEMORY;
-	member->kind       = CRNET_WAIT_KIND_TCP_SOCKET;
-	member->object     = socket;
-	member->user       = user;
-	member->wait_for   = wait_for;
-	member->has_native = true;
-	member->native     = native;
+	member->kind     = CRNET_WAIT_KIND_TCP_SOCKET;
+	member->object   = socket;
+	member->user     = user;
+	member->wait_for = wait_for;
 	set->members.count++;
 	return CR_SUCCESS;
 }
@@ -488,12 +509,11 @@ CR_RESULT crnet_wait_set_add_tcp_listener(
 	struct crnet_wait_member *member = crnet_wait_grow(set);
 	if (!member)
 		return CR_RESULT_OUT_OF_MEMORY;
-	member->kind       = CRNET_WAIT_KIND_TCP_LISTENER;
-	member->object     = listener;
-	member->user       = user;
-	member->wait_for   = CRNET_WAIT_FOR_INCOMING;
-	member->has_native = true;
-	member->native     = native;
+	(void)native; // asked again at every wait
+	member->kind     = CRNET_WAIT_KIND_TCP_LISTENER;
+	member->object   = listener;
+	member->user     = user;
+	member->wait_for = CRNET_WAIT_FOR_INCOMING;
 	set->members.count++;
 	return CR_SUCCESS;
 }
@@ -529,11 +549,14 @@ void crnet_wait_set_remove_tcp_listener(crnet_wait_set set, crnet_tcp_listener l
 CR_RESULT crnet_wait_set_add_websocket(
     crnet_wait_set set,
     crnet_websocket socket,
+    uint32_t wait_for,
     void *user) {
 	if (!set)
 		return CR_RESULT_NET_INVALID_WAIT_SET;
 	if (CR_STALE(set, "crnet_wait_set_add_websocket", "set"))
 		return CR_RESULT_NET_INVALID_WAIT_SET;
+	if (wait_for == 0 || (wait_for & ~(uint32_t)(CRNET_WAIT_FOR_INCOMING | CRNET_WAIT_FOR_ROOM)) != 0)
+		return CR_RESULT_DESC_INVALID_PARAMETERS;
 	if (!socket)
 		return CR_RESULT_NET_INVALID_WEBSOCKET;
 	if (CR_STALE(socket, "crnet_wait_set_add_websocket", "socket"))
@@ -548,13 +571,13 @@ CR_RESULT crnet_wait_set_add_websocket(
 	struct crnet_wait_member *member = crnet_wait_grow(set);
 	if (!member)
 		return CR_RESULT_OUT_OF_MEMORY;
-	CR_RESULT result = crnet_websocket_wait_attach(socket, set, &member->has_native, &member->native, &member->report_once);
+	CR_RESULT result = crnet_websocket_wait_attach(socket, set);
 	if (CR_FAILED(result))
 		return result;
 	member->kind     = CRNET_WAIT_KIND_WEBSOCKET;
 	member->object   = socket;
 	member->user     = user;
-	member->wait_for = CRNET_WAIT_FOR_INCOMING;
+	member->wait_for = wait_for;
 	set->members.count++;
 	return CR_SUCCESS;
 }
@@ -575,19 +598,151 @@ void crnet_wait_set_remove_websocket(crnet_wait_set set, crnet_websocket socket)
 
 #endif // CRNET_EXT_WEBSOCKET
 
+CR_RESULT crnet_wait_set_add_http_transfer(
+    crnet_wait_set set,
+    crnet_http_transfer transfer,
+    uint32_t wait_for,
+    void *user) {
+	if (!set)
+		return CR_RESULT_NET_INVALID_WAIT_SET;
+	if (CR_STALE(set, "crnet_wait_set_add_http_transfer", "set"))
+		return CR_RESULT_NET_INVALID_WAIT_SET;
+	if (wait_for == 0 || (wait_for & ~(uint32_t)(CRNET_WAIT_FOR_INCOMING | CRNET_WAIT_FOR_ROOM)) != 0)
+		return CR_RESULT_DESC_INVALID_PARAMETERS;
+	if (!transfer)
+		return CR_RESULT_NET_INVALID_HTTP_TRANSFER;
+	if (CR_STALE(transfer, "crnet_wait_set_add_http_transfer", "transfer"))
+		return CR_RESULT_NET_INVALID_HTTP_TRANSFER;
+	// Started (a start that ran out of time included), and not failed:
+	// there is nothing an unstarted one could be named for.
+	if (transfer->phase == CRNET_HTTP_PHASE_CREATED || transfer->phase == CRNET_HTTP_PHASE_FAILED)
+		return CR_RESULT_NET_INVALID_HTTP_TRANSFER;
+	if (crnet_http_client_instance(transfer->client) != set->instance)
+		return CR_RESULT_NET_INVALID_INSTANCE;
+	if (transfer->wait_set)
+		return CR_RESULT_NET_ALREADY_IN_WAIT_SET;
+
+	struct crnet_wait_member *member = crnet_wait_grow(set);
+	if (!member)
+		return CR_RESULT_OUT_OF_MEMORY;
+	crnet_http_backend_wait_attach(transfer, set);
+	transfer->wait_set = set;
+	member->kind       = CRNET_WAIT_KIND_HTTP_TRANSFER;
+	member->object     = transfer;
+	member->user       = user;
+	member->wait_for   = wait_for;
+	set->members.count++;
+	return CR_SUCCESS;
+}
+
+void crnet_wait_set_remove_http_transfer(
+    crnet_wait_set set,
+    crnet_http_transfer transfer) {
+	if (!set || !transfer)
+		return;
+	if (CR_STALE(set, "crnet_wait_set_remove_http_transfer", "set"))
+		return;
+	if (CR_STALE(transfer, "crnet_wait_set_remove_http_transfer", "transfer"))
+		return;
+	struct crnet_wait_member *member = crnet_wait_find(set, CRNET_WAIT_KIND_HTTP_TRANSFER, transfer);
+	if (!member)
+		return;
+	crnet_http_backend_wait_detach(transfer);
+	transfer->wait_set = NULL;
+	crnet_wait_remove(set, member);
+}
+
 // --------------------------------------------------------------------------
 // Wait
 // --------------------------------------------------------------------------
 
-/* Asks a member that has no socket to poll whether a receive on it would
- * find something. Only a WebSocket is ever such a member. */
-static bool crnet_wait_member_ready(const struct crnet_wait_member *member) {
-#if CRNET_EXT_WEBSOCKET
-	return crnet_websocket_wait_ready((crnet_websocket)member->object);
-#else
-	(void)member;
-	return false;
+/* What a member is handed at each wait to ask for polling (crnetshared.h). */
+struct crnet_wait_poll {
+	struct crnet_wait_set_t *set;
+	uint32_t                 member;
+	uint64_t                 now_ms;
+	bool                     failed; // the entries couldn't grow
+};
+
+void crnet_wait_poll_add(struct crnet_wait_poll *poll, intptr_t native, bool incoming, bool room, bool outcome) {
+	struct crnet_wait_set_t *set = poll->set;
+	if (poll->failed)
+		return;
+	// The two arrays share one capacity: grown both or neither.
+	if (set->entries.count == set->entries.capacity) {
+		size_t capacity = set->entries.capacity ? set->entries.capacity * 2 : 16;
+		if (capacity > CR_UINT32_MAX || eq_array_reserve(&set->entries, capacity) != EQ_SUCCESS || eq_array_reserve(&set->infos, capacity) != EQ_SUCCESS) {
+			poll->failed = true;
+			return;
+		}
+	}
+	crnet_poll_entry entry;
+	memset(&entry, 0, sizeof(entry));
+	entry.fd = (crnet_poll_socket)native;
+	if (outcome) {
+		// A connect's outcome shows as writable, or as an error or hang-up,
+		// which poll() reports whatever was asked.
+		entry.events = CRNET_POLL_ROOM;
+	} else {
+		if (incoming)
+			entry.events |= CRNET_POLL_INCOMING;
+		if (room)
+			entry.events |= CRNET_POLL_ROOM;
+	}
+	const struct crnet_wait_entry_info info = {poll->member, incoming, room, outcome};
+	// Room was made above for both.
+	EQ_RESULT pushed = eq_array_push(&set->entries, &entry);
+	assert(pushed == EQ_SUCCESS);
+	pushed = eq_array_push(&set->infos, &info);
+	assert(pushed == EQ_SUCCESS);
+	(void)pushed;
+}
+
+void crnet_wait_poll_timer(struct crnet_wait_poll *poll, uint32_t timeout_ms) {
+	struct crnet_wait_member *member = &poll->set->members.data[poll->member];
+	uint64_t                  at     = poll->now_ms + timeout_ms;
+	if (member->timer_at_ms == 0 || at < member->timer_at_ms)
+		member->timer_at_ms = at;
+}
+
+/* Asks one member what to poll for it; returns the bits it is ready with
+ * already. */
+static uint32_t crnet_wait_member_prepare(struct crnet_wait_member *member, struct crnet_wait_poll *poll) {
+	member->timer_at_ms = 0;
+	switch (member->kind) {
+#if CRNET_EXT_TCP
+	case CRNET_WAIT_KIND_TCP_SOCKET: {
+		intptr_t native = 0;
+		switch (crnet_tcp_socket_wait_state((crnet_tcp_socket)member->object, &native)) {
+		case CRNET_TCP_WAIT_CONNECTING:
+			crnet_wait_poll_add(poll, native, false, false, true);
+			return 0;
+		case CRNET_TCP_WAIT_OPEN:
+			crnet_wait_poll_add(poll, native, (member->wait_for & CRNET_WAIT_FOR_INCOMING) != 0, (member->wait_for & CRNET_WAIT_FOR_ROOM) != 0, false);
+			return 0;
+		case CRNET_TCP_WAIT_NONE:
+		default:
+			// Its connect failed after it was added: an ended object is
+			// named, and the continue the caller makes says so.
+			return member->wait_for;
+		}
+	}
+	case CRNET_WAIT_KIND_TCP_LISTENER: {
+		intptr_t native = 0;
+		if (crnet_tcp_listener_native((crnet_tcp_listener)member->object, &native))
+			crnet_wait_poll_add(poll, native, true, false, false);
+		return 0;
+	}
 #endif
+#if CRNET_EXT_WEBSOCKET
+	case CRNET_WAIT_KIND_WEBSOCKET:
+		return crnet_websocket_wait_prepare((crnet_websocket)member->object, member->wait_for, poll) & member->wait_for;
+#endif
+	case CRNET_WAIT_KIND_HTTP_TRANSFER:
+		return crnet_http_transfer_wait_prepare((struct crnet_http_transfer_t *)member->object, member->wait_for, poll);
+	default:
+		return 0;
+	}
 }
 
 CR_RESULT crnet_wait_set_wait(
@@ -610,12 +765,6 @@ CR_RESULT crnet_wait_set_wait(
 
 	uint64_t start = crnet_wait_now_ms();
 
-	// One entry for the wake socket and one for each member at most.
-	if (set->entries.count < set->members.count + 1) {
-		if (eq_array_resize(&set->entries, set->members.capacity + 1) != EQ_SUCCESS)
-			return CR_RESULT_OUT_OF_MEMORY;
-	}
-
 	// A wake that came before this wait, or comes during it. Once taken it
 	// is this wait's: the poll only looks from then on, and the wait
 	// returns after it whether or not a member was ready.
@@ -630,40 +779,41 @@ CR_RESULT crnet_wait_set_wait(
 		// asking or still in the wake socket to end the poll.
 		crnet_wait_wake_drain(set);
 
-		crnet_poll_entry *entries = set->entries.data;
-		memset(&entries[0], 0, sizeof(entries[0]));
-		entries[0].fd     = crnet_wait_wake_socket(set);
-		entries[0].events = CRNET_POLL_INCOMING;
-		uint32_t entry_count = 1;
+		eq_array_clear(&set->entries);
+		eq_array_clear(&set->infos);
+		struct crnet_wait_poll poll = {set, UINT32_MAX, crnet_wait_now_ms(), false};
+		crnet_wait_poll_add(&poll, (intptr_t)crnet_wait_wake_socket(set), true, false, false);
 
 		// Members that are ready without poll() saying so mean the poll
 		// only looks; it still runs, so the rest are reported with them.
-		bool ready_already = false;
+		bool     ready_already = false;
+		uint64_t timer_at_ms   = 0;
 		for (size_t i = 0; i < set->members.count; ++i) {
 			struct crnet_wait_member *member = &set->members.data[i];
-			if (member->has_native) {
-				crnet_poll_entry *entry = &entries[entry_count++];
-				memset(entry, 0, sizeof(*entry));
-				entry->fd = (crnet_poll_socket)member->native;
-				if (member->wait_for & CRNET_WAIT_FOR_INCOMING)
-					entry->events |= CRNET_POLL_INCOMING;
-				if (member->wait_for & CRNET_WAIT_FOR_ROOM)
-					entry->events |= CRNET_POLL_ROOM;
-				if (member->report_once)
-					ready_already = true;
-			} else if (crnet_wait_member_ready(member)) {
+			poll.member                       = (uint32_t)i;
+			member->ready                     = crnet_wait_member_prepare(member, &poll);
+			if (member->ready)
 				ready_already = true;
-			}
+			if (member->timer_at_ms != 0 && (timer_at_ms == 0 || member->timer_at_ms < timer_at_ms))
+				timer_at_ms = member->timer_at_ms;
 		}
+		if (poll.failed)
+			return CR_RESULT_OUT_OF_MEMORY;
 
 		// Taken after the drain for the reason given there: a wake that
 		// lands later still has its byte in the wake socket to end the poll.
 		if (crnet_wait_take_woken(set))
 			woken = true;
 
-		int  remaining   = (ready_already || woken) ? 0 : crnet_wait_remaining(start, timeout_ms);
+		int remaining = (ready_already || woken) ? 0 : crnet_wait_remaining(start, timeout_ms);
+		if (timer_at_ms != 0 && remaining != 0) {
+			uint64_t now   = crnet_wait_now_ms();
+			int      timer = timer_at_ms <= now ? 0 : (timer_at_ms - now > (uint64_t)INT_MAX ? INT_MAX : (int)(timer_at_ms - now));
+			if (remaining < 0 || timer < remaining)
+				remaining = timer;
+		}
 		bool interrupted = false;
-		int  ready       = crnet_wait_poll(entries, entry_count, remaining, &interrupted);
+		int  ready       = crnet_wait_poll(set->entries.data, (uint32_t)set->entries.count, remaining, &interrupted);
 		if (ready < 0) {
 			if (interrupted)
 				continue;
@@ -672,30 +822,34 @@ CR_RESULT crnet_wait_set_wait(
 		if (crnet_wait_is_aborted(set))
 			return CR_RESULT_NET_ABORTED;
 
-		// The members are walked in the order the entries were made.
+		// What poll() said of each entry, put to its member.
+		for (size_t e = 1; e < set->entries.count; ++e) {
+			short happened = set->entries.data[e].revents;
+			if (happened == 0)
+				continue;
+			const struct crnet_wait_entry_info *info   = &set->infos.data[e];
+			struct crnet_wait_member           *member = &set->members.data[info->member];
+			if (info->outcome || (happened & CRNET_POLL_ENDED)) {
+				// An outcome, or an ended connection, is reported as
+				// whatever was asked for; the call the caller then makes
+				// says what it is.
+				member->ready |= member->wait_for;
+				continue;
+			}
+			if (info->incoming && (happened & CRNET_POLL_INCOMING))
+				member->ready |= CRNET_WAIT_FOR_INCOMING;
+			if (info->room && (happened & CRNET_POLL_ROOM))
+				member->ready |= CRNET_WAIT_FOR_ROOM;
+		}
+
+		uint64_t now   = crnet_wait_now_ms();
 		uint32_t count = 0;
-		uint32_t entry = 1;
 		for (size_t i = 0; i < set->members.count && count < capacity; ++i) {
 			struct crnet_wait_member *member = &set->members.data[i];
-			uint32_t                    bits   = 0;
-			if (member->has_native) {
-				short happened = entries[entry++].revents;
-				// An ended connection is reported as whatever was asked
-				// for; the call the caller then makes says what it is.
-				if (happened & CRNET_POLL_ENDED)
-					bits = member->wait_for;
-				if (happened & CRNET_POLL_INCOMING)
-					bits |= CRNET_WAIT_FOR_INCOMING;
-				if (happened & CRNET_POLL_ROOM)
-					bits |= CRNET_WAIT_FOR_ROOM;
-				bits &= member->wait_for;
-				if (member->report_once) {
-					bits                |= CRNET_WAIT_FOR_INCOMING;
-					member->report_once  = false;
-				}
-			} else if (crnet_wait_member_ready(member)) {
-				bits = CRNET_WAIT_FOR_INCOMING;
-			}
+			uint32_t                    bits   = member->ready;
+			if (member->timer_at_ms != 0 && now >= member->timer_at_ms)
+				bits |= member->wait_for;
+			bits &= member->wait_for;
 			if (bits != 0) {
 				out_events[count].user  = member->user;
 				out_events[count].ready = bits;
@@ -723,5 +877,3 @@ CR_RESULT crnet_wait_set_wait(
 #if __cplusplus
 }
 #endif
-
-#endif // CRNET_EXT_TCP || CRNET_EXT_WEBSOCKET

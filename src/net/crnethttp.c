@@ -14,7 +14,9 @@
  * crnet.h allows next, and this file can take for granted that a
  * backend's result is the network's answer. The rule that joins the two:
  * any failure but CR_RESULT_NET_TIMED_OUT ends the transfer, and after
- * that nothing reaches the backend but destroy.
+ * that nothing reaches the backend but destroy. A start that returns
+ * CR_RESULT_NET_TIMED_OUT has started the transfer (crnet.h, "Steps"):
+ * the backend's next call carries it on.
  */
 
 #include "crnetshared.h"
@@ -298,10 +300,10 @@ static CR_RESULT crnet_http_desc_check(const crnet_http_transfer_desc *desc, enu
 // --------------------------------------------------------------------------
 
 /* What a backend returned, after the transfer has been marked for it:
- * anything but success and a time-out that may be tried again leaves only
- * destroy. */
-static CR_RESULT crnet_http_settle(struct crnet_http_transfer_t *transfer, CR_RESULT result, bool timeout_ends_it) {
-	if (CR_FAILED(result) && (result != CR_RESULT_NET_TIMED_OUT || timeout_ends_it))
+ * anything but success and a time-out, which every call may be tried again
+ * after, leaves only destroy. */
+static CR_RESULT crnet_http_settle(struct crnet_http_transfer_t *transfer, CR_RESULT result) {
+	if (CR_FAILED(result) && result != CR_RESULT_NET_TIMED_OUT)
 		transfer->phase = CRNET_HTTP_PHASE_FAILED;
 	return result;
 }
@@ -395,20 +397,16 @@ CR_RESULT crnet_http_transfer_start(
 	CR_RESULT                   result   = crnet_http_desc_check(desc, &encoding);
 	if (CR_FAILED(result))
 		return result;
-	// A request can't be started without waiting on the other end; with no
-	// waiting allowed nothing is done, and the transfer is still unstarted.
-	if (desc->timeout_ms == CRNET_NO_WAIT)
-		return CR_RESULT_NET_TIMED_OUT;
 
 	transfer->body             = desc->body;
 	transfer->body_size        = desc->body_size;
 	transfer->body_sent        = 0;
 	transfer->is_head          = strcmp(desc->method, "HEAD") == 0;
 	transfer->follow_redirects = desc->follow_redirects;
+	// Started from here whatever the backend says: out of time means the
+	// request is under way, and the next call carries it on.
 	transfer->phase            = CRNET_HTTP_PHASE_SENDING;
-	// Out of time here means a request that may be part sent, which can't
-	// be picked up again.
-	return crnet_http_settle(transfer, crnet_http_backend_start(transfer, desc, encoding), true);
+	return crnet_http_settle(transfer, crnet_http_backend_start(transfer, desc, encoding));
 }
 
 CR_RESULT crnet_http_transfer_send(
@@ -444,7 +442,7 @@ CR_RESULT crnet_http_transfer_send(
 		size = SIZE_MAX;
 
 	size_t     sent   = 0;
-	CR_RESULT result = crnet_http_settle(transfer, crnet_http_backend_send(transfer, data, (size_t)size, timeout_ms, &sent), false);
+	CR_RESULT result = crnet_http_settle(transfer, crnet_http_backend_send(transfer, data, (size_t)size, timeout_ms, &sent));
 	if (CR_FAILED(result))
 		return result;
 	transfer->body_sent += sent;
@@ -469,7 +467,7 @@ CR_RESULT crnet_http_transfer_receive_response(
 		return CR_RESULT_NET_INVALID_HTTP_TRANSFER;
 
 	transfer->phase   = CRNET_HTTP_PHASE_AWAITING;
-	CR_RESULT result = crnet_http_settle(transfer, crnet_http_backend_receive_response(transfer, timeout_ms), false);
+	CR_RESULT result = crnet_http_settle(transfer, crnet_http_backend_receive_response(transfer, timeout_ms));
 	if (!CR_FAILED(result))
 		transfer->phase = CRNET_HTTP_PHASE_RESPONDED;
 	return result;
@@ -545,13 +543,20 @@ CR_RESULT crnet_http_transfer_recv(
 		size = SIZE_MAX;
 
 	size_t     received = 0;
-	CR_RESULT result   = crnet_http_settle(transfer, crnet_http_backend_recv(transfer, data, (size_t)size, timeout_ms, &received), false);
+	CR_RESULT result   = crnet_http_settle(transfer, crnet_http_backend_recv(transfer, data, (size_t)size, timeout_ms, &received));
 	if (CR_FAILED(result))
 		return result;
 	if (received == 0)
 		transfer->phase = CRNET_HTTP_PHASE_ENDED;
 	*out_received = received;
 	return CR_SUCCESS;
+}
+
+uint32_t crnet_http_transfer_wait_prepare(struct crnet_http_transfer_t *transfer, uint32_t wait_for, struct crnet_wait_poll *poll) {
+	// Every call on an ended, failed or aborted transfer returns at once.
+	if (transfer->phase == CRNET_HTTP_PHASE_ENDED || transfer->phase == CRNET_HTTP_PHASE_FAILED || crnet_http_backend_aborted(transfer))
+		return wait_for;
+	return crnet_http_backend_wait_prepare(transfer, wait_for, poll) & wait_for;
 }
 
 #if __cplusplus

@@ -11,6 +11,7 @@
  *
  *   crnet_test <info file>          every part
  *   crnet_test <info file> <part>   one of: tcp wait resolver http tls proxy websocket
+ *                                   resumable (or internet, opt-in)
  *
  * tests/run_crnet_test.sh starts the server, runs this and stops the
  * server again.
@@ -507,9 +508,15 @@ static void test_tcp(void) {
 		crnet_tcp_socket_create(g_instance, &bad);
 		connect_desc.address = "localhost";
 		expect(crnet_tcp_socket_connect(bad, &connect_desc), CR_RESULT_NET_INVALID_ADDRESS, "connect to a name rather than a numeric address");
+		// Refused, begun with CRNET_NO_WAIT: the refusal comes from the
+		// connect or from its continue, whichever finds it.
 		connect_desc.address    = "127.0.0.1";
 		connect_desc.timeout_ms = CRNET_NO_WAIT;
-		expect(crnet_tcp_socket_connect(bad, &connect_desc), CR_RESULT_NET_TIMED_OUT, "connect with CRNET_NO_WAIT does nothing");
+		CR_RESULT begun        = crnet_tcp_socket_connect(bad, &connect_desc);
+		check(begun == CR_RESULT_NET_TIMED_OUT || begun == CR_RESULT_NET_CONNECT_FAILED, "connect with CRNET_NO_WAIT begins it: %s", cr_result_str(begun));
+		if (begun == CR_RESULT_NET_TIMED_OUT)
+			begun = crnet_tcp_socket_connect_continue(bad, PATIENCE_MS);
+		expect(begun, CR_RESULT_NET_CONNECT_FAILED, "and the refusal is reported");
 		crnet_tcp_socket_destroy(bad);
 	}
 
@@ -1488,12 +1495,14 @@ static void test_http(void) {
 		desc.url              = "ftp://127.0.0.1/";
 		expect(crnet_http_transfer_start(transfer, &desc), CR_RESULT_NET_INVALID_URL, "start with a URL that isn't http or https");
 		desc.url        = url;
-		desc.timeout_ms = CRNET_NO_WAIT;
-		expect(crnet_http_transfer_start(transfer, &desc), CR_RESULT_NET_TIMED_OUT, "start with CRNET_NO_WAIT does nothing");
 
-		// None of those started it: it still can be.
+		// None of those started it: it still can be, and CRNET_NO_WAIT
+		// starts it as any limit does.
+		desc.timeout_ms = CRNET_NO_WAIT;
+		CR_RESULT begun = crnet_http_transfer_start(transfer, &desc);
+		check(begun == CR_SUCCESS || begun == CR_RESULT_NET_TIMED_OUT, "and the same transfer starts, with CRNET_NO_WAIT: %s", cr_result_str(begun));
 		desc.timeout_ms = PATIENCE_MS;
-		expect(crnet_http_transfer_start(transfer, &desc), CR_SUCCESS, "and the same transfer still starts");
+		expect(crnet_http_transfer_start(transfer, &desc), CR_RESULT_NET_INVALID_HTTP_TRANSFER, "start again is refused");
 		expect(crnet_http_transfer_send(transfer, "x", 1, PATIENCE_MS, &sent), CR_RESULT_NET_INVALID_HTTP_TRANSFER, "send on a request with no body");
 		expect(crnet_http_transfer_receive_response(transfer, PATIENCE_MS), CR_SUCCESS, "receive_response");
 		crnet_http_transfer_destroy(transfer);
@@ -2117,7 +2126,7 @@ static void test_websocket(void) {
 		int                tag = 7;
 		crnet_wait_event events[4];
 		uint32_t           count = 0;
-		expect(crnet_wait_set_add_websocket(set, socket, &tag), CR_SUCCESS, "add the socket to a wait set");
+		expect(crnet_wait_set_add_websocket(set, socket, CRNET_WAIT_FOR_INCOMING, &tag), CR_SUCCESS, "add the socket to a wait set");
 		// Being named once for no reason is allowed; drain and ask again.
 		if (!CR_FAILED(crnet_wait_set_wait(set, 100, events, 4, &count)))
 			crnet_websocket_recv(socket, buffer, sizeof(buffer), CRNET_NO_WAIT, &received, &type, &complete);
@@ -2229,6 +2238,794 @@ static void test_websocket(void) {
 }
 
 #endif // CRNET_EXT_WEBSOCKET
+
+// --------------------------------------------------------------------------
+// Resumable starts: steps begun with CRNET_NO_WAIT and carried on later
+// --------------------------------------------------------------------------
+
+/* Every loop below advances its object with CRNET_NO_WAIT only and sleeps in
+ * crnet_wait_set_wait() between calls, never anywhere else. The server holds
+ * each answer back for RESUMABLE_HELD_MS, so a call that waited for one would
+ * take that long; each call's time is measured, and the longest must stay
+ * under RESUMABLE_BOUND_MS whatever else the machine is doing. */
+#define RESUMABLE_HELD_MS  1000u
+#define RESUMABLE_BOUND_MS 250u
+
+static uint64_t    g_call_start;
+static uint64_t    g_longest_ms;
+static const char *g_longest_what = "none";
+
+static void call_begin(void) { g_call_start = now_ms(); }
+
+static CR_RESULT call_end(CR_RESULT result, const char *what) {
+	uint64_t took = now_ms() - g_call_start;
+	if (took >= g_longest_ms) {
+		g_longest_ms   = took;
+		g_longest_what = what;
+	}
+	return result;
+}
+
+/* A call with CRNET_NO_WAIT, timed. */
+#define TIMED(what, call) (call_begin(), call_end((call), (what)))
+
+static void longest_reset(void) {
+	g_longest_ms   = 0;
+	g_longest_what = "none";
+}
+
+static void longest_check(const char *loop) {
+	check(g_longest_ms < RESUMABLE_BOUND_MS, "%s: no call held the thread %u ms (longest %llu ms, %s)", loop, RESUMABLE_BOUND_MS, (unsigned long long)g_longest_ms,
+	      g_longest_what);
+}
+
+/* The one place the loops wait. `*out_ready` gathers what was named. False
+ * when nothing was named within PATIENCE_MS or the wait failed. */
+static bool sleep_in(crnet_wait_set set, uint32_t *out_ready) {
+	crnet_wait_event events[8];
+	uint32_t           count = 0;
+	*out_ready               = 0;
+	CR_RESULT result        = crnet_wait_set_wait(set, PATIENCE_MS, events, 8, &count);
+	for (uint32_t i = 0; i < count; ++i)
+		*out_ready |= events[i].ready;
+	return result == CR_SUCCESS;
+}
+
+/* A port nothing listens on: one the system gave a listener that is gone. */
+static uint16_t closed_port(void) {
+	crnet_tcp_listener_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type          = CR_STRUCT_TYPE_NET_TCP_LISTENER_DESC;
+	desc.address            = "127.0.0.1";
+	desc.backlog            = 1;
+	crnet_tcp_listener listener = NULL;
+	uint16_t           port     = 0;
+	if (!CR_FAILED(crnet_tcp_listener_create(g_instance, &desc, &listener, NULL)))
+		crnet_tcp_listener_get_port(listener, &port);
+	crnet_tcp_listener_destroy(listener);
+	return port;
+}
+
+#if CRNET_EXT_TCP
+
+static void resumable_tcp(crnet_wait_set set) {
+	crnet_error error;
+	int         tag = 1;
+
+	crnet_tcp_listener_desc listen_desc;
+	memset(&listen_desc, 0, sizeof(listen_desc));
+	listen_desc.base.type          = CR_STRUCT_TYPE_NET_TCP_LISTENER_DESC;
+	listen_desc.address            = "127.0.0.1";
+	listen_desc.backlog            = 4;
+	crnet_tcp_listener listener = NULL;
+	if (!expect(crnet_tcp_listener_create(g_instance, &listen_desc, &listener, &error), CR_SUCCESS, "a listener for the TCP connects"))
+		return;
+	uint16_t port = 0;
+	crnet_tcp_listener_get_port(listener, &port);
+
+	crnet_tcp_socket_connect_desc connect_desc;
+	memset(&connect_desc, 0, sizeof(connect_desc));
+	connect_desc.base.type  = CR_STRUCT_TYPE_NET_TCP_SOCKET_CONNECT_DESC;
+	connect_desc.address    = "127.0.0.1";
+	connect_desc.port       = port;
+	connect_desc.timeout_ms = CRNET_NO_WAIT;
+
+	crnet_tcp_socket socket = NULL;
+	crnet_tcp_socket_create(g_instance, &socket);
+	expect(crnet_tcp_socket_connect_continue(socket, CRNET_NO_WAIT), CR_RESULT_NET_INVALID_TCP_SOCKET, "TCP connect_continue before any connect");
+	expect(crnet_wait_set_add_tcp_socket(set, socket, CRNET_WAIT_FOR_INCOMING, &tag), CR_RESULT_NET_INVALID_TCP_SOCKET, "a socket never connected isn't taken by a wait set");
+
+	longest_reset();
+	CR_RESULT result = TIMED("crnet_tcp_socket_connect", crnet_tcp_socket_connect(socket, &connect_desc));
+	check(result == CR_SUCCESS || result == CR_RESULT_NET_TIMED_OUT, "TCP connect with CRNET_NO_WAIT begins it: %s", cr_result_str(result));
+	if (result == CR_RESULT_NET_TIMED_OUT) {
+		uint64_t sent = 0;
+		expect(crnet_tcp_socket_connect(socket, &connect_desc), CR_RESULT_NET_INVALID_TCP_SOCKET, "a second connect while it is under way");
+		expect(crnet_tcp_socket_send(socket, "x", 1, CRNET_NO_WAIT, &sent), CR_RESULT_NET_INVALID_TCP_SOCKET, "send while it is under way");
+		expect(crnet_wait_set_add_tcp_socket(set, socket, CRNET_WAIT_FOR_INCOMING, &tag), CR_SUCCESS, "a connecting TCP socket goes in a wait set");
+		bool named = false;
+		while (result == CR_RESULT_NET_TIMED_OUT) {
+			uint32_t ready = 0;
+			if (!sleep_in(set, &ready))
+				break;
+			named  = true;
+			result = TIMED("crnet_tcp_socket_connect_continue", crnet_tcp_socket_connect_continue(socket, CRNET_NO_WAIT));
+		}
+		check(named, "the set named it once its connect had an outcome");
+		crnet_wait_set_remove_tcp_socket(set, socket);
+	} else {
+		note("the system connected inside the call");
+	}
+	expect(result, CR_SUCCESS, "carried on with CRNET_NO_WAIT between waits on the set, it connects");
+	expect(crnet_tcp_socket_connect_continue(socket, CRNET_NO_WAIT), CR_RESULT_NET_INVALID_TCP_SOCKET, "connect_continue after the outcome");
+	expect(crnet_tcp_socket_connect_continue(socket, CRNET_NO_WAIT), CR_RESULT_NET_INVALID_TCP_SOCKET, "and a second time");
+	crnet_tcp_socket server = NULL;
+	if (expect(crnet_tcp_listener_accept(listener, PATIENCE_MS, &server), CR_SUCCESS, "the listener has the connection")) {
+		uint64_t sent = 0, received = 0;
+		char     buffer[8];
+		crnet_tcp_socket_send(socket, "ping", 4, PATIENCE_MS, &sent);
+		crnet_tcp_socket_recv(server, buffer, sizeof(buffer), PATIENCE_MS, &received);
+		check(sent == 4 && received == 4 && memcmp(buffer, "ping", 4) == 0, "and bytes cross it");
+	}
+	longest_check("TCP connect");
+	crnet_tcp_socket_destroy(server);
+	crnet_tcp_socket_destroy(socket);
+	crnet_tcp_listener_destroy(listener);
+
+	// Refused: the outcome comes from whichever call finds it.
+	socket                  = NULL;
+	connect_desc.port       = closed_port();
+	crnet_tcp_socket_create(g_instance, &socket);
+	result                  = crnet_tcp_socket_connect(socket, &connect_desc);
+	const char *reported_by = "connect";
+	if (result == CR_RESULT_NET_TIMED_OUT) {
+		reported_by = "connect_continue";
+		expect(crnet_wait_set_add_tcp_socket(set, socket, CRNET_WAIT_FOR_ROOM, &tag), CR_SUCCESS, "a socket connecting to nobody goes in a wait set");
+		uint32_t ready = 0;
+		check(sleep_in(set, &ready), "the set names it once refused");
+		crnet_wait_set_remove_tcp_socket(set, socket);
+		result = crnet_tcp_socket_connect_continue(socket, PATIENCE_MS);
+	}
+	check(result == CR_RESULT_NET_CONNECT_FAILED, "a refused connect begun with CRNET_NO_WAIT, reported by %s: %s", reported_by, cr_result_str(result));
+	crnet_tcp_socket_get_error(socket, CRNET_ERROR_SIDE_RECEIVING, &error);
+	check(error.result == CR_RESULT_NET_CONNECT_FAILED && error.source != CR_PLATFORM_ERROR_SOURCE_NONE, "with the system's reason on the receiving side");
+	expect(crnet_tcp_socket_connect_continue(socket, CRNET_NO_WAIT), CR_RESULT_NET_INVALID_TCP_SOCKET, "connect_continue after a refusal");
+	expect(crnet_wait_set_add_tcp_socket(set, socket, CRNET_WAIT_FOR_INCOMING, &tag), CR_RESULT_NET_INVALID_TCP_SOCKET, "a socket whose connect failed isn't taken by a wait set");
+	crnet_tcp_socket_destroy(socket);
+}
+
+#endif // CRNET_EXT_TCP
+
+/* Drives a started transfer's response and body with CRNET_NO_WAIT only,
+ * sleeping in `set` (where the transfer is, for INCOMING) between calls.
+ * The body's first `capacity` bytes are kept; `*out_size` is all of it. */
+static CR_RESULT http_drive(crnet_http_transfer transfer, crnet_wait_set set, uint8_t *body, size_t capacity, size_t *out_size, uint32_t *out_named) {
+	*out_size        = 0;
+	*out_named       = 0;
+	CR_RESULT result = CR_RESULT_NET_TIMED_OUT;
+	while ((result = TIMED("crnet_http_transfer_receive_response", crnet_http_transfer_receive_response(transfer, CRNET_NO_WAIT))) == CR_RESULT_NET_TIMED_OUT) {
+		uint32_t ready = 0;
+		if (!sleep_in(set, &ready))
+			return CR_RESULT_NET_TIMED_OUT;
+		*out_named |= ready;
+	}
+	if (CR_FAILED(result))
+		return result;
+	static uint8_t piece[64 * 1024];
+	for (;;) {
+		uint64_t got = 0;
+		result       = TIMED("crnet_http_transfer_recv", crnet_http_transfer_recv(transfer, piece, sizeof(piece), CRNET_NO_WAIT, &got));
+		if (result == CR_RESULT_NET_TIMED_OUT) {
+			uint32_t ready = 0;
+			if (!sleep_in(set, &ready))
+				return CR_RESULT_NET_TIMED_OUT;
+			*out_named |= ready;
+			continue;
+		}
+		if (CR_FAILED(result))
+			return result;
+		if (got == 0)
+			return CR_SUCCESS;
+		if (*out_size < capacity)
+			memcpy(body + *out_size, piece, (size_t)(capacity - *out_size < got ? capacity - *out_size : got));
+		*out_size += (size_t)got;
+	}
+}
+
+static crnet_http_transfer_desc http_desc(const char *method, const char *url, CRNET_HTTP_BODY body, uint64_t body_size, uint32_t timeout_ms) {
+	crnet_http_transfer_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type = CR_STRUCT_TYPE_NET_HTTP_TRANSFER_DESC;
+	desc.method    = method;
+	desc.url       = url;
+	desc.body      = body;
+	desc.body_size = body_size;
+	desc.timeout_ms = timeout_ms;
+	return desc;
+}
+
+/* Sends `size` bytes of the pattern as a request body with CRNET_NO_WAIT
+ * only, sleeping in `set` (ROOM asked) whenever nothing was taken. */
+static CR_RESULT http_send_pattern(crnet_http_transfer transfer, crnet_wait_set set, uint64_t size, bool *out_backed_up, bool *out_room_named) {
+	static uint8_t piece[16 * 1024];
+	uint64_t       done = 0;
+	*out_backed_up      = false;
+	*out_room_named     = false;
+	while (done < size) {
+		size_t count = (size_t)(size - done < sizeof(piece) ? size - done : sizeof(piece));
+		for (size_t i = 0; i < count; ++i)
+			piece[i] = pattern_at(done + i);
+		uint64_t  sent   = 0;
+		CR_RESULT result = TIMED("crnet_http_transfer_send", crnet_http_transfer_send(transfer, piece, count, CRNET_NO_WAIT, &sent));
+		if (result == CR_RESULT_NET_TIMED_OUT) {
+			*out_backed_up = true;
+			uint32_t ready = 0;
+			if (!sleep_in(set, &ready))
+				return CR_RESULT_NET_TIMED_OUT;
+			if (ready & CRNET_WAIT_FOR_ROOM)
+				*out_room_named = true;
+			continue;
+		}
+		if (CR_FAILED(result))
+			return result;
+		done += sent;
+	}
+	return CR_SUCCESS;
+}
+
+struct abort_http_later {
+	crnet_http_transfer transfer;
+	uint32_t            delay_ms;
+};
+
+static test_thread_result TEST_THREAD_CALL abort_http_later_run(void *argument) {
+	struct abort_http_later *later = (struct abort_http_later *)argument;
+	sleep_ms(later->delay_ms);
+	crnet_http_transfer_abort(later->transfer);
+	return 0;
+}
+
+static void resumable_http(crnet_wait_set set, crnet_wait_set other_set) {
+	crnet_http_client client = plain_client();
+	if (!client)
+		return;
+	int      tag = 2;
+	char     url[256];
+	uint8_t  body[256];
+	size_t   size  = 0;
+	uint32_t named = 0;
+
+	// A GET whose answer the server holds back.
+	snprintf(url, sizeof(url), "http://127.0.0.1:%d/slow?ms=%u", g_server.http_port, RESUMABLE_HELD_MS);
+	crnet_http_transfer_desc desc     = http_desc("GET", url, CRNET_HTTP_BODY_NONE, 0, CRNET_NO_WAIT);
+	crnet_http_transfer      transfer = NULL;
+	crnet_http_transfer_create(client, &transfer);
+	expect(crnet_wait_set_add_http_transfer(set, transfer, CRNET_WAIT_FOR_INCOMING, &tag), CR_RESULT_NET_INVALID_HTTP_TRANSFER, "a transfer not started isn't taken by a wait set");
+	longest_reset();
+	CR_RESULT result = TIMED("crnet_http_transfer_start", crnet_http_transfer_start(transfer, &desc));
+	check(result == CR_SUCCESS || result == CR_RESULT_NET_TIMED_OUT, "start with CRNET_NO_WAIT begins the request: %s", cr_result_str(result));
+	expect(crnet_http_transfer_start(transfer, &desc), CR_RESULT_NET_INVALID_HTTP_TRANSFER, "start again is refused, whatever the first returned");
+	expect(crnet_wait_set_add_http_transfer(set, transfer, 0, &tag), CR_RESULT_DESC_INVALID_PARAMETERS, "add a transfer asking for nothing");
+	expect(crnet_wait_set_add_http_transfer(set, transfer, 4, &tag), CR_RESULT_DESC_INVALID_PARAMETERS, "add a transfer asking for a bit that isn't one");
+	expect(crnet_wait_set_add_http_transfer(set, transfer, CRNET_WAIT_FOR_INCOMING, &tag), CR_SUCCESS, "a started transfer goes in a wait set");
+	expect(crnet_wait_set_add_http_transfer(set, transfer, CRNET_WAIT_FOR_INCOMING, &tag), CR_RESULT_NET_ALREADY_IN_WAIT_SET, "and not twice");
+	expect(crnet_wait_set_add_http_transfer(other_set, transfer, CRNET_WAIT_FOR_INCOMING, &tag), CR_RESULT_NET_ALREADY_IN_WAIT_SET, "nor in a second set");
+	result = http_drive(transfer, set, body, sizeof(body), &size, &named);
+	check(!CR_FAILED(result) && crnet_http_transfer_get_status(transfer) == 200 && size == 4 && memcmp(body, "slow", 4) == 0,
+	      "a GET driven with CRNET_NO_WAIT only, sleeping in the set: 200 \"slow\" (%s)", cr_result_str(result));
+	check((named & CRNET_WAIT_FOR_INCOMING) != 0, "the set named the transfer INCOMING for its response and body");
+	longest_check("HTTP GET held back 1 s");
+	crnet_wait_set_remove_http_transfer(set, transfer);
+	crnet_wait_set_remove_http_transfer(set, transfer); // a second time: nothing to do
+	crnet_http_transfer_destroy(transfer);
+
+	// A sized POST to a server that reads it slowly: room comes and goes.
+	{
+		const uint64_t total = 1024 * 1024;
+		snprintf(url, sizeof(url), "http://127.0.0.1:%d/slow-read?ms=5", g_server.http_port);
+		desc     = http_desc("POST", url, CRNET_HTTP_BODY_SIZED, total, CRNET_NO_WAIT);
+		transfer = NULL;
+		crnet_http_transfer_create(client, &transfer);
+		longest_reset();
+		result = TIMED("crnet_http_transfer_start", crnet_http_transfer_start(transfer, &desc));
+		check(result == CR_SUCCESS || result == CR_RESULT_NET_TIMED_OUT, "a sized POST started with CRNET_NO_WAIT: %s", cr_result_str(result));
+		expect(crnet_wait_set_add_http_transfer(set, transfer, CRNET_WAIT_FOR_INCOMING | CRNET_WAIT_FOR_ROOM, &tag), CR_SUCCESS, "in a set for INCOMING and ROOM");
+		bool backed_up = false, room_named = false;
+		result         = http_send_pattern(transfer, set, total, &backed_up, &room_named);
+		expect(result, CR_SUCCESS, "its 1 MiB body sent with CRNET_NO_WAIT only");
+		if (backed_up)
+			check(room_named, "the body backed up, and the set named the transfer ROOM when it had room again");
+		else
+			note("the body never backed up on this stack");
+		crnet_wait_set_remove_http_transfer(set, transfer);
+		expect(crnet_wait_set_add_http_transfer(set, transfer, CRNET_WAIT_FOR_INCOMING, &tag), CR_SUCCESS, "back in the set for INCOMING alone");
+		result = http_drive(transfer, set, body, sizeof(body) - 1, &size, &named);
+		body[size < sizeof(body) ? size : sizeof(body) - 1] = 0;
+		check(!CR_FAILED(result) && crnet_http_transfer_get_status(transfer) == 200 && strcmp((char *)body, "1048576") == 0,
+		      "and the server read all of it (\"%s\", %s)", (char *)body, cr_result_str(result));
+		longest_check("HTTP sized POST read slowly");
+		crnet_wait_set_remove_http_transfer(set, transfer);
+		crnet_http_transfer_destroy(transfer);
+	}
+
+	// An unsized upload, echoed.
+	{
+		const uint64_t total = 300 * 1024;
+		snprintf(url, sizeof(url), "http://127.0.0.1:%d/echo", g_server.http_port);
+		desc     = http_desc("PUT", url, CRNET_HTTP_BODY_UNSIZED, 0, CRNET_NO_WAIT);
+		transfer = NULL;
+		crnet_http_transfer_create(client, &transfer);
+		longest_reset();
+		result = TIMED("crnet_http_transfer_start", crnet_http_transfer_start(transfer, &desc));
+		check(result == CR_SUCCESS || result == CR_RESULT_NET_TIMED_OUT, "an unsized PUT started with CRNET_NO_WAIT: %s", cr_result_str(result));
+		crnet_wait_set_add_http_transfer(set, transfer, CRNET_WAIT_FOR_ROOM, &tag);
+		bool backed_up = false, room_named = false;
+		expect(http_send_pattern(transfer, set, total, &backed_up, &room_named), CR_SUCCESS, "its 300 KiB sent with CRNET_NO_WAIT only");
+		crnet_wait_set_remove_http_transfer(set, transfer);
+		crnet_wait_set_add_http_transfer(set, transfer, CRNET_WAIT_FOR_INCOMING, &tag);
+		static uint8_t echoed[300 * 1024];
+		result      = http_drive(transfer, set, echoed, sizeof(echoed), &size, &named);
+		bool intact = size == total;
+		for (size_t i = 0; intact && i < size; ++i)
+			intact = echoed[i] == pattern_at(i);
+		check(!CR_FAILED(result) && intact, "and its echo comes back whole (%zu bytes, %s)", size, cr_result_str(result));
+		longest_check("HTTP unsized PUT");
+		crnet_wait_set_remove_http_transfer(set, transfer);
+		crnet_http_transfer_destroy(transfer);
+	}
+
+	// A start that can't connect is reported by the next call.
+	{
+		snprintf(url, sizeof(url), "http://127.0.0.1:%u/hello", (unsigned)closed_port());
+		desc     = http_desc("GET", url, CRNET_HTTP_BODY_NONE, 0, CRNET_NO_WAIT);
+		transfer = NULL;
+		crnet_http_transfer_create(client, &transfer);
+		result = crnet_http_transfer_start(transfer, &desc);
+		check(result == CR_SUCCESS || result == CR_RESULT_NET_TIMED_OUT, "start with CRNET_NO_WAIT to a closed port: %s", cr_result_str(result));
+		expect(crnet_http_transfer_receive_response(transfer, PATIENCE_MS), CR_RESULT_NET_CONNECT_FAILED, "receive_response reports the refusal");
+		crnet_error error;
+		crnet_http_transfer_get_error(transfer, &error);
+		check(error.result == CR_RESULT_NET_CONNECT_FAILED, "and the transfer's record has it");
+		note_error("start to a closed port", &error);
+		crnet_http_transfer_destroy(transfer);
+	}
+
+	// A longer limit that runs out leaves the transfer usable.
+	{
+		snprintf(url, sizeof(url), "http://127.0.0.1:%d/slow?ms=500", g_server.http_port);
+		desc     = http_desc("GET", url, CRNET_HTTP_BODY_NONE, 0, 1);
+		transfer = NULL;
+		crnet_http_transfer_create(client, &transfer);
+		result = crnet_http_transfer_start(transfer, &desc);
+		check(result == CR_SUCCESS || result == CR_RESULT_NET_TIMED_OUT, "start with a 1 ms limit: %s", cr_result_str(result));
+		expect(crnet_http_transfer_receive_response(transfer, 1), CR_RESULT_NET_TIMED_OUT, "receive_response with 1 ms: not yet");
+		expect(crnet_http_transfer_receive_response(transfer, PATIENCE_MS), CR_SUCCESS, "and then the response, the transfer as usable as before");
+		check(crnet_http_transfer_get_status(transfer) == 200, "its status is 200");
+		crnet_http_transfer_destroy(transfer);
+	}
+
+	// Aborted while in a set: named, then ABORTED.
+	{
+		snprintf(url, sizeof(url), "http://127.0.0.1:%d/slow?ms=3000", g_server.http_port);
+		desc     = http_desc("GET", url, CRNET_HTTP_BODY_NONE, 0, CRNET_NO_WAIT);
+		transfer = NULL;
+		crnet_http_transfer_create(client, &transfer);
+		crnet_http_transfer_start(transfer, &desc);
+		crnet_wait_set_add_http_transfer(set, transfer, CRNET_WAIT_FOR_INCOMING, &tag);
+		struct abort_http_later later  = {transfer, 300};
+		test_thread             thread = thread_start(abort_http_later_run, &later);
+		uint64_t                before = now_ms();
+		uint32_t                ready  = 0;
+		bool                    woke   = sleep_in(set, &ready);
+		uint64_t                waited = now_ms() - before;
+		thread_join(thread);
+		check(woke && (ready & CRNET_WAIT_FOR_INCOMING) && waited < 2500, "a transfer in a set, aborted from another thread: the set names it (%llu ms)", (unsigned long long)waited);
+		expect(crnet_http_transfer_receive_response(transfer, CRNET_NO_WAIT), CR_RESULT_NET_ABORTED, "and receive_response says ABORTED");
+		crnet_wait_set_remove_http_transfer(set, transfer);
+		crnet_http_transfer_destroy(transfer);
+	}
+
+	// Aborted while receive_response carries the start on.
+	{
+		snprintf(url, sizeof(url), "http://127.0.0.1:%d/slow?ms=3000", g_server.http_port);
+		desc     = http_desc("GET", url, CRNET_HTTP_BODY_NONE, 0, CRNET_NO_WAIT);
+		transfer = NULL;
+		crnet_http_transfer_create(client, &transfer);
+		crnet_http_transfer_start(transfer, &desc);
+		struct abort_http_later later  = {transfer, 300};
+		test_thread             thread = thread_start(abort_http_later_run, &later);
+		uint64_t                before = now_ms();
+		result                         = crnet_http_transfer_receive_response(transfer, CRNET_WAIT_FOREVER);
+		uint64_t waited                = now_ms() - before;
+		thread_join(thread);
+		check(result == CR_RESULT_NET_ABORTED && waited < 2500, "a start carried on by receive_response, aborted from another thread: %s (%llu ms)", cr_result_str(result),
+		      (unsigned long long)waited);
+		crnet_http_transfer_destroy(transfer);
+	}
+	crnet_http_client_destroy(client);
+}
+
+#if CRNET_EXT_WEBSOCKET
+
+static crnet_websocket_connect_desc websocket_desc(char *url, size_t capacity, const char *path, bool secure, uint32_t timeout_ms, crnet_tls_certificate *root) {
+	snprintf(url, capacity, "%s://%s:%d%s", secure ? "wss" : "ws", secure ? "localhost" : "127.0.0.1", secure ? g_server.wss_port : g_server.ws_port, path);
+	crnet_websocket_connect_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type        = CR_STRUCT_TYPE_NET_WEBSOCKET_CONNECT_DESC;
+	desc.url              = url;
+	desc.timeout_ms       = timeout_ms;
+	desc.max_message_size = 128ull * 1024 * 1024;
+	desc.proxy.mode       = CRNET_PROXY_NONE;
+	if (root) {
+		desc.tls.trust      = CRNET_TLS_TRUST_ROOTS;
+		desc.tls.roots      = root;
+		desc.tls.root_count = 1;
+	}
+	return desc;
+}
+
+/* Reads one whole message into `buffer` and checks it against the pattern
+ * from `offset` (each byte pattern_at(offset + i)), or against `text`. */
+static bool websocket_message_is(crnet_websocket socket, uint8_t *buffer, size_t capacity, uint64_t pattern_size, const char *text) {
+	size_t                    size = 0;
+	CRNET_WEBSOCKET_MESSAGE type;
+	if (CR_FAILED(websocket_read_message(socket, buffer, capacity, &size, &type, PATIENCE_MS)))
+		return false;
+	if (text)
+		return size == strlen(text) && memcmp(buffer, text, size) == 0;
+	if (size != pattern_size)
+		return false;
+	for (size_t i = 0; i < size; ++i) {
+		if (buffer[i] != pattern_at(i))
+			return false;
+	}
+	return true;
+}
+
+static test_thread_result TEST_THREAD_CALL abort_websocket_later_long(void *argument) {
+	sleep_ms(300);
+	crnet_websocket_abort((crnet_websocket)argument);
+	return 0;
+}
+
+struct flush_elsewhere {
+	crnet_websocket socket;
+	CR_RESULT       result;
+};
+
+static test_thread_result TEST_THREAD_CALL flush_elsewhere_run(void *argument) {
+	struct flush_elsewhere *flush = (struct flush_elsewhere *)argument;
+	flush->result                 = crnet_websocket_flush(flush->socket, PATIENCE_MS);
+	return 0;
+}
+
+static test_thread_result TEST_THREAD_CALL send_later_run(void *argument) {
+	sleep_ms(100);
+	crnet_websocket_send((crnet_websocket)argument, CRNET_WEBSOCKET_MESSAGE_TEXT, "from elsewhere", 14, PATIENCE_MS);
+	return 0;
+}
+
+static void resumable_websocket(crnet_wait_set set) {
+	char                      url[256];
+	uint32_t                  status = 0;
+	int                       tag    = 3;
+	crnet_error             error;
+	CRNET_WEBSOCKET_MESSAGE type;
+	uint64_t                  received = 0;
+	bool                      complete = false;
+
+	const size_t big_size = 64u * 1024 * 1024;
+	uint8_t     *big      = (uint8_t *)malloc(big_size);
+	if (!big) {
+		note("no 64 MiB to test with; skipped");
+		return;
+	}
+
+	// The opening, held back by the server, driven with CRNET_NO_WAIT.
+	crnet_websocket socket = NULL;
+	crnet_websocket_create(g_instance, &socket);
+	expect(crnet_websocket_connect_continue(socket, CRNET_NO_WAIT, &status), CR_RESULT_NET_INVALID_WEBSOCKET, "WebSocket connect_continue before any connect");
+	expect(crnet_websocket_flush(socket, CRNET_NO_WAIT), CR_RESULT_NET_INVALID_WEBSOCKET, "flush before any connect");
+	expect(crnet_wait_set_add_websocket(set, socket, CRNET_WAIT_FOR_INCOMING, &tag), CR_RESULT_NET_INVALID_WEBSOCKET, "a WebSocket never connected isn't taken by a wait set");
+	char path[64];
+	snprintf(path, sizeof(path), "/slow-upgrade?ms=%u", RESUMABLE_HELD_MS);
+	crnet_websocket_connect_desc desc = websocket_desc(url, sizeof(url), path, false, CRNET_NO_WAIT, NULL);
+	longest_reset();
+	CR_RESULT result = TIMED("crnet_websocket_connect", crnet_websocket_connect(socket, &desc, &status));
+	expect(result, CR_RESULT_NET_TIMED_OUT, "connect with CRNET_NO_WAIT begins the opening and returns (the 101 held back 1 s)");
+	check(status == 0, "its status is 0 meanwhile");
+	expect(crnet_websocket_connect(socket, &desc, &status), CR_RESULT_NET_INVALID_WEBSOCKET, "a second connect while it is under way");
+	expect(crnet_websocket_send(socket, CRNET_WEBSOCKET_MESSAGE_TEXT, "x", 1, CRNET_NO_WAIT), CR_RESULT_NET_INVALID_WEBSOCKET, "send while it is under way");
+	expect(crnet_wait_set_add_websocket(set, socket, 0, &tag), CR_RESULT_DESC_INVALID_PARAMETERS, "add a WebSocket asking for nothing");
+	expect(crnet_wait_set_add_websocket(set, socket, CRNET_WAIT_FOR_INCOMING, &tag), CR_SUCCESS, "a WebSocket whose opening is under way goes in a wait set");
+	bool named = false;
+	while (result == CR_RESULT_NET_TIMED_OUT) {
+		uint32_t ready = 0;
+		if (!sleep_in(set, &ready))
+			break;
+		named  = true;
+		result = TIMED("crnet_websocket_connect_continue", crnet_websocket_connect_continue(socket, CRNET_NO_WAIT, &status));
+	}
+	expect(result, CR_SUCCESS, "carried on with CRNET_NO_WAIT between waits on the set, it opens");
+	check(named && status == 101, "the set named it once the opening had an outcome, and the status is 101 (%u)", status);
+	expect(crnet_websocket_connect_continue(socket, CRNET_NO_WAIT, &status), CR_RESULT_NET_INVALID_WEBSOCKET, "connect_continue after the outcome");
+	expect(crnet_websocket_connect_continue(socket, CRNET_NO_WAIT, &status), CR_RESULT_NET_INVALID_WEBSOCKET, "and a second time");
+	longest_check("WebSocket opening held back 1 s");
+	crnet_wait_set_remove_websocket(set, socket);
+
+	// A burst sent with CRNET_NO_WAIT only, the thread sleeping for ROOM, to
+	// a path that echoes nothing (echoes nobody reads would hold the
+	// server's reading up) and checks each message itself.
+	{
+		crnet_websocket sink = NULL;
+		crnet_websocket_connect_desc sink_desc = websocket_desc(url, sizeof(url), "/sink", false, PATIENCE_MS, NULL);
+		crnet_websocket_create(g_instance, &sink);
+		const int    count = 16;
+		const size_t size  = 256 * 1024;
+		for (size_t i = 0; i < size; ++i)
+			big[i] = pattern_at(i);
+		if (expect(crnet_websocket_connect(sink, &sink_desc, &status), CR_SUCCESS, "a second socket, to a server that takes messages and echoes none")) {
+			expect(crnet_websocket_flush(sink, CRNET_NO_WAIT), CR_SUCCESS, "flush with nothing in flight");
+			crnet_websocket_send(sink, CRNET_WEBSOCKET_MESSAGE_TEXT, "pause:1000", 10, PATIENCE_MS);
+			expect(crnet_wait_set_add_websocket(set, sink, CRNET_WAIT_FOR_ROOM, &tag), CR_SUCCESS, "in a set for ROOM");
+			longest_reset();
+			int  taken     = 0;
+			int  refused   = 0;
+			bool room_seen = false;
+			while (taken < count) {
+				result = TIMED("crnet_websocket_send", crnet_websocket_send(sink, CRNET_WEBSOCKET_MESSAGE_BINARY, big, size, CRNET_NO_WAIT));
+				if (result == CR_SUCCESS) {
+					taken++;
+					continue;
+				}
+				if (result != CR_RESULT_NET_TIMED_OUT)
+					break;
+				refused++;
+				uint32_t ready = 0;
+				if (!sleep_in(set, &ready))
+					break;
+				room_seen = room_seen || (ready & CRNET_WAIT_FOR_ROOM);
+			}
+			check(taken == count, "%d messages of 256 KiB sent with CRNET_NO_WAIT only (%d sends not taken, the one before still in flight)", taken, refused);
+			check(refused == 0 || room_seen, "the set named the socket ROOM when the one in flight had gone");
+			while ((result = TIMED("crnet_websocket_flush", crnet_websocket_flush(sink, CRNET_NO_WAIT))) == CR_RESULT_NET_TIMED_OUT) {
+				uint32_t ready = 0;
+				if (!sleep_in(set, &ready))
+					break;
+			}
+			expect(result, CR_SUCCESS, "flush with CRNET_NO_WAIT, between waits, sees the last one off");
+			crnet_wait_set_remove_websocket(set, sink);
+			crnet_wait_set_add_websocket(set, sink, CRNET_WAIT_FOR_INCOMING, &tag);
+			crnet_websocket_send(sink, CRNET_WEBSOCKET_MESSAGE_TEXT, "report", 6, CRNET_NO_WAIT);
+			char report[128] = "";
+			size_t got = 0;
+			for (;;) {
+				result = TIMED("crnet_websocket_recv", crnet_websocket_recv(sink, report + got, sizeof(report) - 1 - got, CRNET_NO_WAIT, &received, &type, &complete));
+				if (result == CR_RESULT_NET_TIMED_OUT) {
+					uint32_t ready = 0;
+					if (!sleep_in(set, &ready))
+						break;
+					continue;
+				}
+				if (CR_FAILED(result))
+					break;
+				got += (size_t)received;
+				if (complete || got == sizeof(report) - 1)
+					break;
+			}
+			report[got] = '\0';
+			char want[128];
+			snprintf(want, sizeof(want), "messages=%d bytes=%zu bad=0", count, (size_t)count * size);
+			check(strcmp(report, want) == 0, "the server got all %d, whole and as sent (\"%s\"), its report received with CRNET_NO_WAIT only", count, report);
+			longest_check("WebSocket burst");
+			crnet_wait_set_remove_websocket(set, sink);
+		}
+		crnet_websocket_destroy(sink);
+	}
+
+	// A 64 MiB message, taken at once and in flight while the server isn't
+	// reading: what is refused and what still works meanwhile.
+	{
+		for (size_t i = 0; i < big_size; ++i)
+			big[i] = pattern_at(i);
+		crnet_websocket_send(socket, CRNET_WEBSOCKET_MESSAGE_TEXT, "pause:1500", 10, PATIENCE_MS);
+		expect(crnet_websocket_flush(socket, PATIENCE_MS), CR_SUCCESS, "the server told to stop reading");
+		uint64_t before = now_ms();
+		result          = crnet_websocket_send(socket, CRNET_WEBSOCKET_MESSAGE_BINARY, big, big_size, CRNET_NO_WAIT);
+		uint64_t took   = now_ms() - before;
+		expect(result, CR_SUCCESS, "a 64 MiB message sent with CRNET_NO_WAIT is taken");
+		note("taking it took %llu ms", (unsigned long long)took);
+		memset(big, 0, big_size); // the caller's own again: what arrives is the copy
+		expect(crnet_websocket_send(socket, CRNET_WEBSOCKET_MESSAGE_TEXT, "after", 5, 1), CR_RESULT_NET_TIMED_OUT, "the next send with a 1 ms limit isn't taken");
+		expect(crnet_websocket_send(socket, CRNET_WEBSOCKET_MESSAGE_TEXT, "after", 5, CRNET_NO_WAIT), CR_RESULT_NET_TIMED_OUT, "nor with CRNET_NO_WAIT");
+		expect(crnet_websocket_flush(socket, CRNET_NO_WAIT), CR_RESULT_NET_TIMED_OUT, "flush with CRNET_NO_WAIT: still in flight");
+		expect(crnet_websocket_close(socket, 1000, NULL), CR_RESULT_NET_TIMED_OUT, "close with a message in flight sends nothing");
+		expect(crnet_websocket_recv(socket, big, 16, CRNET_NO_WAIT, &received, &type, &complete), CR_RESULT_NET_TIMED_OUT, "and recv still works: the socket isn't closed");
+		// How long a message stays in flight is the stack's: NSURLSession
+		// calls one gone once its connection has taken it, whatever the
+		// peer reads. So the set is checked for naming it, and the time is
+		// put on record.
+		expect(crnet_wait_set_add_websocket(set, socket, CRNET_WAIT_FOR_ROOM, &tag), CR_SUCCESS, "in a set for ROOM, with the message in flight");
+		uint32_t ready = 0;
+		before         = now_ms();
+		check(sleep_in(set, &ready) && (ready & CRNET_WAIT_FOR_ROOM), "the set names it ROOM once the message has gone");
+		note("the 64 MiB message was in flight about %llu ms more", (unsigned long long)(now_ms() - before));
+		crnet_wait_set_remove_websocket(set, socket);
+		expect(crnet_websocket_flush(socket, PATIENCE_MS), CR_SUCCESS, "flush says it has gone");
+		expect(crnet_websocket_send(socket, CRNET_WEBSOCKET_MESSAGE_TEXT, "after", 5, PATIENCE_MS), CR_SUCCESS, "the same message sent again is taken");
+		check(websocket_message_is(socket, big, big_size + 1, big_size, NULL), "the 64 MiB echo is whole and in order: the bytes taken, not the buffer overwritten after");
+		check(websocket_message_is(socket, big, big_size + 1, 0, "after"), "and the message after it comes after it");
+	}
+
+	// A ping from the server while a large message is part sent.
+	{
+		for (size_t i = 0; i < 16u * 1024 * 1024; ++i)
+			big[i] = pattern_at(i);
+		crnet_websocket_send(socket, CRNET_WEBSOCKET_MESSAGE_TEXT, "pause-and-ping:1000", 19, PATIENCE_MS);
+		crnet_websocket_flush(socket, PATIENCE_MS);
+		expect(crnet_websocket_send(socket, CRNET_WEBSOCKET_MESSAGE_BINARY, big, 16u * 1024 * 1024, CRNET_NO_WAIT), CR_SUCCESS, "a 16 MiB message taken while the server pings");
+		expect(crnet_websocket_flush(socket, PATIENCE_MS), CR_SUCCESS, "and seen off");
+		check(websocket_message_is(socket, big, big_size + 1, 16u * 1024 * 1024, NULL), "its echo is whole: the ping didn't break the frame");
+		crnet_websocket_send(socket, CRNET_WEBSOCKET_MESSAGE_TEXT, "alive", 5, PATIENCE_MS);
+		check(websocket_message_is(socket, big, big_size + 1, 0, "alive"), "and the connection goes on");
+	}
+
+	// Two threads: a recv while another thread flushes, and a wait on a set
+	// while another thread sends on its member.
+	{
+		for (size_t i = 0; i < 16u * 1024 * 1024; ++i)
+			big[i] = pattern_at(i);
+		crnet_websocket_send(socket, CRNET_WEBSOCKET_MESSAGE_TEXT, "pause:300", 9, PATIENCE_MS);
+		crnet_websocket_flush(socket, PATIENCE_MS);
+		crnet_websocket_send(socket, CRNET_WEBSOCKET_MESSAGE_BINARY, big, 16u * 1024 * 1024, CRNET_NO_WAIT);
+		struct flush_elsewhere flush  = {socket, CR_RESULT_GENERAL_FAILURE};
+		test_thread            thread = thread_start(flush_elsewhere_run, &flush);
+		bool                   echoed = websocket_message_is(socket, big + 16u * 1024 * 1024, big_size - 16u * 1024 * 1024, 16u * 1024 * 1024, NULL);
+		thread_join(thread);
+		check(echoed && flush.result == CR_SUCCESS, "a recv on one thread while another flushes (%s)", cr_result_str(flush.result));
+
+		expect(crnet_wait_set_add_websocket(set, socket, CRNET_WAIT_FOR_INCOMING, &tag), CR_SUCCESS, "in a set for INCOMING");
+		thread         = thread_start(send_later_run, socket);
+		uint32_t ready = 0;
+		bool     woke  = sleep_in(set, &ready);
+		thread_join(thread);
+		check(woke && (ready & CRNET_WAIT_FOR_INCOMING), "a wait on the set while another thread sends on its member");
+		crnet_wait_set_remove_websocket(set, socket);
+		check(websocket_message_is(socket, big, big_size + 1, 0, "from elsewhere"), "and the echo is there");
+	}
+
+	// Sent and then flushed with a limit: today's "sent".
+	expect(crnet_websocket_send(socket, CRNET_WEBSOCKET_MESSAGE_TEXT, "flushed", 7, CRNET_NO_WAIT), CR_SUCCESS, "send with CRNET_NO_WAIT");
+	expect(crnet_websocket_flush(socket, PATIENCE_MS), CR_SUCCESS, "then flush with a limit");
+	check(websocket_message_is(socket, big, big_size + 1, 0, "flushed"), "and it arrives");
+
+	// Text that isn't UTF-8 is refused before anything is taken.
+	{
+		static const uint8_t not_utf8[] = {0xC3, 0x28};
+		expect(crnet_websocket_send(socket, CRNET_WEBSOCKET_MESSAGE_TEXT, not_utf8, sizeof(not_utf8), CRNET_NO_WAIT), CR_RESULT_NET_SEND_FAILED, "text that isn't UTF-8 is refused");
+		expect(crnet_websocket_send(socket, CRNET_WEBSOCKET_MESSAGE_TEXT, "fine", 4, CRNET_NO_WAIT), CR_SUCCESS, "and the connection is as it was");
+		check(websocket_message_is(socket, big, big_size + 1, 0, "fine"), "its echo arrives");
+	}
+	crnet_websocket_destroy(socket);
+
+	// Destroyed with a message in flight: dropped, nothing left behind.
+	socket = NULL;
+	desc   = websocket_desc(url, sizeof(url), "/echo", false, PATIENCE_MS, NULL);
+	crnet_websocket_create(g_instance, &socket);
+	if (expect(crnet_websocket_connect(socket, &desc, &status), CR_SUCCESS, "connect with a limit, as before")) {
+		crnet_websocket_send(socket, CRNET_WEBSOCKET_MESSAGE_TEXT, "pause:500", 9, PATIENCE_MS);
+		crnet_websocket_flush(socket, PATIENCE_MS);
+		expect(crnet_websocket_send(socket, CRNET_WEBSOCKET_MESSAGE_BINARY, big, 16u * 1024 * 1024, CRNET_NO_WAIT), CR_SUCCESS, "a message taken");
+	}
+	crnet_websocket_destroy(socket);
+	note("destroyed at once after it: the message in flight dropped (no check; the sanitizers watch it)");
+
+	// Refusals, reported by the continuing call.
+	{
+		socket = NULL;
+		desc   = websocket_desc(url, sizeof(url), "/refuse", false, CRNET_NO_WAIT, NULL);
+		crnet_websocket_create(g_instance, &socket);
+		result = crnet_websocket_connect(socket, &desc, &status);
+		if (result == CR_RESULT_NET_TIMED_OUT)
+			result = crnet_websocket_connect_continue(socket, PATIENCE_MS, &status);
+		check(result == CR_RESULT_NET_WS_UPGRADE_REFUSED && status == 401, "an opening refused with 401, reported by connect_continue: %s (%u)", cr_result_str(result), status);
+		expect(crnet_websocket_connect_continue(socket, CRNET_NO_WAIT, &status), CR_RESULT_NET_INVALID_WEBSOCKET, "connect_continue after a refusal");
+		expect(crnet_wait_set_add_websocket(set, socket, CRNET_WAIT_FOR_INCOMING, &tag), CR_RESULT_NET_INVALID_WEBSOCKET, "a WebSocket whose connect failed isn't taken by a wait set");
+		crnet_websocket_destroy(socket);
+
+		socket = NULL;
+		desc   = websocket_desc(url, sizeof(url), "/echo", true, CRNET_NO_WAIT, NULL);
+		crnet_websocket_create(g_instance, &socket);
+		result = crnet_websocket_connect(socket, &desc, &status);
+		if (result == CR_RESULT_NET_TIMED_OUT) {
+			expect(crnet_wait_set_add_websocket(set, socket, CRNET_WAIT_FOR_ROOM, &tag), CR_SUCCESS, "a wss opening under way in a set");
+			uint32_t ready = 0;
+			check(sleep_in(set, &ready), "named once its certificate is turned away");
+			crnet_wait_set_remove_websocket(set, socket);
+			result = crnet_websocket_connect_continue(socket, CRNET_NO_WAIT, &status);
+		}
+		expect(result, CR_RESULT_NET_TLS_FAILED, "a wss certificate turned away, reported by connect_continue");
+		crnet_websocket_get_error(socket, CRNET_ERROR_SIDE_RECEIVING, &error);
+		check(error.result == CR_RESULT_NET_TLS_FAILED && error.source != CR_PLATFORM_ERROR_SOURCE_NONE, "with the reason on the receiving side");
+		note_error("wss turned away, continued", &error);
+		crnet_websocket_destroy(socket);
+	}
+
+	// Aborts from another thread during each step under way.
+	{
+		socket = NULL;
+		snprintf(path, sizeof(path), "/slow-upgrade?ms=3000");
+		desc = websocket_desc(url, sizeof(url), path, false, CRNET_NO_WAIT, NULL);
+		crnet_websocket_create(g_instance, &socket);
+		crnet_websocket_connect(socket, &desc, &status);
+		test_thread thread = thread_start(abort_websocket_later_long, socket);
+		uint64_t    before = now_ms();
+		result             = crnet_websocket_connect_continue(socket, CRNET_WAIT_FOREVER, &status);
+		uint64_t waited    = now_ms() - before;
+		thread_join(thread);
+		check(result == CR_RESULT_NET_ABORTED && waited < 2500, "connect_continue waiting forever, aborted from another thread: %s (%llu ms)", cr_result_str(result),
+		      (unsigned long long)waited);
+		expect(crnet_websocket_connect_continue(socket, CRNET_NO_WAIT, &status), CR_RESULT_NET_ABORTED, "and again: ABORTED");
+		crnet_websocket_destroy(socket);
+
+		socket = NULL;
+		desc   = websocket_desc(url, sizeof(url), "/echo", false, PATIENCE_MS, NULL);
+		crnet_websocket_create(g_instance, &socket);
+		if (!CR_FAILED(crnet_websocket_connect(socket, &desc, &status))) {
+			crnet_websocket_send(socket, CRNET_WEBSOCKET_MESSAGE_TEXT, "pause:3000", 10, PATIENCE_MS);
+			crnet_websocket_flush(socket, PATIENCE_MS);
+			crnet_websocket_send(socket, CRNET_WEBSOCKET_MESSAGE_BINARY, big, big_size, CRNET_NO_WAIT);
+			thread = thread_start(abort_websocket_later_long, socket);
+			before = now_ms();
+			result = crnet_websocket_flush(socket, CRNET_WAIT_FOREVER);
+			waited = now_ms() - before;
+			thread_join(thread);
+			if (result == CR_SUCCESS && waited < 300) {
+				// The stack's connection had taken it before the abort came.
+				note("the 64 MiB message had gone before the abort (%llu ms): this stack's connection takes it whole", (unsigned long long)waited);
+			} else {
+				check(result == CR_RESULT_NET_ABORTED && waited < 2500, "flush waiting forever on a 64 MiB message, aborted from another thread: %s (%llu ms)", cr_result_str(result),
+				      (unsigned long long)waited);
+			}
+			expect(crnet_websocket_send(socket, CRNET_WEBSOCKET_MESSAGE_TEXT, "x", 1, CRNET_NO_WAIT), CR_RESULT_NET_ABORTED, "and send after it: ABORTED");
+			expect(crnet_websocket_flush(socket, CRNET_NO_WAIT), CR_RESULT_NET_ABORTED, "and flush: ABORTED");
+		}
+		crnet_websocket_destroy(socket);
+	}
+	free(big);
+}
+
+#endif // CRNET_EXT_WEBSOCKET
+
+static void test_resumable(void) {
+	part("Resumable starts: steps begun with CRNET_NO_WAIT, carried on between waits on a wait set");
+
+	expect(crnet_websocket_flush(NULL, CRNET_NO_WAIT), CR_RESULT_NET_INVALID_WEBSOCKET, "flush on NULL");
+	expect(crnet_websocket_connect_continue(NULL, CRNET_NO_WAIT, NULL), CR_RESULT_NET_INVALID_WEBSOCKET, "WebSocket connect_continue on NULL");
+#if CRNET_EXT_TCP
+	expect(crnet_tcp_socket_connect_continue(NULL, CRNET_NO_WAIT), CR_RESULT_NET_INVALID_TCP_SOCKET, "TCP connect_continue on NULL");
+#endif
+	expect(crnet_wait_set_add_http_transfer(NULL, NULL, CRNET_WAIT_FOR_INCOMING, NULL), CR_RESULT_NET_INVALID_WAIT_SET, "add a transfer to NULL");
+	crnet_wait_set_remove_http_transfer(NULL, NULL);
+
+	crnet_wait_set set = NULL, other_set = NULL;
+	crnet_error    error;
+	if (!expect(crnet_wait_set_create(g_instance, &set, &error), CR_SUCCESS, "a wait set to sleep in") ||
+	    !expect(crnet_wait_set_create(g_instance, &other_set, &error), CR_SUCCESS, "and another")) {
+		crnet_wait_set_destroy(set);
+		return;
+	}
+	expect(crnet_wait_set_add_http_transfer(set, NULL, CRNET_WAIT_FOR_INCOMING, NULL), CR_RESULT_NET_INVALID_HTTP_TRANSFER, "add a NULL transfer");
+#if CRNET_EXT_TCP
+	resumable_tcp(set);
+#endif
+	resumable_http(set, other_set);
+#if CRNET_EXT_WEBSOCKET
+	resumable_websocket(set);
+#endif
+	crnet_wait_set_destroy(other_set);
+	crnet_wait_set_destroy(set);
+}
 
 // --------------------------------------------------------------------------
 
@@ -2431,6 +3228,34 @@ static void test_internet(void) {
 		}
 		note_error("silent host over HTTP", &error);
 	}
+#if CRNET_EXT_TCP
+	// A connect left going: begun with CRNET_NO_WAIT to TEST-NET-1, which
+	// never answers (loopback can't hold one on every system), carried on
+	// several times, then aborted.
+	{
+		crnet_tcp_socket socket = NULL;
+		crnet_tcp_socket_create(g_instance, &socket);
+		crnet_tcp_socket_connect_desc desc;
+		memset(&desc, 0, sizeof(desc));
+		desc.base.type  = CR_STRUCT_TYPE_NET_TCP_SOCKET_CONNECT_DESC;
+		desc.address    = "192.0.2.1";
+		desc.port       = 80;
+		desc.timeout_ms = CRNET_NO_WAIT;
+		CR_RESULT r    = crnet_tcp_socket_connect(socket, &desc);
+		if (r == CR_RESULT_NET_CONNECT_FAILED) {
+			note("192.0.2.1 is refused or unreachable from here, not silent; skipped");
+		} else {
+			expect(r, CR_RESULT_NET_TIMED_OUT, "a TCP connect to a silent host with CRNET_NO_WAIT is left going");
+			bool still = true;
+			for (int i = 0; i < 3 && still; ++i)
+				still = crnet_tcp_socket_connect_continue(socket, 100) == CR_RESULT_NET_TIMED_OUT;
+			check(still, "still TIMED_OUT after three continues of 100 ms each");
+			crnet_tcp_socket_abort(socket);
+			expect(crnet_tcp_socket_connect_continue(socket, PATIENCE_MS), CR_RESULT_NET_ABORTED, "and aborted: the continue says ABORTED");
+		}
+		crnet_tcp_socket_destroy(socket);
+	}
+#endif
 }
 
 static void test_struct_bases(void) {
@@ -2514,7 +3339,7 @@ static void test_struct_bases(void) {
 
 int main(int argc, char **argv) {
 	if (argc < 2) {
-		fprintf(stderr, "usage: crnet_test <info file> [instance|bases|tcp|wait|resolver|http|tls|proxy|websocket]\n");
+		fprintf(stderr, "usage: crnet_test <info file> [instance|bases|records|tcp|wait|resolver|http|tls|proxy|websocket|resumable|internet]\n");
 		return 2;
 	}
 	if (!read_info(argv[1])) {
@@ -2551,6 +3376,7 @@ int main(int argc, char **argv) {
 #if CRNET_EXT_WEBSOCKET
 	RUN("websocket", test_websocket);
 #endif
+	RUN("resumable", test_resumable);
 
 	crnet_instance_destroy(g_instance);
 	printf("\n%d passed, %d failed\n", g_passed, g_failed);

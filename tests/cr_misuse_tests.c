@@ -73,8 +73,8 @@ static const char *why = "";
  * object can be made in it. Locked, for an object freed on a thread of the
  * platform's. Since card X27 a Debug build keeps a destroyed handle's
  * block itself until the handle's owner is destroyed (src/crstale.h), but
- * not every handle has an owner: an instance, a Carrottus Audio stream and a
- * Carrottus Net resolver are freed at once, so this stays. */
+ * not every handle has an owner: an instance, a CrAudio stream and a
+ * CrNet resolver are freed at once, so this stays. */
 typedef struct kept_block {
 	struct kept_block *next;
 	void *memory;
@@ -128,7 +128,7 @@ static void keeping_release_all(void) {
 	}
 }
 
-/* Carrottus GPU's: one instance and a device on adapter 0, which every object a
+/* CrGPU's: one instance and a device on adapter 0, which every object a
  * factory makes of a device comes from, and a hidden window on Windows for
  * the surface and the swap chain. */
 static crgpu_instance gpu_instance;
@@ -230,7 +230,7 @@ static void freed_teardown(void) {
 
 static bool have_device(void) {
 	if (!gpu_device)
-		why = "no Carrottus GPU device on adapter 0";
+		why = "no CrGPU device on adapter 0";
 	return gpu_device != NULL;
 }
 
@@ -340,7 +340,7 @@ static craudio_instance make_audio_instance(void) {
 	desc.native_api             = api;
 	craudio_instance instance = NULL;
 	if (api == CRAUDIO_NATIVE_API_NONE || craudio_instance_create(&desc, &instance) != CR_SUCCESS) {
-		why = "no Carrottus Audio instance in this build";
+		why = "no CrAudio instance in this build";
 		return NULL;
 	}
 	return instance;
@@ -465,6 +465,28 @@ static craudio_instance dead_craudio_instance(void) {
 	return handle;
 }
 
+/* A craudio_device just destroyed, or NULL with `why` set. */
+static craudio_device make_dead_craudio_device(void) {
+	/* A device is the instance's: it goes with it. */
+	craudio_instance instance = make_audio_instance();
+	if (!instance)
+		return NULL;
+	craudio_device device = first_output(instance);
+	craudio_instance_destroy(instance);
+	return device;
+}
+
+static craudio_device dead_craudio_device(void) {
+	static bool told = false;
+	why = "";
+	craudio_device handle = make_dead_craudio_device();
+	if (!handle && !told) {
+		printf("cr_misuse_tests: not covered: craudio_device: %s\n", why);
+		told = true;
+	}
+	return handle;
+}
+
 /* A craudio_stream just destroyed, or NULL with `why` set. */
 static craudio_stream make_dead_craudio_stream(void) {
 	craudio_instance instance = make_audio_instance();
@@ -533,28 +555,6 @@ static craudio_stream dead_craudio_stream(void) {
 	return handle;
 }
 
-/* A craudio_device just destroyed, or NULL with `why` set. */
-static craudio_device make_dead_craudio_device(void) {
-	/* A device is the instance's: it goes with it. */
-	craudio_instance instance = make_audio_instance();
-	if (!instance)
-		return NULL;
-	craudio_device device = first_output(instance);
-	craudio_instance_destroy(instance);
-	return device;
-}
-
-static craudio_device dead_craudio_device(void) {
-	static bool told = false;
-	why = "";
-	craudio_device handle = make_dead_craudio_device();
-	if (!handle && !told) {
-		printf("cr_misuse_tests: not covered: craudio_device: %s\n", why);
-		told = true;
-	}
-	return handle;
-}
-
 /* A crfiles_instance just destroyed, or NULL with `why` set. */
 static crfiles_instance make_dead_crfiles_instance(void) {
 	crfiles_instance instance = make_file_instance();
@@ -600,7 +600,7 @@ static crfiles_file dead_crfiles_file(void) {
 
 /* A crfiles_library just destroyed, or NULL with `why` set. */
 static crfiles_library make_dead_crfiles_library(void) {
-	/* A system library by name, there on every platform Carrottus Files builds
+	/* A system library by name, there on every platform CrFiles builds
 	 * for, searched for by the platform. */
 	crfiles_instance instance = make_file_instance();
 	if (!instance)
@@ -697,64 +697,6 @@ static crfiles_mapping dead_crfiles_mapping(void) {
 	return handle;
 }
 
-/* A crgpu_adapter just destroyed, or NULL with `why` set. */
-static crgpu_adapter make_dead_crgpu_adapter(void) {
-	/* An adapter is the instance's: it goes with it. */
-	crgpu_instance instance = make_gpu_instance();
-	if (!instance) {
-		why = "crgpu_instance_create failed";
-		return NULL;
-	}
-	const crgpu_adapter *adapters = NULL;
-	uint32_t count                  = 0;
-	crgpu_adapter_enumerate(instance, &adapters, &count);
-	crgpu_adapter adapter = count > 0 ? adapters[0] : NULL;
-	if (!adapter)
-		why = "no adapter";
-	crgpu_instance_destroy(instance);
-	return adapter;
-}
-
-static crgpu_adapter dead_crgpu_adapter(void) {
-	static bool told = false;
-	why = "";
-	crgpu_adapter handle = make_dead_crgpu_adapter();
-	if (!handle && !told) {
-		printf("cr_misuse_tests: not covered: crgpu_adapter: %s\n", why);
-		told = true;
-	}
-	return handle;
-}
-
-/* A crgpu_command_list just destroyed, or NULL with `why` set. */
-static crgpu_command_list make_dead_crgpu_command_list(void) {
-	if (!have_device())
-		return NULL;
-	crgpu_command_allocator allocator = make_command_allocator();
-	if (!allocator) {
-		why = "crgpu_command_allocator_create failed";
-		return NULL;
-	}
-	crgpu_command_list cmd = NULL;
-	if (crgpu_command_list_create(allocator, &cmd) == CR_SUCCESS)
-		crgpu_command_list_destroy(cmd);
-	else
-		why = "crgpu_command_list_create failed";
-	crgpu_command_allocator_destroy(allocator);
-	return cmd;
-}
-
-static crgpu_command_list dead_crgpu_command_list(void) {
-	static bool told = false;
-	why = "";
-	crgpu_command_list handle = make_dead_crgpu_command_list();
-	if (!handle && !told) {
-		printf("cr_misuse_tests: not covered: crgpu_command_list: %s\n", why);
-		told = true;
-	}
-	return handle;
-}
-
 /* A crgpu_device just destroyed, or NULL with `why` set. */
 static crgpu_device make_dead_crgpu_device(void) {
 	/* Its own instance: the shared one's adapter 0 already has a device. */
@@ -778,75 +720,6 @@ static crgpu_device dead_crgpu_device(void) {
 	crgpu_device handle = make_dead_crgpu_device();
 	if (!handle && !told) {
 		printf("cr_misuse_tests: not covered: crgpu_device: %s\n", why);
-		told = true;
-	}
-	return handle;
-}
-
-/* A crgpu_buffer just destroyed, or NULL with `why` set. */
-static crgpu_buffer make_dead_crgpu_buffer(void) {
-	if (!have_device())
-		return NULL;
-	crgpu_buffer buffer = make_buffer();
-	if (buffer)
-		crgpu_buffer_destroy(buffer);
-	else
-		why = "crgpu_buffer_create failed";
-	return buffer;
-}
-
-static crgpu_buffer dead_crgpu_buffer(void) {
-	static bool told = false;
-	why = "";
-	crgpu_buffer handle = make_dead_crgpu_buffer();
-	if (!handle && !told) {
-		printf("cr_misuse_tests: not covered: crgpu_buffer: %s\n", why);
-		told = true;
-	}
-	return handle;
-}
-
-/* A crgpu_command_allocator just destroyed, or NULL with `why` set. */
-static crgpu_command_allocator make_dead_crgpu_command_allocator(void) {
-	if (!have_device())
-		return NULL;
-	crgpu_command_allocator allocator = make_command_allocator();
-	if (allocator)
-		crgpu_command_allocator_destroy(allocator);
-	else
-		why = "crgpu_command_allocator_create failed";
-	return allocator;
-}
-
-static crgpu_command_allocator dead_crgpu_command_allocator(void) {
-	static bool told = false;
-	why = "";
-	crgpu_command_allocator handle = make_dead_crgpu_command_allocator();
-	if (!handle && !told) {
-		printf("cr_misuse_tests: not covered: crgpu_command_allocator: %s\n", why);
-		told = true;
-	}
-	return handle;
-}
-
-/* A crgpu_image just destroyed, or NULL with `why` set. */
-static crgpu_image make_dead_crgpu_image(void) {
-	if (!have_device())
-		return NULL;
-	crgpu_image image = make_image();
-	if (image)
-		crgpu_image_destroy(image);
-	else
-		why = "crgpu_image_create failed";
-	return image;
-}
-
-static crgpu_image dead_crgpu_image(void) {
-	static bool told = false;
-	why = "";
-	crgpu_image handle = make_dead_crgpu_image();
-	if (!handle && !told) {
-		printf("cr_misuse_tests: not covered: crgpu_image: %s\n", why);
 		told = true;
 	}
 	return handle;
@@ -881,28 +754,6 @@ static crgpu_heap dead_crgpu_heap(void) {
 	return handle;
 }
 
-/* A crgpu_instance just destroyed, or NULL with `why` set. */
-static crgpu_instance make_dead_crgpu_instance(void) {
-	crgpu_instance instance = make_gpu_instance();
-	if (!instance) {
-		why = "crgpu_instance_create failed";
-		return NULL;
-	}
-	crgpu_instance_destroy(instance);
-	return instance;
-}
-
-static crgpu_instance dead_crgpu_instance(void) {
-	static bool told = false;
-	why = "";
-	crgpu_instance handle = make_dead_crgpu_instance();
-	if (!handle && !told) {
-		printf("cr_misuse_tests: not covered: crgpu_instance: %s\n", why);
-		told = true;
-	}
-	return handle;
-}
-
 /* A crgpu_acceleration_structure just destroyed, or NULL with `why` set. */
 static crgpu_acceleration_structure make_dead_crgpu_acceleration_structure(void) {
 	/* Its own instance and device, on the first adapter with ray queries
@@ -910,7 +761,7 @@ static crgpu_acceleration_structure make_dead_crgpu_acceleration_structure(void)
 	 * after: only the handle is read once it is destroyed. */
 	crgpu_instance instance = make_gpu_instance();
 	if (!instance) {
-		why = "no Carrottus GPU instance";
+		why = "no CrGPU instance";
 		return NULL;
 	}
 	const crgpu_adapter *adapters = NULL;
@@ -965,6 +816,80 @@ static crgpu_acceleration_structure dead_crgpu_acceleration_structure(void) {
 	return handle;
 }
 
+/* A crgpu_instance just destroyed, or NULL with `why` set. */
+static crgpu_instance make_dead_crgpu_instance(void) {
+	crgpu_instance instance = make_gpu_instance();
+	if (!instance) {
+		why = "crgpu_instance_create failed";
+		return NULL;
+	}
+	crgpu_instance_destroy(instance);
+	return instance;
+}
+
+static crgpu_instance dead_crgpu_instance(void) {
+	static bool told = false;
+	why = "";
+	crgpu_instance handle = make_dead_crgpu_instance();
+	if (!handle && !told) {
+		printf("cr_misuse_tests: not covered: crgpu_instance: %s\n", why);
+		told = true;
+	}
+	return handle;
+}
+
+/* A crgpu_adapter just destroyed, or NULL with `why` set. */
+static crgpu_adapter make_dead_crgpu_adapter(void) {
+	/* An adapter is the instance's: it goes with it. */
+	crgpu_instance instance = make_gpu_instance();
+	if (!instance) {
+		why = "crgpu_instance_create failed";
+		return NULL;
+	}
+	const crgpu_adapter *adapters = NULL;
+	uint32_t count                  = 0;
+	crgpu_adapter_enumerate(instance, &adapters, &count);
+	crgpu_adapter adapter = count > 0 ? adapters[0] : NULL;
+	if (!adapter)
+		why = "no adapter";
+	crgpu_instance_destroy(instance);
+	return adapter;
+}
+
+static crgpu_adapter dead_crgpu_adapter(void) {
+	static bool told = false;
+	why = "";
+	crgpu_adapter handle = make_dead_crgpu_adapter();
+	if (!handle && !told) {
+		printf("cr_misuse_tests: not covered: crgpu_adapter: %s\n", why);
+		told = true;
+	}
+	return handle;
+}
+
+/* A crgpu_buffer just destroyed, or NULL with `why` set. */
+static crgpu_buffer make_dead_crgpu_buffer(void) {
+	if (!have_device())
+		return NULL;
+	crgpu_buffer buffer = make_buffer();
+	if (buffer)
+		crgpu_buffer_destroy(buffer);
+	else
+		why = "crgpu_buffer_create failed";
+	return buffer;
+}
+
+static crgpu_buffer dead_crgpu_buffer(void) {
+	static bool told = false;
+	why = "";
+	crgpu_buffer handle = make_dead_crgpu_buffer();
+	if (!handle && !told) {
+		printf("cr_misuse_tests: not covered: crgpu_buffer: %s\n", why);
+		told = true;
+	}
+	return handle;
+}
+
 /* A crgpu_buffer_view just destroyed, or NULL with `why` set. */
 static crgpu_buffer_view make_dead_crgpu_buffer_view(void) {
 	if (!have_device())
@@ -995,6 +920,89 @@ static crgpu_buffer_view dead_crgpu_buffer_view(void) {
 	crgpu_buffer_view handle = make_dead_crgpu_buffer_view();
 	if (!handle && !told) {
 		printf("cr_misuse_tests: not covered: crgpu_buffer_view: %s\n", why);
+		told = true;
+	}
+	return handle;
+}
+
+/* A crgpu_command_allocator just destroyed, or NULL with `why` set. */
+static crgpu_command_allocator make_dead_crgpu_command_allocator(void) {
+	if (!have_device())
+		return NULL;
+	crgpu_command_allocator allocator = make_command_allocator();
+	if (allocator)
+		crgpu_command_allocator_destroy(allocator);
+	else
+		why = "crgpu_command_allocator_create failed";
+	return allocator;
+}
+
+static crgpu_command_allocator dead_crgpu_command_allocator(void) {
+	static bool told = false;
+	why = "";
+	crgpu_command_allocator handle = make_dead_crgpu_command_allocator();
+	if (!handle && !told) {
+		printf("cr_misuse_tests: not covered: crgpu_command_allocator: %s\n", why);
+		told = true;
+	}
+	return handle;
+}
+
+/* A crgpu_command_list just destroyed, or NULL with `why` set. */
+static crgpu_command_list make_dead_crgpu_command_list(void) {
+	if (!have_device())
+		return NULL;
+	crgpu_command_allocator allocator = make_command_allocator();
+	if (!allocator) {
+		why = "crgpu_command_allocator_create failed";
+		return NULL;
+	}
+	crgpu_command_list cmd = NULL;
+	if (crgpu_command_list_create(allocator, &cmd) == CR_SUCCESS)
+		crgpu_command_list_destroy(cmd);
+	else
+		why = "crgpu_command_list_create failed";
+	crgpu_command_allocator_destroy(allocator);
+	return cmd;
+}
+
+static crgpu_command_list dead_crgpu_command_list(void) {
+	static bool told = false;
+	why = "";
+	crgpu_command_list handle = make_dead_crgpu_command_list();
+	if (!handle && !told) {
+		printf("cr_misuse_tests: not covered: crgpu_command_list: %s\n", why);
+		told = true;
+	}
+	return handle;
+}
+
+/* A crgpu_command_queue just destroyed, or NULL with `why` set. */
+static crgpu_command_queue make_dead_crgpu_command_queue(void) {
+	/* A queue is the device's: it goes with it. */
+	crgpu_instance instance = make_gpu_instance();
+	if (!instance) {
+		why = "crgpu_instance_create failed";
+		return NULL;
+	}
+	crgpu_device device       = make_gpu_device(instance, 0);
+	crgpu_command_queue queue = NULL;
+	if (device) {
+		crgpu_command_queue_get(device, CRGPU_COMMAND_LIST_TYPE_DIRECT, 0, &queue);
+		crgpu_device_destroy(device);
+	}
+	if (!queue)
+		why = "no device on adapter 0";
+	crgpu_instance_destroy(instance);
+	return queue;
+}
+
+static crgpu_command_queue dead_crgpu_command_queue(void) {
+	static bool told = false;
+	why = "";
+	crgpu_command_queue handle = make_dead_crgpu_command_queue();
+	if (!handle && !told) {
+		printf("cr_misuse_tests: not covered: crgpu_command_queue: %s\n", why);
 		told = true;
 	}
 	return handle;
@@ -1119,6 +1127,97 @@ static crgpu_fence dead_crgpu_fence(void) {
 	return handle;
 }
 
+/* A crgpu_graphics_pipeline just destroyed, or NULL with `why` set. */
+static crgpu_graphics_pipeline make_dead_crgpu_graphics_pipeline(void) {
+	if (!have_device())
+		return NULL;
+	/* tests/shaders/objects_draw.vert and .frag, as crgpu_objects_test
+	 * draws with them. */
+	crgpu_shader_module vertex =
+	    make_module(&crgpu_test_objects_draw_vert);
+	crgpu_shader_module fragment =
+	    make_module(&crgpu_test_objects_draw_frag);
+	const CRGPU_DESCRIPTOR_TYPE types[3] = {CRGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER, CRGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+	                                          CRGPU_DESCRIPTOR_TYPE_SAMPLER};
+	crgpu_descriptor_set_layout layout   = make_set_layout(types, 3, CRGPU_SHADER_STAGE_FRAGMENT);
+	crgpu_graphics_pipeline pipeline       = NULL;
+	if (vertex && fragment && layout) {
+		crgpu_graphics_pipeline_desc desc;
+		memset(&desc, 0, sizeof(desc));
+		desc.base.type                           = CR_STRUCT_TYPE_GPU_GRAPHICS_PIPELINE_DESC;
+		desc.vertex_module                       = vertex;
+		desc.fragment_module                     = fragment;
+		desc.vertex_attributes[0].location       = 0;
+		desc.vertex_attributes[0].binding        = 0;
+		desc.vertex_attributes[0].format         = CRGPU_FORMAT_R32G32_FLOAT;
+		desc.vertex_attributes[1].location       = 1;
+		desc.vertex_attributes[1].binding        = 1;
+		desc.vertex_attributes[1].format         = CRGPU_FORMAT_R32G32_FLOAT;
+		desc.vertex_attribute_count              = 2;
+		desc.vertex_bindings[0].binding          = 0;
+		desc.vertex_bindings[0].stride           = 2 * sizeof(float);
+		desc.vertex_bindings[1].binding          = 1;
+		desc.vertex_bindings[1].stride           = 2 * sizeof(float);
+		desc.vertex_bindings[1].per_instance     = true;
+		desc.vertex_binding_count                = 2;
+		desc.primitive_topology                  = CRGPU_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+		desc.cull_mode                           = CRGPU_CULL_MODE_NONE;
+		desc.depth_compare_op                    = CRGPU_COMPARE_OP_ALWAYS;
+		desc.color_attachment_formats[0]         = CRGPU_FORMAT_R8G8B8A8_UNORM;
+		desc.color_attachment_count              = 1;
+		desc.depth_format                        = CRGPU_FORMAT_D32_FLOAT;
+		desc.descriptor_set_layouts[0]           = layout;
+		desc.descriptor_set_layout_count         = 1;
+		desc.push_constant_ranges[0].stage_flags = CRGPU_SHADER_STAGE_VERTEX | CRGPU_SHADER_STAGE_FRAGMENT;
+		desc.push_constant_ranges[0].size        = 8 * sizeof(float);
+		desc.push_constant_range_count           = 1;
+		if (crgpu_graphics_pipeline_create(gpu_device, &desc, &pipeline) == CR_SUCCESS)
+			crgpu_graphics_pipeline_destroy(pipeline);
+		else
+			why = "crgpu_graphics_pipeline_create failed";
+	} else {
+		why = "no shader modules or set layout for a pipeline";
+	}
+	crgpu_descriptor_set_layout_destroy(layout);
+	crgpu_shader_module_destroy(fragment);
+	crgpu_shader_module_destroy(vertex);
+	return pipeline;
+}
+
+static crgpu_graphics_pipeline dead_crgpu_graphics_pipeline(void) {
+	static bool told = false;
+	why = "";
+	crgpu_graphics_pipeline handle = make_dead_crgpu_graphics_pipeline();
+	if (!handle && !told) {
+		printf("cr_misuse_tests: not covered: crgpu_graphics_pipeline: %s\n", why);
+		told = true;
+	}
+	return handle;
+}
+
+/* A crgpu_image just destroyed, or NULL with `why` set. */
+static crgpu_image make_dead_crgpu_image(void) {
+	if (!have_device())
+		return NULL;
+	crgpu_image image = make_image();
+	if (image)
+		crgpu_image_destroy(image);
+	else
+		why = "crgpu_image_create failed";
+	return image;
+}
+
+static crgpu_image dead_crgpu_image(void) {
+	static bool told = false;
+	why = "";
+	crgpu_image handle = make_dead_crgpu_image();
+	if (!handle && !told) {
+		printf("cr_misuse_tests: not covered: crgpu_image: %s\n", why);
+		told = true;
+	}
+	return handle;
+}
+
 /* A crgpu_image_view just destroyed, or NULL with `why` set. */
 static crgpu_image_view make_dead_crgpu_image_view(void) {
 	if (!have_device())
@@ -1236,74 +1335,6 @@ static crgpu_shader_module dead_crgpu_shader_module(void) {
 	return handle;
 }
 
-/* A crgpu_graphics_pipeline just destroyed, or NULL with `why` set. */
-static crgpu_graphics_pipeline make_dead_crgpu_shader_pipeline(void) {
-	if (!have_device())
-		return NULL;
-	/* tests/shaders/objects_draw.vert and .frag, as crgpu_objects_test
-	 * draws with them. */
-	crgpu_shader_module vertex =
-	    make_module(&crgpu_test_objects_draw_vert);
-	crgpu_shader_module fragment =
-	    make_module(&crgpu_test_objects_draw_frag);
-	const CRGPU_DESCRIPTOR_TYPE types[3] = {CRGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER, CRGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-	                                          CRGPU_DESCRIPTOR_TYPE_SAMPLER};
-	crgpu_descriptor_set_layout layout   = make_set_layout(types, 3, CRGPU_SHADER_STAGE_FRAGMENT);
-	crgpu_graphics_pipeline pipeline       = NULL;
-	if (vertex && fragment && layout) {
-		crgpu_graphics_pipeline_desc desc;
-		memset(&desc, 0, sizeof(desc));
-		desc.base.type                           = CR_STRUCT_TYPE_GPU_GRAPHICS_PIPELINE_DESC;
-		desc.vertex_module                       = vertex;
-		desc.fragment_module                     = fragment;
-		desc.vertex_attributes[0].location       = 0;
-		desc.vertex_attributes[0].binding        = 0;
-		desc.vertex_attributes[0].format         = CRGPU_FORMAT_R32G32_FLOAT;
-		desc.vertex_attributes[1].location       = 1;
-		desc.vertex_attributes[1].binding        = 1;
-		desc.vertex_attributes[1].format         = CRGPU_FORMAT_R32G32_FLOAT;
-		desc.vertex_attribute_count              = 2;
-		desc.vertex_bindings[0].binding          = 0;
-		desc.vertex_bindings[0].stride           = 2 * sizeof(float);
-		desc.vertex_bindings[1].binding          = 1;
-		desc.vertex_bindings[1].stride           = 2 * sizeof(float);
-		desc.vertex_bindings[1].per_instance     = true;
-		desc.vertex_binding_count                = 2;
-		desc.primitive_topology                  = CRGPU_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-		desc.cull_mode                           = CRGPU_CULL_MODE_NONE;
-		desc.depth_compare_op                    = CRGPU_COMPARE_OP_ALWAYS;
-		desc.color_attachment_formats[0]         = CRGPU_FORMAT_R8G8B8A8_UNORM;
-		desc.color_attachment_count              = 1;
-		desc.depth_format                        = CRGPU_FORMAT_D32_FLOAT;
-		desc.descriptor_set_layouts[0]           = layout;
-		desc.descriptor_set_layout_count         = 1;
-		desc.push_constant_ranges[0].stage_flags = CRGPU_SHADER_STAGE_VERTEX | CRGPU_SHADER_STAGE_FRAGMENT;
-		desc.push_constant_ranges[0].size        = 8 * sizeof(float);
-		desc.push_constant_range_count           = 1;
-		if (crgpu_graphics_pipeline_create(gpu_device, &desc, &pipeline) == CR_SUCCESS)
-			crgpu_graphics_pipeline_destroy(pipeline);
-		else
-			why = "crgpu_graphics_pipeline_create failed";
-	} else {
-		why = "no shader modules or set layout for a pipeline";
-	}
-	crgpu_descriptor_set_layout_destroy(layout);
-	crgpu_shader_module_destroy(fragment);
-	crgpu_shader_module_destroy(vertex);
-	return pipeline;
-}
-
-static crgpu_graphics_pipeline dead_crgpu_shader_pipeline(void) {
-	static bool told = false;
-	why = "";
-	crgpu_graphics_pipeline handle = make_dead_crgpu_shader_pipeline();
-	if (!handle && !told) {
-		printf("cr_misuse_tests: not covered: crgpu_graphics_pipeline: %s\n", why);
-		told = true;
-	}
-	return handle;
-}
-
 /* A crgpu_surface just destroyed, or NULL with `why` set. */
 static crgpu_surface make_dead_crgpu_surface(void) {
 	if (!gpu_instance) {
@@ -1401,37 +1432,6 @@ static crgpu_timestamp_set dead_crgpu_timestamp_set(void) {
 	return handle;
 }
 
-/* A crgpu_command_queue just destroyed, or NULL with `why` set. */
-static crgpu_command_queue make_dead_crgpu_command_queue(void) {
-	/* A queue is the device's: it goes with it. */
-	crgpu_instance instance = make_gpu_instance();
-	if (!instance) {
-		why = "crgpu_instance_create failed";
-		return NULL;
-	}
-	crgpu_device device       = make_gpu_device(instance, 0);
-	crgpu_command_queue queue = NULL;
-	if (device) {
-		crgpu_command_queue_get(device, CRGPU_COMMAND_LIST_TYPE_DIRECT, 0, &queue);
-		crgpu_device_destroy(device);
-	}
-	if (!queue)
-		why = "no device on adapter 0";
-	crgpu_instance_destroy(instance);
-	return queue;
-}
-
-static crgpu_command_queue dead_crgpu_command_queue(void) {
-	static bool told = false;
-	why = "";
-	crgpu_command_queue handle = make_dead_crgpu_command_queue();
-	if (!handle && !told) {
-		printf("cr_misuse_tests: not covered: crgpu_command_queue: %s\n", why);
-		told = true;
-	}
-	return handle;
-}
-
 /* A crinput_instance just destroyed, or NULL with `why` set. */
 static crinput_instance make_dead_crinput_instance(void) {
 #if CRINPUT_COMPILE_GAMECONTROLLER
@@ -1455,7 +1455,7 @@ static crinput_instance make_dead_crinput_instance(void) {
 #endif
 	crinput_instance instance = NULL;
 	if (api == CRINPUT_NATIVE_API_NONE || crinput_instance_create(&desc, &instance) != CR_SUCCESS) {
-		why = "no Carrottus Input instance in this build";
+		why = "no CrInput instance in this build";
 		return NULL;
 	}
 	crinput_instance_destroy(instance);
@@ -1523,10 +1523,21 @@ static crnet_http_transfer make_dead_crnet_http_transfer(void) {
 	crnet_http_client client     = make_http_client(instance);
 	crnet_http_transfer transfer = NULL;
 	if (client) {
-		if (crnet_http_transfer_create(client, &transfer) == CR_SUCCESS)
+		if (crnet_http_transfer_create(client, &transfer) == CR_SUCCESS) {
+			// Started, as a wait set takes one (crnet_wait_set_add_http_transfer):
+			// begun with CRNET_NO_WAIT towards a port nothing serves, so the
+			// destroyed handle is one whose request was under way.
+			crnet_http_transfer_desc desc;
+			memset(&desc, 0, sizeof(desc));
+			desc.base.type  = CR_STRUCT_TYPE_NET_HTTP_TRANSFER_DESC;
+			desc.method     = "GET";
+			desc.url        = "http://127.0.0.1:9/";
+			desc.timeout_ms = CRNET_NO_WAIT;
+			(void)crnet_http_transfer_start(transfer, &desc);
 			crnet_http_transfer_destroy(transfer);
-		else
+		} else {
 			why = "crnet_http_transfer_create failed";
+		}
 		crnet_http_client_destroy(client);
 	}
 	crnet_instance_destroy(instance);
@@ -1695,25 +1706,6 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		craudio_instance dead = dead_craudio_instance();
 		if (dead) {
-			expect_refused("craudio_instance_destroy", craudio_instance_destroy(dead));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		craudio_stream dead = dead_craudio_stream();
-		if (dead) {
-			craudio_stream_destroy(dead);
-			unchecked++;
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		craudio_instance dead = dead_craudio_instance();
-		if (dead) {
 			expect_refused("craudio_device_enumerate", craudio_device_enumerate(dead, (CRAUDIO_DIRECTION){0}, (craudio_device **){0}, (uint32_t *){0}));
 			calls++;
 		} else {
@@ -1730,9 +1722,9 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 		}
 	}
 	{
-		craudio_instance dead = dead_craudio_instance();
+		craudio_device dead = dead_craudio_device();
 		if (dead) {
-			expect_fallback("craudio_instance_get_native_api", craudio_instance_get_native_api(dead) == craudio_instance_get_native_api((craudio_instance){0}));
+			expect_refused("craudio_device_get_timing_caps", craudio_device_get_timing_caps(dead, (const CRAUDIO_FORMAT *){0}, (CRAUDIO_STREAM_FLAGS){0}, (CRAUDIO_TIMING_CAPS *){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -1741,7 +1733,25 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		craudio_device dead = dead_craudio_device();
 		if (dead) {
-			expect_refused("craudio_device_get_timing_caps", craudio_device_get_timing_caps(dead, (const CRAUDIO_FORMAT *){0}, (CRAUDIO_STREAM_FLAGS){0}, (CRAUDIO_TIMING_CAPS *){0}));
+			expect_refused("craudio_device_set_sample_rate", craudio_device_set_sample_rate(dead, (uint32_t){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		craudio_instance dead = dead_craudio_instance();
+		if (dead) {
+			expect_refused("craudio_instance_destroy", craudio_instance_destroy(dead));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		craudio_instance dead = dead_craudio_instance();
+		if (dead) {
+			expect_fallback("craudio_instance_get_native_api", craudio_instance_get_native_api(dead) == craudio_instance_get_native_api((craudio_instance){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -1757,9 +1767,10 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 		}
 	}
 	{
-		craudio_device dead = dead_craudio_device();
+		craudio_stream dead = dead_craudio_stream();
 		if (dead) {
-			expect_refused("craudio_device_set_sample_rate", craudio_device_set_sample_rate(dead, (uint32_t){0}));
+			craudio_stream_destroy(dead);
+			unchecked++;
 			calls++;
 		} else {
 			skipped++;
@@ -2050,31 +2061,64 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 		}
 	}
 	{
+		crgpu_device dead = dead_crgpu_device();
+		if (dead) {
+			expect_refused("crgpu_acceleration_structure_create", crgpu_acceleration_structure_create(dead, (const crgpu_acceleration_structure_desc *){0}, (crgpu_acceleration_structure *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_heap dead = dead_crgpu_heap();
+		if (dead) {
+			expect_refused("crgpu_acceleration_structure_create_placed", crgpu_acceleration_structure_create_placed(dead, (uint64_t){0}, (const crgpu_acceleration_structure_desc *){0}, (crgpu_acceleration_structure *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_acceleration_structure dead = dead_crgpu_acceleration_structure();
+		if (dead) {
+			crgpu_acceleration_structure_destroy(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_acceleration_structure dead = dead_crgpu_acceleration_structure();
+		if (dead) {
+			expect_refused("crgpu_acceleration_structure_get_reference", crgpu_acceleration_structure_get_reference(dead, (uint64_t *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_instance dead = dead_crgpu_instance();
+		if (dead) {
+			expect_refused("crgpu_adapter_enumerate", crgpu_adapter_enumerate(dead, (const crgpu_adapter **){0}, (uint32_t *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_adapter dead = dead_crgpu_adapter();
+		if (dead) {
+			expect_refused("crgpu_adapter_get_properties", crgpu_adapter_get_properties(dead, (CRGPU_ADAPTER_PROPERTIES *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
 		crgpu_adapter dead = dead_crgpu_adapter();
 		if (dead) {
 			expect_refused("crgpu_adapter_supports_surface", crgpu_adapter_supports_surface(dead, (crgpu_surface){0}, (bool *){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-#if defined(__linux__) || defined(_WIN32)
-	{
-		crgpu_command_list dead = dead_crgpu_command_list();
-		if (dead) {
-			crgpu_command_list_begin_bundle(dead, (const crgpu_bundle_inheritance_desc *){0});
-			unchecked++;
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-#endif
-	{
-		crgpu_command_list dead = dead_crgpu_command_list();
-		if (dead) {
-			crgpu_command_list_begin(dead);
-			unchecked++;
 			calls++;
 		} else {
 			skipped++;
@@ -2150,6 +2194,145 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	}
 #endif
 	{
+		crgpu_device dead = dead_crgpu_device();
+		if (dead) {
+			expect_refused("crgpu_buffer_create", crgpu_buffer_create(dead, (const crgpu_buffer_desc *){0}, (crgpu_buffer *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_heap dead = dead_crgpu_heap();
+		if (dead) {
+			expect_refused("crgpu_buffer_create_placed", crgpu_buffer_create_placed(dead, (uint64_t){0}, (const crgpu_buffer_desc *){0}, (crgpu_buffer *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_buffer dead = dead_crgpu_buffer();
+		if (dead) {
+			crgpu_buffer_destroy(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_buffer dead = dead_crgpu_buffer();
+		if (dead) {
+			expect_refused("crgpu_buffer_flush", crgpu_buffer_flush(dead, (uint64_t){0}, (uint64_t){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_buffer dead = dead_crgpu_buffer();
+		if (dead) {
+			expect_refused("crgpu_buffer_get_desc", crgpu_buffer_get_desc(dead, (crgpu_buffer_desc *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_buffer dead = dead_crgpu_buffer();
+		if (dead) {
+			expect_refused("crgpu_buffer_get_gpu_address", crgpu_buffer_get_gpu_address(dead, (uint64_t *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_buffer dead = dead_crgpu_buffer();
+		if (dead) {
+			expect_refused("crgpu_buffer_invalidate", crgpu_buffer_invalidate(dead, (uint64_t){0}, (uint64_t){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_buffer dead = dead_crgpu_buffer();
+		if (dead) {
+			expect_refused("crgpu_buffer_map", crgpu_buffer_map(dead, (uint64_t){0}, (uint64_t){0}, (void **){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_buffer dead = dead_crgpu_buffer();
+		if (dead) {
+			crgpu_buffer_unmap(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_buffer dead = dead_crgpu_buffer();
+		if (dead) {
+			expect_refused("crgpu_buffer_view_create", crgpu_buffer_view_create(dead, (const crgpu_buffer_view_desc *){0}, (crgpu_buffer_view *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_buffer_view dead = dead_crgpu_buffer_view();
+		if (dead) {
+			crgpu_buffer_view_destroy(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_buffer_view dead = dead_crgpu_buffer_view();
+		if (dead) {
+			expect_refused("crgpu_buffer_view_get_desc", crgpu_buffer_view_get_desc(dead, (crgpu_buffer_view_desc *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_device dead = dead_crgpu_device();
+		if (dead) {
+			expect_refused("crgpu_command_allocator_create", crgpu_command_allocator_create(dead, (const crgpu_command_allocator_desc *){0}, (crgpu_command_allocator *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_command_allocator dead = dead_crgpu_command_allocator();
+		if (dead) {
+			crgpu_command_allocator_destroy(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_command_allocator dead = dead_crgpu_command_allocator();
+		if (dead) {
+			expect_refused("crgpu_command_allocator_reset", crgpu_command_allocator_reset(dead));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
 		crgpu_command_list dead = dead_crgpu_command_list();
 		if (dead) {
 			crgpu_command_list_acceleration_structure_barrier(dead, (const crgpu_acceleration_structure_barrier *){0}, (uint32_t){0});
@@ -2159,6 +2342,28 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 			skipped++;
 		}
 	}
+	{
+		crgpu_command_list dead = dead_crgpu_command_list();
+		if (dead) {
+			crgpu_command_list_begin(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+#if defined(__linux__) || defined(_WIN32)
+	{
+		crgpu_command_list dead = dead_crgpu_command_list();
+		if (dead) {
+			crgpu_command_list_begin_bundle(dead, (const crgpu_bundle_inheritance_desc *){0});
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+#endif
 	{
 		crgpu_command_list dead = dead_crgpu_command_list();
 		if (dead) {
@@ -2183,18 +2388,6 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crgpu_command_list dead = dead_crgpu_command_list();
 		if (dead) {
-			crgpu_command_list_bind_graphics_bindless_resources(dead, (crgpu_graphics_pipeline){0}, (uint32_t){0});
-			unchecked++;
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-#endif
-#if defined(__linux__) || defined(_WIN32)
-	{
-		crgpu_command_list dead = dead_crgpu_command_list();
-		if (dead) {
 			crgpu_command_list_bind_compute_bindless_resources(dead, (crgpu_compute_pipeline){0}, (uint32_t){0});
 			unchecked++;
 			calls++;
@@ -2206,6 +2399,16 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crgpu_command_list dead = dead_crgpu_command_list();
 		if (dead) {
+			crgpu_command_list_bind_compute_descriptor_sets(dead, (crgpu_compute_pipeline){0}, (uint32_t){0}, (const crgpu_descriptor_set *){0}, (uint32_t){0});
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_command_list dead = dead_crgpu_command_list();
+		if (dead) {
 			crgpu_command_list_bind_compute_pipeline(dead, (crgpu_compute_pipeline){0});
 			unchecked++;
 			calls++;
@@ -2213,20 +2416,22 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 			skipped++;
 		}
 	}
+#if defined(__linux__) || defined(_WIN32)
 	{
 		crgpu_command_list dead = dead_crgpu_command_list();
 		if (dead) {
-			crgpu_command_list_bind_graphics_descriptor_sets(dead, (crgpu_graphics_pipeline){0}, (uint32_t){0}, (const crgpu_descriptor_set *){0}, (uint32_t){0});
+			crgpu_command_list_bind_graphics_bindless_resources(dead, (crgpu_graphics_pipeline){0}, (uint32_t){0});
 			unchecked++;
 			calls++;
 		} else {
 			skipped++;
 		}
 	}
+#endif
 	{
 		crgpu_command_list dead = dead_crgpu_command_list();
 		if (dead) {
-			crgpu_command_list_bind_compute_descriptor_sets(dead, (crgpu_compute_pipeline){0}, (uint32_t){0}, (const crgpu_descriptor_set *){0}, (uint32_t){0});
+			crgpu_command_list_bind_graphics_descriptor_sets(dead, (crgpu_graphics_pipeline){0}, (uint32_t){0}, (const crgpu_descriptor_set *){0}, (uint32_t){0});
 			unchecked++;
 			calls++;
 		} else {
@@ -2322,6 +2527,25 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 		}
 	}
 	{
+		crgpu_command_allocator dead = dead_crgpu_command_allocator();
+		if (dead) {
+			expect_refused("crgpu_command_list_create", crgpu_command_list_create(dead, (crgpu_command_list *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_command_list dead = dead_crgpu_command_list();
+		if (dead) {
+			crgpu_command_list_destroy(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
 		crgpu_command_list dead = dead_crgpu_command_list();
 		if (dead) {
 			crgpu_command_list_dispatch(dead, (uint32_t){0}, (uint32_t){0}, (uint32_t){0});
@@ -2404,6 +2628,16 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crgpu_command_list dead = dead_crgpu_command_list();
 		if (dead) {
+			crgpu_command_list_end(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_command_list dead = dead_crgpu_command_list();
+		if (dead) {
 			crgpu_command_list_end_debug_label(dead);
 			unchecked++;
 			calls++;
@@ -2476,7 +2710,7 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crgpu_command_list dead = dead_crgpu_command_list();
 		if (dead) {
-			crgpu_command_list_push_graphics_constants(dead, (crgpu_graphics_pipeline){0}, (uint32_t){0}, (uint32_t){0}, (const void *){0});
+			crgpu_command_list_push_compute_constants(dead, (crgpu_compute_pipeline){0}, (uint32_t){0}, (uint32_t){0}, (const void *){0});
 			unchecked++;
 			calls++;
 		} else {
@@ -2486,7 +2720,7 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crgpu_command_list dead = dead_crgpu_command_list();
 		if (dead) {
-			crgpu_command_list_push_compute_constants(dead, (crgpu_compute_pipeline){0}, (uint32_t){0}, (uint32_t){0}, (const void *){0});
+			crgpu_command_list_push_graphics_constants(dead, (crgpu_graphics_pipeline){0}, (uint32_t){0}, (uint32_t){0}, (const void *){0});
 			unchecked++;
 			calls++;
 		} else {
@@ -2575,43 +2809,44 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crgpu_device dead = dead_crgpu_device();
 		if (dead) {
-			expect_refused("crgpu_acceleration_structure_create", crgpu_acceleration_structure_create(dead, (const crgpu_acceleration_structure_desc *){0}, (crgpu_acceleration_structure *){0}));
+			expect_refused("crgpu_command_queue_get", crgpu_command_queue_get(dead, (CRGPU_COMMAND_LIST_TYPE){0}, (uint32_t){0}, (crgpu_command_queue *){0}));
 			calls++;
 		} else {
 			skipped++;
 		}
 	}
 	{
-		crgpu_device dead = dead_crgpu_device();
+		crgpu_command_queue dead = dead_crgpu_command_queue();
 		if (dead) {
-			expect_refused("crgpu_buffer_create", crgpu_buffer_create(dead, (const crgpu_buffer_desc *){0}, (crgpu_buffer *){0}));
+			expect_refused("crgpu_command_queue_submit", crgpu_command_queue_submit(dead, (const crgpu_submit_desc *){0}));
 			calls++;
 		} else {
 			skipped++;
 		}
 	}
 	{
-		crgpu_buffer dead = dead_crgpu_buffer();
+		crgpu_command_queue dead = dead_crgpu_command_queue();
 		if (dead) {
-			expect_refused("crgpu_buffer_view_create", crgpu_buffer_view_create(dead, (const crgpu_buffer_view_desc *){0}, (crgpu_buffer_view *){0}));
+			expect_refused("crgpu_command_queue_submit_lists", crgpu_command_queue_submit_lists(dead, (crgpu_command_list *){0}, (uint32_t){0}));
 			calls++;
 		} else {
 			skipped++;
 		}
 	}
 	{
-		crgpu_device dead = dead_crgpu_device();
+		crgpu_command_queue dead = dead_crgpu_command_queue();
 		if (dead) {
-			expect_refused("crgpu_command_allocator_create", crgpu_command_allocator_create(dead, (const crgpu_command_allocator_desc *){0}, (crgpu_command_allocator *){0}));
+			expect_refused("crgpu_command_queue_submit_lists_synced", crgpu_command_queue_submit_lists_synced(dead, (crgpu_command_list *){0}, (uint32_t){0}, (crgpu_swap_chain){0}));
 			calls++;
 		} else {
 			skipped++;
 		}
 	}
 	{
-		crgpu_command_allocator dead = dead_crgpu_command_allocator();
+		crgpu_command_queue dead = dead_crgpu_command_queue();
 		if (dead) {
-			expect_refused("crgpu_command_list_create", crgpu_command_list_create(dead, (crgpu_command_list *){0}));
+			crgpu_command_queue_wait_idle(dead);
+			unchecked++;
 			calls++;
 		} else {
 			skipped++;
@@ -2627,9 +2862,57 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 		}
 	}
 	{
+		crgpu_compute_pipeline dead = dead_crgpu_compute_pipeline();
+		if (dead) {
+			crgpu_compute_pipeline_destroy(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_compute_pipeline dead = dead_crgpu_compute_pipeline();
+		if (dead) {
+			expect_refused("crgpu_compute_pipeline_get_desc", crgpu_compute_pipeline_get_desc(dead, (crgpu_compute_pipeline_desc *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
 		crgpu_device dead = dead_crgpu_device();
 		if (dead) {
 			expect_refused("crgpu_descriptor_pool_create", crgpu_descriptor_pool_create(dead, (const crgpu_descriptor_pool_desc *){0}, (crgpu_descriptor_pool *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_descriptor_pool dead = dead_crgpu_descriptor_pool();
+		if (dead) {
+			crgpu_descriptor_pool_destroy(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_descriptor_pool dead = dead_crgpu_descriptor_pool();
+		if (dead) {
+			crgpu_descriptor_pool_reset(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_device dead = dead_crgpu_device();
+		if (dead) {
+			expect_refused("crgpu_descriptor_set_create", crgpu_descriptor_set_create(dead, (const crgpu_descriptor_set_desc *){0}, (crgpu_descriptor_set *){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -2645,9 +2928,10 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 		}
 	}
 	{
-		crgpu_device dead = dead_crgpu_device();
+		crgpu_descriptor_set_layout dead = dead_crgpu_descriptor_set_layout();
 		if (dead) {
-			expect_refused("crgpu_descriptor_set_create", crgpu_descriptor_set_create(dead, (const crgpu_descriptor_set_desc *){0}, (crgpu_descriptor_set *){0}));
+			crgpu_descriptor_set_layout_destroy(dead);
+			unchecked++;
 			calls++;
 		} else {
 			skipped++;
@@ -2665,370 +2949,8 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crgpu_device dead = dead_crgpu_device();
 		if (dead) {
-			expect_refused("crgpu_fence_create", crgpu_fence_create(dead, (CRGPU_FENCE_FLAGS){0}, (uint64_t){0}, (crgpu_fence *){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_device dead = dead_crgpu_device();
-		if (dead) {
-			expect_refused("crgpu_heap_create", crgpu_heap_create(dead, (const crgpu_heap_desc *){0}, (crgpu_heap *){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_device dead = dead_crgpu_device();
-		if (dead) {
-			expect_refused("crgpu_image_create", crgpu_image_create(dead, (const crgpu_image_desc *){0}, (crgpu_image *){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_image dead = dead_crgpu_image();
-		if (dead) {
-			expect_refused("crgpu_image_view_create", crgpu_image_view_create(dead, (const crgpu_image_view_desc *){0}, (crgpu_image_view *){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_heap dead = dead_crgpu_heap();
-		if (dead) {
-			expect_refused("crgpu_acceleration_structure_create_placed", crgpu_acceleration_structure_create_placed(dead, (uint64_t){0}, (const crgpu_acceleration_structure_desc *){0}, (crgpu_acceleration_structure *){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_heap dead = dead_crgpu_heap();
-		if (dead) {
-			expect_refused("crgpu_buffer_create_placed", crgpu_buffer_create_placed(dead, (uint64_t){0}, (const crgpu_buffer_desc *){0}, (crgpu_buffer *){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_heap dead = dead_crgpu_heap();
-		if (dead) {
-			expect_refused("crgpu_image_create_placed", crgpu_image_create_placed(dead, (uint64_t){0}, (const crgpu_image_desc *){0}, (crgpu_image *){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_device dead = dead_crgpu_device();
-		if (dead) {
-			expect_refused("crgpu_sampler_create", crgpu_sampler_create(dead, (const crgpu_sampler_desc *){0}, (crgpu_sampler *){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_device dead = dead_crgpu_device();
-		if (dead) {
-			expect_refused("crgpu_semaphore_create", crgpu_semaphore_create(dead, (crgpu_semaphore *){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_device dead = dead_crgpu_device();
-		if (dead) {
-			expect_refused("crgpu_shader_module_create", crgpu_shader_module_create(dead, (const crgpu_shader_module_desc *){0}, (crgpu_shader_module *){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_device dead = dead_crgpu_device();
-		if (dead) {
-			expect_refused("crgpu_graphics_pipeline_create", crgpu_graphics_pipeline_create(dead, (const crgpu_graphics_pipeline_desc *){0}, (crgpu_graphics_pipeline *){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_instance dead = dead_crgpu_instance();
-		if (dead) {
-			expect_refused("crgpu_surface_create", crgpu_surface_create(dead, (void *){0}, (void *){0}, (crgpu_surface *){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_instance dead = dead_crgpu_instance();
-		if (dead) {
-			expect_fallback("crgpu_surface_create_from_callback", crgpu_surface_create_from_callback(dead, (void *){0}, (crgpu_surface_create_fn){0}) == crgpu_surface_create_from_callback((crgpu_instance){0}, (void *){0}, (crgpu_surface_create_fn){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_device dead = dead_crgpu_device();
-		if (dead) {
-			expect_refused("crgpu_swap_chain_create", crgpu_swap_chain_create(dead, (const crgpu_swap_chain_desc *){0}, (crgpu_swap_chain *){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_device dead = dead_crgpu_device();
-		if (dead) {
-			expect_refused("crgpu_timestamp_set_create", crgpu_timestamp_set_create(dead, (crgpu_command_queue){0}, (uint32_t){0}, (crgpu_timestamp_set *){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_acceleration_structure dead = dead_crgpu_acceleration_structure();
-		if (dead) {
-			crgpu_acceleration_structure_destroy(dead);
-			unchecked++;
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_buffer dead = dead_crgpu_buffer();
-		if (dead) {
-			crgpu_buffer_destroy(dead);
-			unchecked++;
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_buffer_view dead = dead_crgpu_buffer_view();
-		if (dead) {
-			crgpu_buffer_view_destroy(dead);
-			unchecked++;
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_command_allocator dead = dead_crgpu_command_allocator();
-		if (dead) {
-			crgpu_command_allocator_destroy(dead);
-			unchecked++;
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_command_list dead = dead_crgpu_command_list();
-		if (dead) {
-			crgpu_command_list_destroy(dead);
-			unchecked++;
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_compute_pipeline dead = dead_crgpu_compute_pipeline();
-		if (dead) {
-			crgpu_compute_pipeline_destroy(dead);
-			unchecked++;
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_descriptor_pool dead = dead_crgpu_descriptor_pool();
-		if (dead) {
-			crgpu_descriptor_pool_destroy(dead);
-			unchecked++;
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_descriptor_set_layout dead = dead_crgpu_descriptor_set_layout();
-		if (dead) {
-			crgpu_descriptor_set_layout_destroy(dead);
-			unchecked++;
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_device dead = dead_crgpu_device();
-		if (dead) {
 			crgpu_device_destroy(dead);
 			unchecked++;
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_fence dead = dead_crgpu_fence();
-		if (dead) {
-			crgpu_fence_destroy(dead);
-			unchecked++;
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_heap dead = dead_crgpu_heap();
-		if (dead) {
-			crgpu_heap_destroy(dead);
-			unchecked++;
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_image dead = dead_crgpu_image();
-		if (dead) {
-			crgpu_image_destroy(dead);
-			unchecked++;
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_image_view dead = dead_crgpu_image_view();
-		if (dead) {
-			crgpu_image_view_destroy(dead);
-			unchecked++;
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_instance dead = dead_crgpu_instance();
-		if (dead) {
-			expect_fallback("crgpu_instance_destroy", crgpu_instance_destroy(dead) == crgpu_instance_destroy((crgpu_instance){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_sampler dead = dead_crgpu_sampler();
-		if (dead) {
-			crgpu_sampler_destroy(dead);
-			unchecked++;
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_semaphore dead = dead_crgpu_semaphore();
-		if (dead) {
-			crgpu_semaphore_destroy(dead);
-			unchecked++;
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_shader_module dead = dead_crgpu_shader_module();
-		if (dead) {
-			crgpu_shader_module_destroy(dead);
-			unchecked++;
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_graphics_pipeline dead = dead_crgpu_shader_pipeline();
-		if (dead) {
-			crgpu_graphics_pipeline_destroy(dead);
-			unchecked++;
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_surface dead = dead_crgpu_surface();
-		if (dead) {
-			crgpu_surface_destroy(dead);
-			unchecked++;
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_swap_chain dead = dead_crgpu_swap_chain();
-		if (dead) {
-			crgpu_swap_chain_destroy(dead);
-			unchecked++;
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_timestamp_set dead = dead_crgpu_timestamp_set();
-		if (dead) {
-			crgpu_timestamp_set_destroy(dead);
-			unchecked++;
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_command_list dead = dead_crgpu_command_list();
-		if (dead) {
-			crgpu_command_list_end(dead);
-			unchecked++;
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_instance dead = dead_crgpu_instance();
-		if (dead) {
-			expect_refused("crgpu_adapter_enumerate", crgpu_adapter_enumerate(dead, (const crgpu_adapter **){0}, (uint32_t *){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_buffer dead = dead_crgpu_buffer();
-		if (dead) {
-			expect_refused("crgpu_buffer_flush", crgpu_buffer_flush(dead, (uint64_t){0}, (uint64_t){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -3053,18 +2975,9 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 		}
 	}
 	{
-		crgpu_acceleration_structure dead = dead_crgpu_acceleration_structure();
+		crgpu_device dead = dead_crgpu_device();
 		if (dead) {
-			expect_refused("crgpu_acceleration_structure_get_reference", crgpu_acceleration_structure_get_reference(dead, (uint64_t *){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_adapter dead = dead_crgpu_adapter();
-		if (dead) {
-			expect_refused("crgpu_adapter_get_properties", crgpu_adapter_get_properties(dead, (CRGPU_ADAPTER_PROPERTIES *){0}));
+			expect_fallback("crgpu_device_get_adapter", crgpu_device_get_adapter(dead) == crgpu_device_get_adapter((crgpu_device){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -3082,72 +2995,47 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	}
 #endif
 	{
-		crgpu_buffer dead = dead_crgpu_buffer();
-		if (dead) {
-			expect_refused("crgpu_buffer_get_desc", crgpu_buffer_get_desc(dead, (crgpu_buffer_desc *){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_buffer dead = dead_crgpu_buffer();
-		if (dead) {
-			expect_refused("crgpu_buffer_get_gpu_address", crgpu_buffer_get_gpu_address(dead, (uint64_t *){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_heap dead = dead_crgpu_heap();
-		if (dead) {
-			expect_refused("crgpu_heap_get_buffer_placement_requirements", crgpu_heap_get_buffer_placement_requirements(dead, (const crgpu_buffer_desc *){0}, (crgpu_placement_requirements *){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_buffer_view dead = dead_crgpu_buffer_view();
-		if (dead) {
-			expect_refused("crgpu_buffer_view_get_desc", crgpu_buffer_view_get_desc(dead, (crgpu_buffer_view_desc *){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_device dead = dead_crgpu_device();
-		if (dead) {
-			expect_refused("crgpu_command_queue_get", crgpu_command_queue_get(dead, (CRGPU_COMMAND_LIST_TYPE){0}, (uint32_t){0}, (crgpu_command_queue *){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_compute_pipeline dead = dead_crgpu_compute_pipeline();
-		if (dead) {
-			expect_refused("crgpu_compute_pipeline_get_desc", crgpu_compute_pipeline_get_desc(dead, (crgpu_compute_pipeline_desc *){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_device dead = dead_crgpu_device();
-		if (dead) {
-			expect_fallback("crgpu_device_get_adapter", crgpu_device_get_adapter(dead) == crgpu_device_get_adapter((crgpu_device){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
 		crgpu_device dead = dead_crgpu_device();
 		if (dead) {
 			expect_fallback("crgpu_device_get_features", crgpu_device_get_features(dead) == crgpu_device_get_features((crgpu_device){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_device dead = dead_crgpu_device();
+		if (dead) {
+			crgpu_device_update_descriptor_sets(dead, (const crgpu_write_descriptor_set *){0}, (uint32_t){0});
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_device dead = dead_crgpu_device();
+		if (dead) {
+			expect_refused("crgpu_device_write_acceleration_structure_instances", crgpu_device_write_acceleration_structure_instances(dead, (const crgpu_acceleration_structure_instance *){0}, (uint32_t){0}, (void *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_device dead = dead_crgpu_device();
+		if (dead) {
+			expect_refused("crgpu_fence_create", crgpu_fence_create(dead, (CRGPU_FENCE_FLAGS){0}, (uint64_t){0}, (crgpu_fence *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_fence dead = dead_crgpu_fence();
+		if (dead) {
+			crgpu_fence_destroy(dead);
+			unchecked++;
 			calls++;
 		} else {
 			skipped++;
@@ -3163,9 +3051,111 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 		}
 	}
 	{
+		crgpu_device dead = dead_crgpu_device();
+		if (dead) {
+			expect_refused("crgpu_fence_signal", crgpu_fence_signal(dead, (crgpu_fence){0}, (uint64_t){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_device dead = dead_crgpu_device();
+		if (dead) {
+			expect_refused("crgpu_fence_wait", crgpu_fence_wait(dead, (crgpu_fence *){0}, (const uint64_t *){0}, (uint32_t){0}, (bool){0}, (uint64_t){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_device dead = dead_crgpu_device();
+		if (dead) {
+			expect_refused("crgpu_graphics_pipeline_create", crgpu_graphics_pipeline_create(dead, (const crgpu_graphics_pipeline_desc *){0}, (crgpu_graphics_pipeline *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_graphics_pipeline dead = dead_crgpu_graphics_pipeline();
+		if (dead) {
+			crgpu_graphics_pipeline_destroy(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_device dead = dead_crgpu_device();
+		if (dead) {
+			expect_refused("crgpu_heap_create", crgpu_heap_create(dead, (const crgpu_heap_desc *){0}, (crgpu_heap *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_heap dead = dead_crgpu_heap();
+		if (dead) {
+			crgpu_heap_destroy(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_heap dead = dead_crgpu_heap();
+		if (dead) {
+			expect_refused("crgpu_heap_get_buffer_placement_requirements", crgpu_heap_get_buffer_placement_requirements(dead, (const crgpu_buffer_desc *){0}, (crgpu_placement_requirements *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
 		crgpu_heap dead = dead_crgpu_heap();
 		if (dead) {
 			expect_refused("crgpu_heap_get_desc", crgpu_heap_get_desc(dead, (crgpu_heap_desc *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_heap dead = dead_crgpu_heap();
+		if (dead) {
+			expect_refused("crgpu_heap_get_image_placement_requirements", crgpu_heap_get_image_placement_requirements(dead, (const crgpu_image_desc *){0}, (crgpu_placement_requirements *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_device dead = dead_crgpu_device();
+		if (dead) {
+			expect_refused("crgpu_image_create", crgpu_image_create(dead, (const crgpu_image_desc *){0}, (crgpu_image *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_heap dead = dead_crgpu_heap();
+		if (dead) {
+			expect_refused("crgpu_image_create_placed", crgpu_image_create_placed(dead, (uint64_t){0}, (const crgpu_image_desc *){0}, (crgpu_image *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_image dead = dead_crgpu_image();
+		if (dead) {
+			crgpu_image_destroy(dead);
+			unchecked++;
 			calls++;
 		} else {
 			skipped++;
@@ -3200,9 +3190,19 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 		}
 	}
 	{
-		crgpu_heap dead = dead_crgpu_heap();
+		crgpu_image dead = dead_crgpu_image();
 		if (dead) {
-			expect_refused("crgpu_heap_get_image_placement_requirements", crgpu_heap_get_image_placement_requirements(dead, (const crgpu_image_desc *){0}, (crgpu_placement_requirements *){0}));
+			expect_refused("crgpu_image_view_create", crgpu_image_view_create(dead, (const crgpu_image_view_desc *){0}, (crgpu_image_view *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_image_view dead = dead_crgpu_image_view();
+		if (dead) {
+			crgpu_image_view_destroy(dead);
+			unchecked++;
 			calls++;
 		} else {
 			skipped++;
@@ -3220,7 +3220,101 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crgpu_instance dead = dead_crgpu_instance();
 		if (dead) {
+			expect_fallback("crgpu_instance_destroy", crgpu_instance_destroy(dead) == crgpu_instance_destroy((crgpu_instance){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_instance dead = dead_crgpu_instance();
+		if (dead) {
 			expect_fallback("crgpu_instance_get_native_gpu_api", crgpu_instance_get_native_gpu_api(dead) == crgpu_instance_get_native_gpu_api((crgpu_instance){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_device dead = dead_crgpu_device();
+		if (dead) {
+			expect_refused("crgpu_sampler_create", crgpu_sampler_create(dead, (const crgpu_sampler_desc *){0}, (crgpu_sampler *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_sampler dead = dead_crgpu_sampler();
+		if (dead) {
+			crgpu_sampler_destroy(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_device dead = dead_crgpu_device();
+		if (dead) {
+			expect_refused("crgpu_semaphore_create", crgpu_semaphore_create(dead, (crgpu_semaphore *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_semaphore dead = dead_crgpu_semaphore();
+		if (dead) {
+			crgpu_semaphore_destroy(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_device dead = dead_crgpu_device();
+		if (dead) {
+			expect_refused("crgpu_shader_module_create", crgpu_shader_module_create(dead, (const crgpu_shader_module_desc *){0}, (crgpu_shader_module *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_shader_module dead = dead_crgpu_shader_module();
+		if (dead) {
+			crgpu_shader_module_destroy(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_instance dead = dead_crgpu_instance();
+		if (dead) {
+			expect_refused("crgpu_surface_create", crgpu_surface_create(dead, (void *){0}, (void *){0}, (crgpu_surface *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_instance dead = dead_crgpu_instance();
+		if (dead) {
+			expect_fallback("crgpu_surface_create_from_callback", crgpu_surface_create_from_callback(dead, (void *){0}, (crgpu_surface_create_fn){0}) == crgpu_surface_create_from_callback((crgpu_instance){0}, (void *){0}, (crgpu_surface_create_fn){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_surface dead = dead_crgpu_surface();
+		if (dead) {
+			crgpu_surface_destroy(dead);
+			unchecked++;
 			calls++;
 		} else {
 			skipped++;
@@ -3238,6 +3332,34 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crgpu_swap_chain dead = dead_crgpu_swap_chain();
 		if (dead) {
+			expect_fallback("crgpu_swap_chain_acquire_next_image", crgpu_swap_chain_acquire_next_image(dead) == crgpu_swap_chain_acquire_next_image((crgpu_swap_chain){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_device dead = dead_crgpu_device();
+		if (dead) {
+			expect_refused("crgpu_swap_chain_create", crgpu_swap_chain_create(dead, (const crgpu_swap_chain_desc *){0}, (crgpu_swap_chain *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_swap_chain dead = dead_crgpu_swap_chain();
+		if (dead) {
+			crgpu_swap_chain_destroy(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_swap_chain dead = dead_crgpu_swap_chain();
+		if (dead) {
 			expect_refused("crgpu_swap_chain_get_desc", crgpu_swap_chain_get_desc(dead, (crgpu_swap_chain_desc *){0}));
 			calls++;
 		} else {
@@ -3247,117 +3369,16 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crgpu_swap_chain dead = dead_crgpu_swap_chain();
 		if (dead) {
-			expect_fallback("crgpu_swap_chain_get_image_view", crgpu_swap_chain_get_image_view(dead, (uint32_t){0}) == crgpu_swap_chain_get_image_view((crgpu_swap_chain){0}, (uint32_t){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_timestamp_set dead = dead_crgpu_timestamp_set();
-		if (dead) {
-			expect_refused("crgpu_timestamp_set_get", crgpu_timestamp_set_get(dead, (uint32_t){0}, (uint32_t){0}, (uint64_t *){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_buffer dead = dead_crgpu_buffer();
-		if (dead) {
-			expect_refused("crgpu_buffer_invalidate", crgpu_buffer_invalidate(dead, (uint64_t){0}, (uint64_t){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_buffer dead = dead_crgpu_buffer();
-		if (dead) {
-			expect_refused("crgpu_buffer_map", crgpu_buffer_map(dead, (uint64_t){0}, (uint64_t){0}, (void **){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_command_queue dead = dead_crgpu_command_queue();
-		if (dead) {
-			expect_refused("crgpu_command_queue_submit", crgpu_command_queue_submit(dead, (const crgpu_submit_desc *){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_command_queue dead = dead_crgpu_command_queue();
-		if (dead) {
-			crgpu_command_queue_wait_idle(dead);
-			unchecked++;
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_command_allocator dead = dead_crgpu_command_allocator();
-		if (dead) {
-			expect_refused("crgpu_command_allocator_reset", crgpu_command_allocator_reset(dead));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_descriptor_pool dead = dead_crgpu_descriptor_pool();
-		if (dead) {
-			crgpu_descriptor_pool_reset(dead);
-			unchecked++;
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_device dead = dead_crgpu_device();
-		if (dead) {
-			expect_refused("crgpu_fence_signal", crgpu_fence_signal(dead, (crgpu_fence){0}, (uint64_t){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_command_queue dead = dead_crgpu_command_queue();
-		if (dead) {
-			expect_refused("crgpu_command_queue_submit_lists", crgpu_command_queue_submit_lists(dead, (crgpu_command_list *){0}, (uint32_t){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_command_queue dead = dead_crgpu_command_queue();
-		if (dead) {
-			expect_refused("crgpu_command_queue_submit_lists_synced", crgpu_command_queue_submit_lists_synced(dead, (crgpu_command_list *){0}, (uint32_t){0}, (crgpu_swap_chain){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_swap_chain dead = dead_crgpu_swap_chain();
-		if (dead) {
-			expect_fallback("crgpu_swap_chain_acquire_next_image", crgpu_swap_chain_acquire_next_image(dead) == crgpu_swap_chain_acquire_next_image((crgpu_swap_chain){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_swap_chain dead = dead_crgpu_swap_chain();
-		if (dead) {
 			expect_fallback("crgpu_swap_chain_get_image_available_semaphore", crgpu_swap_chain_get_image_available_semaphore(dead) == crgpu_swap_chain_get_image_available_semaphore((crgpu_swap_chain){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_swap_chain dead = dead_crgpu_swap_chain();
+		if (dead) {
+			expect_fallback("crgpu_swap_chain_get_image_view", crgpu_swap_chain_get_image_view(dead, (uint32_t){0}) == crgpu_swap_chain_get_image_view((crgpu_swap_chain){0}, (uint32_t){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -3383,9 +3404,18 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 		}
 	}
 	{
-		crgpu_buffer dead = dead_crgpu_buffer();
+		crgpu_device dead = dead_crgpu_device();
 		if (dead) {
-			crgpu_buffer_unmap(dead);
+			expect_refused("crgpu_timestamp_set_create", crgpu_timestamp_set_create(dead, (crgpu_command_queue){0}, (uint32_t){0}, (crgpu_timestamp_set *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_timestamp_set dead = dead_crgpu_timestamp_set();
+		if (dead) {
+			crgpu_timestamp_set_destroy(dead);
 			unchecked++;
 			calls++;
 		} else {
@@ -3393,28 +3423,9 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 		}
 	}
 	{
-		crgpu_device dead = dead_crgpu_device();
+		crgpu_timestamp_set dead = dead_crgpu_timestamp_set();
 		if (dead) {
-			crgpu_device_update_descriptor_sets(dead, (const crgpu_write_descriptor_set *){0}, (uint32_t){0});
-			unchecked++;
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_device dead = dead_crgpu_device();
-		if (dead) {
-			expect_refused("crgpu_fence_wait", crgpu_fence_wait(dead, (crgpu_fence *){0}, (const uint64_t *){0}, (uint32_t){0}, (bool){0}, (uint64_t){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crgpu_device dead = dead_crgpu_device();
-		if (dead) {
-			expect_refused("crgpu_device_write_acceleration_structure_instances", crgpu_device_write_acceleration_structure_instances(dead, (const crgpu_acceleration_structure_instance *){0}, (uint32_t){0}, (void *){0}));
+			expect_refused("crgpu_timestamp_set_get", crgpu_timestamp_set_get(dead, (uint32_t){0}, (uint32_t){0}, (uint64_t *){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -3559,15 +3570,6 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crnet_instance dead = dead_crnet_instance();
 		if (dead) {
-			expect_refused("crnet_instance_get_local_ipv4_addresses", crnet_instance_get_local_ipv4_addresses(dead, (char (*)[16]){0}, (uint32_t){0}, (uint32_t *){0}, (crnet_error *){0}));
-			calls++;
-		} else {
-			skipped++;
-		}
-	}
-	{
-		crnet_instance dead = dead_crnet_instance();
-		if (dead) {
 			expect_refused("crnet_http_client_create", crnet_http_client_create(dead, (const crnet_http_client_desc *){0}, (crnet_http_client *){0}));
 			calls++;
 		} else {
@@ -3691,6 +3693,15 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 		if (dead) {
 			crnet_instance_destroy(dead);
 			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_instance dead = dead_crnet_instance();
+		if (dead) {
+			expect_refused("crnet_instance_get_local_ipv4_addresses", crnet_instance_get_local_ipv4_addresses(dead, (char (*)[16]){0}, (uint32_t){0}, (uint32_t *){0}, (crnet_error *){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -3821,6 +3832,15 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 		}
 	}
 	{
+		crnet_tcp_socket dead = dead_crnet_tcp_socket();
+		if (dead) {
+			expect_refused("crnet_tcp_socket_connect_continue", crnet_tcp_socket_connect_continue(dead, (uint32_t){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
 		crnet_instance dead = dead_crnet_instance();
 		if (dead) {
 			expect_refused("crnet_tcp_socket_create", crnet_tcp_socket_create(dead, (crnet_tcp_socket *){0}));
@@ -3907,6 +3927,15 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crnet_wait_set dead = dead_crnet_wait_set();
 		if (dead) {
+			expect_refused("crnet_wait_set_add_http_transfer", crnet_wait_set_add_http_transfer(dead, (crnet_http_transfer){0}, (uint32_t){0}, (void *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_wait_set dead = dead_crnet_wait_set();
+		if (dead) {
 			expect_refused("crnet_wait_set_add_tcp_listener", crnet_wait_set_add_tcp_listener(dead, (crnet_tcp_listener){0}, (void *){0}));
 			calls++;
 		} else {
@@ -3925,7 +3954,7 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crnet_wait_set dead = dead_crnet_wait_set();
 		if (dead) {
-			expect_refused("crnet_wait_set_add_websocket", crnet_wait_set_add_websocket(dead, (crnet_websocket){0}, (void *){0}));
+			expect_refused("crnet_wait_set_add_websocket", crnet_wait_set_add_websocket(dead, (crnet_websocket){0}, (uint32_t){0}, (void *){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -3954,6 +3983,16 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 		crnet_wait_set dead = dead_crnet_wait_set();
 		if (dead) {
 			crnet_wait_set_get_error(dead, (crnet_error *){0});
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_wait_set dead = dead_crnet_wait_set();
+		if (dead) {
+			crnet_wait_set_remove_http_transfer(dead, (crnet_http_transfer){0});
 			unchecked++;
 			calls++;
 		} else {
@@ -4038,6 +4077,15 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 		}
 	}
 	{
+		crnet_websocket dead = dead_crnet_websocket();
+		if (dead) {
+			expect_refused("crnet_websocket_connect_continue", crnet_websocket_connect_continue(dead, (uint32_t){0}, (uint32_t *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
 		crnet_instance dead = dead_crnet_instance();
 		if (dead) {
 			expect_refused("crnet_websocket_create", crnet_websocket_create(dead, (crnet_websocket *){0}));
@@ -4051,6 +4099,15 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 		if (dead) {
 			crnet_websocket_destroy(dead);
 			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_websocket dead = dead_crnet_websocket();
+		if (dead) {
+			expect_refused("crnet_websocket_flush", crnet_websocket_flush(dead, (uint32_t){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -4111,36 +4168,36 @@ int main(void)
 	calls++;
 	(void)cr_get_version();
 	calls++;
-	expect_error("craudio_instance_create", craudio_instance_create((const CRAUDIO_INSTANCE_DESC *){0}, (craudio_instance *){0}));
-	calls++;
-	expect_error("craudio_stream_create", craudio_stream_create((const CRAUDIO_STREAM_DESC *){0}, (craudio_stream *){0}));
-	calls++;
-	expect_error("craudio_instance_destroy", craudio_instance_destroy((craudio_instance){0}));
-	calls++;
-	craudio_stream_destroy((craudio_stream){0});
-	unchecked++;
-	calls++;
 	expect_error("craudio_device_enumerate", craudio_device_enumerate((craudio_instance){0}, (CRAUDIO_DIRECTION){0}, (craudio_device **){0}, (uint32_t *){0}));
 	calls++;
 	expect_error("craudio_device_get_properties", craudio_device_get_properties((craudio_device){0}, (CRAUDIO_DEVICE_PROPERTIES *){0}));
 	calls++;
-	(void)craudio_instance_get_native_api((craudio_instance){0});
-	calls++;
 	expect_error("craudio_device_get_timing_caps", craudio_device_get_timing_caps((craudio_device){0}, (const CRAUDIO_FORMAT *){0}, (CRAUDIO_STREAM_FLAGS){0}, (CRAUDIO_TIMING_CAPS *){0}));
 	calls++;
-	expect_error("craudio_stream_probe", craudio_stream_probe((const CRAUDIO_STREAM_DESC *){0}, (CRAUDIO_STREAM_CONFIG *){0}));
+	expect_error("craudio_device_set_sample_rate", craudio_device_set_sample_rate((craudio_device){0}, (uint32_t){0}));
 	calls++;
-	(void)craudio_sample_format_get_byte_size((CRAUDIO_SAMPLE_FORMAT){0});
+	expect_error("craudio_instance_create", craudio_instance_create((const CRAUDIO_INSTANCE_DESC *){0}, (craudio_instance *){0}));
+	calls++;
+	expect_error("craudio_instance_destroy", craudio_instance_destroy((craudio_instance){0}));
+	calls++;
+	(void)craudio_instance_get_native_api((craudio_instance){0});
 	calls++;
 	expect_error("craudio_instance_set_device_event_callback", craudio_instance_set_device_event_callback((craudio_instance){0}, (CRAUDIO_DEVICE_EVENT_CALLBACK){0}, (void *){0}));
 	calls++;
-	expect_error("craudio_device_set_sample_rate", craudio_device_set_sample_rate((craudio_device){0}, (uint32_t){0}));
+	(void)craudio_sample_format_get_byte_size((CRAUDIO_SAMPLE_FORMAT){0});
+	calls++;
+	expect_error("craudio_stream_create", craudio_stream_create((const CRAUDIO_STREAM_DESC *){0}, (craudio_stream *){0}));
+	calls++;
+	craudio_stream_destroy((craudio_stream){0});
+	unchecked++;
 	calls++;
 	expect_error("craudio_stream_get_config", craudio_stream_get_config((craudio_stream){0}, (CRAUDIO_STREAM_CONFIG *){0}));
 	calls++;
 	expect_error("craudio_stream_get_latency_frames", craudio_stream_get_latency_frames((craudio_stream){0}, (uint32_t *){0}));
 	calls++;
 	expect_error("craudio_stream_get_status", craudio_stream_get_status((craudio_stream){0}, (CRAUDIO_STREAM_STATUS *){0}));
+	calls++;
+	expect_error("craudio_stream_probe", craudio_stream_probe((const CRAUDIO_STREAM_DESC *){0}, (CRAUDIO_STREAM_CONFIG *){0}));
 	calls++;
 	expect_error("craudio_stream_start", craudio_stream_start((craudio_stream){0}));
 	calls++;
@@ -4205,15 +4262,20 @@ int main(void)
 	calls++;
 	expect_error("crfiles_path_replace", crfiles_path_replace((crfiles_instance){0}, (const char *){0}, (const char *){0}, (CRFILES_FLUSH_LEVEL){0}));
 	calls++;
+	expect_error("crgpu_acceleration_structure_create", crgpu_acceleration_structure_create((crgpu_device){0}, (const crgpu_acceleration_structure_desc *){0}, (crgpu_acceleration_structure *){0}));
+	calls++;
+	expect_error("crgpu_acceleration_structure_create_placed", crgpu_acceleration_structure_create_placed((crgpu_heap){0}, (uint64_t){0}, (const crgpu_acceleration_structure_desc *){0}, (crgpu_acceleration_structure *){0}));
+	calls++;
+	crgpu_acceleration_structure_destroy((crgpu_acceleration_structure){0});
+	unchecked++;
+	calls++;
+	expect_error("crgpu_acceleration_structure_get_reference", crgpu_acceleration_structure_get_reference((crgpu_acceleration_structure){0}, (uint64_t *){0}));
+	calls++;
+	expect_error("crgpu_adapter_enumerate", crgpu_adapter_enumerate((crgpu_instance){0}, (const crgpu_adapter **){0}, (uint32_t *){0}));
+	calls++;
+	expect_error("crgpu_adapter_get_properties", crgpu_adapter_get_properties((crgpu_adapter){0}, (CRGPU_ADAPTER_PROPERTIES *){0}));
+	calls++;
 	expect_error("crgpu_adapter_supports_surface", crgpu_adapter_supports_surface((crgpu_adapter){0}, (crgpu_surface){0}, (bool *){0}));
-	calls++;
-#if defined(__linux__) || defined(_WIN32)
-	crgpu_command_list_begin_bundle((crgpu_command_list){0}, (const crgpu_bundle_inheritance_desc *){0});
-	unchecked++;
-	calls++;
-#endif
-	crgpu_command_list_begin((crgpu_command_list){0});
-	unchecked++;
 	calls++;
 #if defined(__linux__) || defined(_WIN32)
 	expect_error("crgpu_bindless_register_sampled_image", crgpu_bindless_register_sampled_image((crgpu_device){0}, (crgpu_image_view){0}, (uint32_t *){0}));
@@ -4242,9 +4304,51 @@ int main(void)
 	unchecked++;
 	calls++;
 #endif
+	expect_error("crgpu_buffer_create", crgpu_buffer_create((crgpu_device){0}, (const crgpu_buffer_desc *){0}, (crgpu_buffer *){0}));
+	calls++;
+	expect_error("crgpu_buffer_create_placed", crgpu_buffer_create_placed((crgpu_heap){0}, (uint64_t){0}, (const crgpu_buffer_desc *){0}, (crgpu_buffer *){0}));
+	calls++;
+	crgpu_buffer_destroy((crgpu_buffer){0});
+	unchecked++;
+	calls++;
+	expect_error("crgpu_buffer_flush", crgpu_buffer_flush((crgpu_buffer){0}, (uint64_t){0}, (uint64_t){0}));
+	calls++;
+	expect_error("crgpu_buffer_get_desc", crgpu_buffer_get_desc((crgpu_buffer){0}, (crgpu_buffer_desc *){0}));
+	calls++;
+	expect_error("crgpu_buffer_get_gpu_address", crgpu_buffer_get_gpu_address((crgpu_buffer){0}, (uint64_t *){0}));
+	calls++;
+	expect_error("crgpu_buffer_invalidate", crgpu_buffer_invalidate((crgpu_buffer){0}, (uint64_t){0}, (uint64_t){0}));
+	calls++;
+	expect_error("crgpu_buffer_map", crgpu_buffer_map((crgpu_buffer){0}, (uint64_t){0}, (uint64_t){0}, (void **){0}));
+	calls++;
+	crgpu_buffer_unmap((crgpu_buffer){0});
+	unchecked++;
+	calls++;
+	expect_error("crgpu_buffer_view_create", crgpu_buffer_view_create((crgpu_buffer){0}, (const crgpu_buffer_view_desc *){0}, (crgpu_buffer_view *){0}));
+	calls++;
+	crgpu_buffer_view_destroy((crgpu_buffer_view){0});
+	unchecked++;
+	calls++;
+	expect_error("crgpu_buffer_view_get_desc", crgpu_buffer_view_get_desc((crgpu_buffer_view){0}, (crgpu_buffer_view_desc *){0}));
+	calls++;
+	expect_error("crgpu_command_allocator_create", crgpu_command_allocator_create((crgpu_device){0}, (const crgpu_command_allocator_desc *){0}, (crgpu_command_allocator *){0}));
+	calls++;
+	crgpu_command_allocator_destroy((crgpu_command_allocator){0});
+	unchecked++;
+	calls++;
+	expect_error("crgpu_command_allocator_reset", crgpu_command_allocator_reset((crgpu_command_allocator){0}));
+	calls++;
 	crgpu_command_list_acceleration_structure_barrier((crgpu_command_list){0}, (const crgpu_acceleration_structure_barrier *){0}, (uint32_t){0});
 	unchecked++;
 	calls++;
+	crgpu_command_list_begin((crgpu_command_list){0});
+	unchecked++;
+	calls++;
+#if defined(__linux__) || defined(_WIN32)
+	crgpu_command_list_begin_bundle((crgpu_command_list){0}, (const crgpu_bundle_inheritance_desc *){0});
+	unchecked++;
+	calls++;
+#endif
 	crgpu_command_list_begin_debug_label((crgpu_command_list){0}, (const char *){0});
 	unchecked++;
 	calls++;
@@ -4252,22 +4356,22 @@ int main(void)
 	unchecked++;
 	calls++;
 #if defined(__linux__) || defined(_WIN32)
-	crgpu_command_list_bind_graphics_bindless_resources((crgpu_command_list){0}, (crgpu_graphics_pipeline){0}, (uint32_t){0});
-	unchecked++;
-	calls++;
-#endif
-#if defined(__linux__) || defined(_WIN32)
 	crgpu_command_list_bind_compute_bindless_resources((crgpu_command_list){0}, (crgpu_compute_pipeline){0}, (uint32_t){0});
 	unchecked++;
 	calls++;
 #endif
+	crgpu_command_list_bind_compute_descriptor_sets((crgpu_command_list){0}, (crgpu_compute_pipeline){0}, (uint32_t){0}, (const crgpu_descriptor_set *){0}, (uint32_t){0});
+	unchecked++;
+	calls++;
 	crgpu_command_list_bind_compute_pipeline((crgpu_command_list){0}, (crgpu_compute_pipeline){0});
 	unchecked++;
 	calls++;
-	crgpu_command_list_bind_graphics_descriptor_sets((crgpu_command_list){0}, (crgpu_graphics_pipeline){0}, (uint32_t){0}, (const crgpu_descriptor_set *){0}, (uint32_t){0});
+#if defined(__linux__) || defined(_WIN32)
+	crgpu_command_list_bind_graphics_bindless_resources((crgpu_command_list){0}, (crgpu_graphics_pipeline){0}, (uint32_t){0});
 	unchecked++;
 	calls++;
-	crgpu_command_list_bind_compute_descriptor_sets((crgpu_command_list){0}, (crgpu_compute_pipeline){0}, (uint32_t){0}, (const crgpu_descriptor_set *){0}, (uint32_t){0});
+#endif
+	crgpu_command_list_bind_graphics_descriptor_sets((crgpu_command_list){0}, (crgpu_graphics_pipeline){0}, (uint32_t){0}, (const crgpu_descriptor_set *){0}, (uint32_t){0});
 	unchecked++;
 	calls++;
 	crgpu_command_list_bind_graphics_pipeline((crgpu_command_list){0}, (crgpu_graphics_pipeline){0});
@@ -4295,6 +4399,11 @@ int main(void)
 	crgpu_command_list_copy_image_to_buffer((crgpu_command_list){0}, (crgpu_image){0}, (crgpu_buffer){0}, (const crgpu_image_buffer_copy_desc *){0});
 	unchecked++;
 	calls++;
+	expect_error("crgpu_command_list_create", crgpu_command_list_create((crgpu_command_allocator){0}, (crgpu_command_list *){0}));
+	calls++;
+	crgpu_command_list_destroy((crgpu_command_list){0});
+	unchecked++;
+	calls++;
 	crgpu_command_list_dispatch((crgpu_command_list){0}, (uint32_t){0}, (uint32_t){0}, (uint32_t){0});
 	unchecked++;
 	calls++;
@@ -4317,6 +4426,9 @@ int main(void)
 	unchecked++;
 	calls++;
 	crgpu_command_list_draw_instanced((crgpu_command_list){0}, (uint32_t){0}, (uint32_t){0}, (uint32_t){0}, (uint32_t){0});
+	unchecked++;
+	calls++;
+	crgpu_command_list_end((crgpu_command_list){0});
 	unchecked++;
 	calls++;
 	crgpu_command_list_end_debug_label((crgpu_command_list){0});
@@ -4342,10 +4454,10 @@ int main(void)
 	crgpu_command_list_pipeline_barrier((crgpu_command_list){0}, (const crgpu_buffer_barrier *){0}, (uint32_t){0}, (const crgpu_image_barrier *){0}, (uint32_t){0});
 	unchecked++;
 	calls++;
-	crgpu_command_list_push_graphics_constants((crgpu_command_list){0}, (crgpu_graphics_pipeline){0}, (uint32_t){0}, (uint32_t){0}, (const void *){0});
+	crgpu_command_list_push_compute_constants((crgpu_command_list){0}, (crgpu_compute_pipeline){0}, (uint32_t){0}, (uint32_t){0}, (const void *){0});
 	unchecked++;
 	calls++;
-	crgpu_command_list_push_compute_constants((crgpu_command_list){0}, (crgpu_compute_pipeline){0}, (uint32_t){0}, (uint32_t){0}, (const void *){0});
+	crgpu_command_list_push_graphics_constants((crgpu_command_list){0}, (crgpu_graphics_pipeline){0}, (uint32_t){0}, (uint32_t){0}, (const void *){0});
 	unchecked++;
 	calls++;
 	crgpu_command_list_reset_timestamps((crgpu_command_list){0}, (crgpu_timestamp_set){0}, (uint32_t){0}, (uint32_t){0});
@@ -4371,162 +4483,98 @@ int main(void)
 	calls++;
 	expect_error("crgpu_command_list_write_acceleration_structure_compacted_sizes", crgpu_command_list_write_acceleration_structure_compacted_sizes((crgpu_command_list){0}, (const crgpu_acceleration_structure *){0}, (uint32_t){0}, (crgpu_buffer){0}, (uint64_t){0}));
 	calls++;
-	expect_error("crgpu_acceleration_structure_create", crgpu_acceleration_structure_create((crgpu_device){0}, (const crgpu_acceleration_structure_desc *){0}, (crgpu_acceleration_structure *){0}));
+	expect_error("crgpu_command_queue_get", crgpu_command_queue_get((crgpu_device){0}, (CRGPU_COMMAND_LIST_TYPE){0}, (uint32_t){0}, (crgpu_command_queue *){0}));
 	calls++;
-	expect_error("crgpu_buffer_create", crgpu_buffer_create((crgpu_device){0}, (const crgpu_buffer_desc *){0}, (crgpu_buffer *){0}));
+	expect_error("crgpu_command_queue_submit", crgpu_command_queue_submit((crgpu_command_queue){0}, (const crgpu_submit_desc *){0}));
 	calls++;
-	expect_error("crgpu_buffer_view_create", crgpu_buffer_view_create((crgpu_buffer){0}, (const crgpu_buffer_view_desc *){0}, (crgpu_buffer_view *){0}));
+	expect_error("crgpu_command_queue_submit_lists", crgpu_command_queue_submit_lists((crgpu_command_queue){0}, (crgpu_command_list *){0}, (uint32_t){0}));
 	calls++;
-	expect_error("crgpu_command_allocator_create", crgpu_command_allocator_create((crgpu_device){0}, (const crgpu_command_allocator_desc *){0}, (crgpu_command_allocator *){0}));
+	expect_error("crgpu_command_queue_submit_lists_synced", crgpu_command_queue_submit_lists_synced((crgpu_command_queue){0}, (crgpu_command_list *){0}, (uint32_t){0}, (crgpu_swap_chain){0}));
 	calls++;
-	expect_error("crgpu_command_list_create", crgpu_command_list_create((crgpu_command_allocator){0}, (crgpu_command_list *){0}));
+	crgpu_command_queue_wait_idle((crgpu_command_queue){0});
+	unchecked++;
 	calls++;
 	expect_error("crgpu_compute_pipeline_create", crgpu_compute_pipeline_create((crgpu_device){0}, (const crgpu_compute_pipeline_desc *){0}, (crgpu_compute_pipeline *){0}));
-	calls++;
-	expect_error("crgpu_descriptor_pool_create", crgpu_descriptor_pool_create((crgpu_device){0}, (const crgpu_descriptor_pool_desc *){0}, (crgpu_descriptor_pool *){0}));
-	calls++;
-	expect_error("crgpu_descriptor_set_layout_create", crgpu_descriptor_set_layout_create((crgpu_device){0}, (const crgpu_descriptor_set_layout_desc *){0}, (crgpu_descriptor_set_layout *){0}));
-	calls++;
-	expect_error("crgpu_descriptor_set_create", crgpu_descriptor_set_create((crgpu_device){0}, (const crgpu_descriptor_set_desc *){0}, (crgpu_descriptor_set *){0}));
-	calls++;
-	expect_error("crgpu_device_create", crgpu_device_create((crgpu_adapter){0}, (const crgpu_device_desc *){0}, (crgpu_device *){0}));
-	calls++;
-	expect_error("crgpu_fence_create", crgpu_fence_create((crgpu_device){0}, (CRGPU_FENCE_FLAGS){0}, (uint64_t){0}, (crgpu_fence *){0}));
-	calls++;
-	expect_error("crgpu_heap_create", crgpu_heap_create((crgpu_device){0}, (const crgpu_heap_desc *){0}, (crgpu_heap *){0}));
-	calls++;
-	expect_error("crgpu_image_create", crgpu_image_create((crgpu_device){0}, (const crgpu_image_desc *){0}, (crgpu_image *){0}));
-	calls++;
-	expect_error("crgpu_image_view_create", crgpu_image_view_create((crgpu_image){0}, (const crgpu_image_view_desc *){0}, (crgpu_image_view *){0}));
-	calls++;
-	expect_error("crgpu_instance_create", crgpu_instance_create((const crgpu_instance_desc *){0}, (crgpu_instance *){0}));
-	calls++;
-	expect_error("crgpu_acceleration_structure_create_placed", crgpu_acceleration_structure_create_placed((crgpu_heap){0}, (uint64_t){0}, (const crgpu_acceleration_structure_desc *){0}, (crgpu_acceleration_structure *){0}));
-	calls++;
-	expect_error("crgpu_buffer_create_placed", crgpu_buffer_create_placed((crgpu_heap){0}, (uint64_t){0}, (const crgpu_buffer_desc *){0}, (crgpu_buffer *){0}));
-	calls++;
-	expect_error("crgpu_image_create_placed", crgpu_image_create_placed((crgpu_heap){0}, (uint64_t){0}, (const crgpu_image_desc *){0}, (crgpu_image *){0}));
-	calls++;
-	expect_error("crgpu_sampler_create", crgpu_sampler_create((crgpu_device){0}, (const crgpu_sampler_desc *){0}, (crgpu_sampler *){0}));
-	calls++;
-	expect_error("crgpu_semaphore_create", crgpu_semaphore_create((crgpu_device){0}, (crgpu_semaphore *){0}));
-	calls++;
-	expect_error("crgpu_shader_module_create", crgpu_shader_module_create((crgpu_device){0}, (const crgpu_shader_module_desc *){0}, (crgpu_shader_module *){0}));
-	calls++;
-	expect_error("crgpu_graphics_pipeline_create", crgpu_graphics_pipeline_create((crgpu_device){0}, (const crgpu_graphics_pipeline_desc *){0}, (crgpu_graphics_pipeline *){0}));
-	calls++;
-	expect_error("crgpu_surface_create", crgpu_surface_create((crgpu_instance){0}, (void *){0}, (void *){0}, (crgpu_surface *){0}));
-	calls++;
-	(void)crgpu_surface_create_from_callback((crgpu_instance){0}, (void *){0}, (crgpu_surface_create_fn){0});
-	calls++;
-	expect_error("crgpu_swap_chain_create", crgpu_swap_chain_create((crgpu_device){0}, (const crgpu_swap_chain_desc *){0}, (crgpu_swap_chain *){0}));
-	calls++;
-	expect_error("crgpu_timestamp_set_create", crgpu_timestamp_set_create((crgpu_device){0}, (crgpu_command_queue){0}, (uint32_t){0}, (crgpu_timestamp_set *){0}));
-	calls++;
-	crgpu_acceleration_structure_destroy((crgpu_acceleration_structure){0});
-	unchecked++;
-	calls++;
-	crgpu_buffer_destroy((crgpu_buffer){0});
-	unchecked++;
-	calls++;
-	crgpu_buffer_view_destroy((crgpu_buffer_view){0});
-	unchecked++;
-	calls++;
-	crgpu_command_allocator_destroy((crgpu_command_allocator){0});
-	unchecked++;
-	calls++;
-	crgpu_command_list_destroy((crgpu_command_list){0});
-	unchecked++;
 	calls++;
 	crgpu_compute_pipeline_destroy((crgpu_compute_pipeline){0});
 	unchecked++;
 	calls++;
+	expect_error("crgpu_compute_pipeline_get_desc", crgpu_compute_pipeline_get_desc((crgpu_compute_pipeline){0}, (crgpu_compute_pipeline_desc *){0}));
+	calls++;
+	expect_error("crgpu_descriptor_pool_create", crgpu_descriptor_pool_create((crgpu_device){0}, (const crgpu_descriptor_pool_desc *){0}, (crgpu_descriptor_pool *){0}));
+	calls++;
 	crgpu_descriptor_pool_destroy((crgpu_descriptor_pool){0});
 	unchecked++;
+	calls++;
+	crgpu_descriptor_pool_reset((crgpu_descriptor_pool){0});
+	unchecked++;
+	calls++;
+	expect_error("crgpu_descriptor_set_create", crgpu_descriptor_set_create((crgpu_device){0}, (const crgpu_descriptor_set_desc *){0}, (crgpu_descriptor_set *){0}));
+	calls++;
+	expect_error("crgpu_descriptor_set_layout_create", crgpu_descriptor_set_layout_create((crgpu_device){0}, (const crgpu_descriptor_set_layout_desc *){0}, (crgpu_descriptor_set_layout *){0}));
 	calls++;
 	crgpu_descriptor_set_layout_destroy((crgpu_descriptor_set_layout){0});
 	unchecked++;
 	calls++;
+	expect_error("crgpu_device_create", crgpu_device_create((crgpu_adapter){0}, (const crgpu_device_desc *){0}, (crgpu_device *){0}));
+	calls++;
 	crgpu_device_destroy((crgpu_device){0});
 	unchecked++;
-	calls++;
-	crgpu_fence_destroy((crgpu_fence){0});
-	unchecked++;
-	calls++;
-	crgpu_heap_destroy((crgpu_heap){0});
-	unchecked++;
-	calls++;
-	crgpu_image_destroy((crgpu_image){0});
-	unchecked++;
-	calls++;
-	crgpu_image_view_destroy((crgpu_image_view){0});
-	unchecked++;
-	calls++;
-	(void)crgpu_instance_destroy((crgpu_instance){0}); // zeroes are valid: destroying NULL succeeds, as crgpu.h says
-	calls++;
-	crgpu_sampler_destroy((crgpu_sampler){0});
-	unchecked++;
-	calls++;
-	crgpu_semaphore_destroy((crgpu_semaphore){0});
-	unchecked++;
-	calls++;
-	crgpu_shader_module_destroy((crgpu_shader_module){0});
-	unchecked++;
-	calls++;
-	crgpu_graphics_pipeline_destroy((crgpu_graphics_pipeline){0});
-	unchecked++;
-	calls++;
-	crgpu_surface_destroy((crgpu_surface){0});
-	unchecked++;
-	calls++;
-	crgpu_swap_chain_destroy((crgpu_swap_chain){0});
-	unchecked++;
-	calls++;
-	crgpu_timestamp_set_destroy((crgpu_timestamp_set){0});
-	unchecked++;
-	calls++;
-	crgpu_command_list_end((crgpu_command_list){0});
-	unchecked++;
-	calls++;
-	expect_error("crgpu_adapter_enumerate", crgpu_adapter_enumerate((crgpu_instance){0}, (const crgpu_adapter **){0}, (uint32_t *){0}));
-	calls++;
-	expect_error("crgpu_buffer_flush", crgpu_buffer_flush((crgpu_buffer){0}, (uint64_t){0}, (uint64_t){0}));
-	calls++;
-	(void)crgpu_format_get_bit_count((CRGPU_FORMAT){0});
-	calls++;
-	(void)crgpu_format_from_string((const char *){0});
 	calls++;
 	expect_error("crgpu_device_get_acceleration_structure_build_sizes", crgpu_device_get_acceleration_structure_build_sizes((crgpu_device){0}, (const crgpu_acceleration_structure_inputs *){0}, (crgpu_acceleration_structure_sizes *){0}));
 	calls++;
 	expect_error("crgpu_device_get_acceleration_structure_instance_layout", crgpu_device_get_acceleration_structure_instance_layout((crgpu_device){0}, (crgpu_acceleration_structure_instance_layout *){0}));
 	calls++;
-	expect_error("crgpu_acceleration_structure_get_reference", crgpu_acceleration_structure_get_reference((crgpu_acceleration_structure){0}, (uint64_t *){0}));
-	calls++;
-	expect_error("crgpu_adapter_get_properties", crgpu_adapter_get_properties((crgpu_adapter){0}, (CRGPU_ADAPTER_PROPERTIES *){0}));
+	(void)crgpu_device_get_adapter((crgpu_device){0});
 	calls++;
 #if defined(__linux__) || defined(_WIN32)
 	(void)crgpu_device_get_bindless_descriptor_set_layout((crgpu_device){0});
 	calls++;
 #endif
-	expect_error("crgpu_buffer_get_desc", crgpu_buffer_get_desc((crgpu_buffer){0}, (crgpu_buffer_desc *){0}));
-	calls++;
-	expect_error("crgpu_buffer_get_gpu_address", crgpu_buffer_get_gpu_address((crgpu_buffer){0}, (uint64_t *){0}));
-	calls++;
-	expect_error("crgpu_heap_get_buffer_placement_requirements", crgpu_heap_get_buffer_placement_requirements((crgpu_heap){0}, (const crgpu_buffer_desc *){0}, (crgpu_placement_requirements *){0}));
-	calls++;
-	expect_error("crgpu_buffer_view_get_desc", crgpu_buffer_view_get_desc((crgpu_buffer_view){0}, (crgpu_buffer_view_desc *){0}));
-	calls++;
-	expect_error("crgpu_command_queue_get", crgpu_command_queue_get((crgpu_device){0}, (CRGPU_COMMAND_LIST_TYPE){0}, (uint32_t){0}, (crgpu_command_queue *){0}));
-	calls++;
-	expect_error("crgpu_compute_pipeline_get_desc", crgpu_compute_pipeline_get_desc((crgpu_compute_pipeline){0}, (crgpu_compute_pipeline_desc *){0}));
-	calls++;
-	(void)crgpu_device_get_adapter((crgpu_device){0});
-	calls++;
 	(void)crgpu_device_get_features((crgpu_device){0});
+	calls++;
+	crgpu_device_update_descriptor_sets((crgpu_device){0}, (const crgpu_write_descriptor_set *){0}, (uint32_t){0});
+	unchecked++;
+	calls++;
+	expect_error("crgpu_device_write_acceleration_structure_instances", crgpu_device_write_acceleration_structure_instances((crgpu_device){0}, (const crgpu_acceleration_structure_instance *){0}, (uint32_t){0}, (void *){0}));
+	calls++;
+	expect_error("crgpu_fence_create", crgpu_fence_create((crgpu_device){0}, (CRGPU_FENCE_FLAGS){0}, (uint64_t){0}, (crgpu_fence *){0}));
+	calls++;
+	crgpu_fence_destroy((crgpu_fence){0});
+	unchecked++;
 	calls++;
 	(void)crgpu_fence_get_value((crgpu_fence){0});
 	calls++;
+	expect_error("crgpu_fence_signal", crgpu_fence_signal((crgpu_device){0}, (crgpu_fence){0}, (uint64_t){0}));
+	calls++;
+	expect_error("crgpu_fence_wait", crgpu_fence_wait((crgpu_device){0}, (crgpu_fence *){0}, (const uint64_t *){0}, (uint32_t){0}, (bool){0}, (uint64_t){0}));
+	calls++;
+	(void)crgpu_format_from_string((const char *){0});
+	calls++;
+	(void)crgpu_format_get_bit_count((CRGPU_FORMAT){0});
+	calls++;
+	expect_error("crgpu_graphics_pipeline_create", crgpu_graphics_pipeline_create((crgpu_device){0}, (const crgpu_graphics_pipeline_desc *){0}, (crgpu_graphics_pipeline *){0}));
+	calls++;
+	crgpu_graphics_pipeline_destroy((crgpu_graphics_pipeline){0});
+	unchecked++;
+	calls++;
+	expect_error("crgpu_heap_create", crgpu_heap_create((crgpu_device){0}, (const crgpu_heap_desc *){0}, (crgpu_heap *){0}));
+	calls++;
+	crgpu_heap_destroy((crgpu_heap){0});
+	unchecked++;
+	calls++;
+	expect_error("crgpu_heap_get_buffer_placement_requirements", crgpu_heap_get_buffer_placement_requirements((crgpu_heap){0}, (const crgpu_buffer_desc *){0}, (crgpu_placement_requirements *){0}));
+	calls++;
 	expect_error("crgpu_heap_get_desc", crgpu_heap_get_desc((crgpu_heap){0}, (crgpu_heap_desc *){0}));
+	calls++;
+	expect_error("crgpu_heap_get_image_placement_requirements", crgpu_heap_get_image_placement_requirements((crgpu_heap){0}, (const crgpu_image_desc *){0}, (crgpu_placement_requirements *){0}));
+	calls++;
+	expect_error("crgpu_image_create", crgpu_image_create((crgpu_device){0}, (const crgpu_image_desc *){0}, (crgpu_image *){0}));
+	calls++;
+	expect_error("crgpu_image_create_placed", crgpu_image_create_placed((crgpu_heap){0}, (uint64_t){0}, (const crgpu_image_desc *){0}, (crgpu_image *){0}));
+	calls++;
+	crgpu_image_destroy((crgpu_image){0});
+	unchecked++;
 	calls++;
 	expect_error("crgpu_image_get_buffer_copy_offset_alignment", crgpu_image_get_buffer_copy_offset_alignment((crgpu_image){0}, (uint64_t *){0}));
 	calls++;
@@ -4535,58 +4583,67 @@ int main(void)
 	calls++;
 	expect_error("crgpu_image_get_desc", crgpu_image_get_desc((crgpu_image){0}, (crgpu_image_desc *){0}));
 	calls++;
-	expect_error("crgpu_heap_get_image_placement_requirements", crgpu_heap_get_image_placement_requirements((crgpu_heap){0}, (const crgpu_image_desc *){0}, (crgpu_placement_requirements *){0}));
+	expect_error("crgpu_image_view_create", crgpu_image_view_create((crgpu_image){0}, (const crgpu_image_view_desc *){0}, (crgpu_image_view *){0}));
+	calls++;
+	crgpu_image_view_destroy((crgpu_image_view){0});
+	unchecked++;
 	calls++;
 	expect_error("crgpu_image_view_get_desc", crgpu_image_view_get_desc((crgpu_image_view){0}, (crgpu_image_view_desc *){0}));
 	calls++;
+	expect_error("crgpu_instance_create", crgpu_instance_create((const crgpu_instance_desc *){0}, (crgpu_instance *){0}));
+	calls++;
+	(void)crgpu_instance_destroy((crgpu_instance){0}); // zeroes are valid: destroying NULL succeeds, as crgpu.h says
+	calls++;
 	(void)crgpu_instance_get_native_gpu_api((crgpu_instance){0});
+	calls++;
+	expect_error("crgpu_sampler_create", crgpu_sampler_create((crgpu_device){0}, (const crgpu_sampler_desc *){0}, (crgpu_sampler *){0}));
+	calls++;
+	crgpu_sampler_destroy((crgpu_sampler){0});
+	unchecked++;
+	calls++;
+	expect_error("crgpu_semaphore_create", crgpu_semaphore_create((crgpu_device){0}, (crgpu_semaphore *){0}));
+	calls++;
+	crgpu_semaphore_destroy((crgpu_semaphore){0});
+	unchecked++;
+	calls++;
+	expect_error("crgpu_shader_module_create", crgpu_shader_module_create((crgpu_device){0}, (const crgpu_shader_module_desc *){0}, (crgpu_shader_module *){0}));
+	calls++;
+	crgpu_shader_module_destroy((crgpu_shader_module){0});
+	unchecked++;
+	calls++;
+	expect_error("crgpu_surface_create", crgpu_surface_create((crgpu_instance){0}, (void *){0}, (void *){0}, (crgpu_surface *){0}));
+	calls++;
+	(void)crgpu_surface_create_from_callback((crgpu_instance){0}, (void *){0}, (crgpu_surface_create_fn){0});
+	calls++;
+	crgpu_surface_destroy((crgpu_surface){0});
+	unchecked++;
 	calls++;
 	expect_error("crgpu_surface_get_present_scalings", crgpu_surface_get_present_scalings((crgpu_device){0}, (crgpu_surface){0}, (uint32_t *){0}));
 	calls++;
-	expect_error("crgpu_swap_chain_get_desc", crgpu_swap_chain_get_desc((crgpu_swap_chain){0}, (crgpu_swap_chain_desc *){0}));
-	calls++;
-	(void)crgpu_swap_chain_get_image_view((crgpu_swap_chain){0}, (uint32_t){0});
-	calls++;
-	expect_error("crgpu_timestamp_set_get", crgpu_timestamp_set_get((crgpu_timestamp_set){0}, (uint32_t){0}, (uint32_t){0}, (uint64_t *){0}));
-	calls++;
-	expect_error("crgpu_buffer_invalidate", crgpu_buffer_invalidate((crgpu_buffer){0}, (uint64_t){0}, (uint64_t){0}));
-	calls++;
-	expect_error("crgpu_buffer_map", crgpu_buffer_map((crgpu_buffer){0}, (uint64_t){0}, (uint64_t){0}, (void **){0}));
-	calls++;
-	expect_error("crgpu_command_queue_submit", crgpu_command_queue_submit((crgpu_command_queue){0}, (const crgpu_submit_desc *){0}));
-	calls++;
-	crgpu_command_queue_wait_idle((crgpu_command_queue){0});
-	unchecked++;
-	calls++;
-	expect_error("crgpu_command_allocator_reset", crgpu_command_allocator_reset((crgpu_command_allocator){0}));
-	calls++;
-	crgpu_descriptor_pool_reset((crgpu_descriptor_pool){0});
-	unchecked++;
-	calls++;
-	expect_error("crgpu_fence_signal", crgpu_fence_signal((crgpu_device){0}, (crgpu_fence){0}, (uint64_t){0}));
-	calls++;
-	expect_error("crgpu_command_queue_submit_lists", crgpu_command_queue_submit_lists((crgpu_command_queue){0}, (crgpu_command_list *){0}, (uint32_t){0}));
-	calls++;
-	expect_error("crgpu_command_queue_submit_lists_synced", crgpu_command_queue_submit_lists_synced((crgpu_command_queue){0}, (crgpu_command_list *){0}, (uint32_t){0}, (crgpu_swap_chain){0}));
-	calls++;
 	(void)crgpu_swap_chain_acquire_next_image((crgpu_swap_chain){0});
 	calls++;
+	expect_error("crgpu_swap_chain_create", crgpu_swap_chain_create((crgpu_device){0}, (const crgpu_swap_chain_desc *){0}, (crgpu_swap_chain *){0}));
+	calls++;
+	crgpu_swap_chain_destroy((crgpu_swap_chain){0});
+	unchecked++;
+	calls++;
+	expect_error("crgpu_swap_chain_get_desc", crgpu_swap_chain_get_desc((crgpu_swap_chain){0}, (crgpu_swap_chain_desc *){0}));
+	calls++;
 	(void)crgpu_swap_chain_get_image_available_semaphore((crgpu_swap_chain){0});
+	calls++;
+	(void)crgpu_swap_chain_get_image_view((crgpu_swap_chain){0}, (uint32_t){0});
 	calls++;
 	(void)crgpu_swap_chain_get_render_finished_semaphore((crgpu_swap_chain){0});
 	calls++;
 	crgpu_swap_chain_present((crgpu_swap_chain){0});
 	unchecked++;
 	calls++;
-	crgpu_buffer_unmap((crgpu_buffer){0});
+	expect_error("crgpu_timestamp_set_create", crgpu_timestamp_set_create((crgpu_device){0}, (crgpu_command_queue){0}, (uint32_t){0}, (crgpu_timestamp_set *){0}));
+	calls++;
+	crgpu_timestamp_set_destroy((crgpu_timestamp_set){0});
 	unchecked++;
 	calls++;
-	crgpu_device_update_descriptor_sets((crgpu_device){0}, (const crgpu_write_descriptor_set *){0}, (uint32_t){0});
-	unchecked++;
-	calls++;
-	expect_error("crgpu_fence_wait", crgpu_fence_wait((crgpu_device){0}, (crgpu_fence *){0}, (const uint64_t *){0}, (uint32_t){0}, (bool){0}, (uint64_t){0}));
-	calls++;
-	expect_error("crgpu_device_write_acceleration_structure_instances", crgpu_device_write_acceleration_structure_instances((crgpu_device){0}, (const crgpu_acceleration_structure_instance *){0}, (uint32_t){0}, (void *){0}));
+	expect_error("crgpu_timestamp_set_get", crgpu_timestamp_set_get((crgpu_timestamp_set){0}, (uint32_t){0}, (uint32_t){0}, (uint64_t *){0}));
 	calls++;
 	expect_error("crinput_gamepad_get_axis_label", crinput_gamepad_get_axis_label((crinput_instance){0}, (crinput_gamepad_id){0}, (CRINPUT_GAMEPAD_AXIS){0}, (char *){0}, (uint32_t){0}));
 	calls++;
@@ -4633,8 +4690,6 @@ int main(void)
 	calls++;
 	expect_error("crmem_reserve", crmem_reserve((uint64_t){0}, (void **){0}));
 	calls++;
-	expect_error("crnet_instance_get_local_ipv4_addresses", crnet_instance_get_local_ipv4_addresses((crnet_instance){0}, (char (*)[16]){0}, (uint32_t){0}, (uint32_t *){0}, (crnet_error *){0}));
-	calls++;
 	expect_error("crnet_http_client_create", crnet_http_client_create((crnet_instance){0}, (const crnet_http_client_desc *){0}, (crnet_http_client *){0}));
 	calls++;
 	crnet_http_client_destroy((crnet_http_client){0});
@@ -4669,6 +4724,8 @@ int main(void)
 	calls++;
 	crnet_instance_destroy((crnet_instance){0});
 	unchecked++;
+	calls++;
+	expect_error("crnet_instance_get_local_ipv4_addresses", crnet_instance_get_local_ipv4_addresses((crnet_instance){0}, (char (*)[16]){0}, (uint32_t){0}, (uint32_t *){0}, (crnet_error *){0}));
 	calls++;
 	crnet_resolver_abort((crnet_resolver){0});
 	unchecked++;
@@ -4705,6 +4762,8 @@ int main(void)
 	calls++;
 	expect_error("crnet_tcp_socket_connect", crnet_tcp_socket_connect((crnet_tcp_socket){0}, (const crnet_tcp_socket_connect_desc *){0}));
 	calls++;
+	expect_error("crnet_tcp_socket_connect_continue", crnet_tcp_socket_connect_continue((crnet_tcp_socket){0}, (uint32_t){0}));
+	calls++;
 	expect_error("crnet_tcp_socket_create", crnet_tcp_socket_create((crnet_instance){0}, (crnet_tcp_socket *){0}));
 	calls++;
 	crnet_tcp_socket_destroy((crnet_tcp_socket){0});
@@ -4726,11 +4785,13 @@ int main(void)
 	crnet_wait_set_abort((crnet_wait_set){0});
 	unchecked++;
 	calls++;
+	expect_error("crnet_wait_set_add_http_transfer", crnet_wait_set_add_http_transfer((crnet_wait_set){0}, (crnet_http_transfer){0}, (uint32_t){0}, (void *){0}));
+	calls++;
 	expect_error("crnet_wait_set_add_tcp_listener", crnet_wait_set_add_tcp_listener((crnet_wait_set){0}, (crnet_tcp_listener){0}, (void *){0}));
 	calls++;
 	expect_error("crnet_wait_set_add_tcp_socket", crnet_wait_set_add_tcp_socket((crnet_wait_set){0}, (crnet_tcp_socket){0}, (uint32_t){0}, (void *){0}));
 	calls++;
-	expect_error("crnet_wait_set_add_websocket", crnet_wait_set_add_websocket((crnet_wait_set){0}, (crnet_websocket){0}, (void *){0}));
+	expect_error("crnet_wait_set_add_websocket", crnet_wait_set_add_websocket((crnet_wait_set){0}, (crnet_websocket){0}, (uint32_t){0}, (void *){0}));
 	calls++;
 	expect_error("crnet_wait_set_create", crnet_wait_set_create((crnet_instance){0}, (crnet_wait_set *){0}, (crnet_error *){0}));
 	calls++;
@@ -4738,6 +4799,9 @@ int main(void)
 	unchecked++;
 	calls++;
 	crnet_wait_set_get_error((crnet_wait_set){0}, (crnet_error *){0});
+	unchecked++;
+	calls++;
+	crnet_wait_set_remove_http_transfer((crnet_wait_set){0}, (crnet_http_transfer){0});
 	unchecked++;
 	calls++;
 	crnet_wait_set_remove_tcp_listener((crnet_wait_set){0}, (crnet_tcp_listener){0});
@@ -4761,10 +4825,14 @@ int main(void)
 	calls++;
 	expect_error("crnet_websocket_connect", crnet_websocket_connect((crnet_websocket){0}, (const crnet_websocket_connect_desc *){0}, (uint32_t *){0}));
 	calls++;
+	expect_error("crnet_websocket_connect_continue", crnet_websocket_connect_continue((crnet_websocket){0}, (uint32_t){0}, (uint32_t *){0}));
+	calls++;
 	expect_error("crnet_websocket_create", crnet_websocket_create((crnet_instance){0}, (crnet_websocket *){0}));
 	calls++;
 	crnet_websocket_destroy((crnet_websocket){0});
 	unchecked++;
+	calls++;
+	expect_error("crnet_websocket_flush", crnet_websocket_flush((crnet_websocket){0}, (uint32_t){0}));
 	calls++;
 	(void)crnet_websocket_get_close_code((crnet_websocket){0});
 	calls++;

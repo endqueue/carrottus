@@ -33,6 +33,10 @@ HTTP paths:
   /gzip         a gzip-compressed body, unless the request said
                 Accept-Encoding: identity; X-Got-Accept-Encoding says what it said
   /slow?ms=N    waits N milliseconds, then 200 "slow"
+  /slow-read?ms=N
+                reads the request body 4 KiB at a time, N milliseconds
+                apart, then 200 with the body's size as text: a request
+                body that stays backed up while it is read
   /early        answers 413 at once, without reading the request body; to a
                 request with Expect: 100-continue, in place of the 100
   /empty        204, no body
@@ -43,8 +47,17 @@ messages that are commands:
   "send:N"      the server sends one binary message of N bytes
   "close-me"    the server closes the connection with code 4001
   "burst:N"     the server sends N small text messages one after another
+  "pause:N"     the server stops reading for N milliseconds, so that what is
+                sent meanwhile stays in flight on the client's side
+  "pause-and-ping:N"
+                the same, with a ping sent to the client meanwhile
 
-and the path /redirect answers the opening request with a 302 to /echo.
+and the path /redirect answers the opening request with a 302 to /echo,
+/refuse with a 401, and /slow-upgrade?ms=N with the 101 after N
+milliseconds. /sink echoes nothing: it checks each binary message against
+the pattern (the bytes of /big from 0) and counts it, and answers the text
+message "report" with "messages=M bytes=B bad=K" - a burst that would
+otherwise be held up by its own echoes.
 
 Usage: crnet_test_server.py <info file> <work dir>
 """
@@ -119,6 +132,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         return self.rfile.read(length) if length else b""
 
+    def read_body_slowly(self, pause):
+        """A sized body, 4 KiB at a time with `pause` seconds between."""
+        length = int(self.headers.get("Content-Length", "0"))
+        body = b""
+        while len(body) < length:
+            time.sleep(pause)
+            piece = self.rfile.read(min(4096, length - len(body)))
+            if not piece:
+                break
+            body += piece
+        return body
+
     def reply(self, status, body=b"", headers=()):
         self.send_response(status)
         for name, value in headers:
@@ -139,7 +164,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.reply(413, b"too much", [("Connection", "close")])
             return
 
-        body = self.read_body()
+        if path == "/slow-read":
+            body = self.read_body_slowly(int(query.get("ms", ["100"])[0]) / 1000.0)
+        else:
+            body = self.read_body()
 
         if path == "/hello":
             self.reply(200, b"hello", [("X-Multi", "a"), ("X-Multi", "b"), ("Content-Type", "text/plain")])
@@ -179,6 +207,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path == "/slow":
             time.sleep(int(query.get("ms", ["1000"])[0]) / 1000.0)
             self.reply(200, b"slow")
+        elif path == "/slow-read":
+            # Read here rather than by read_body above, which has already
+            # returned for a body this path takes slowly: see do_POST.
+            self.reply(200, str(len(body)).encode("ascii"))
         elif path == "/empty":
             self.send_response(204)
             self.end_headers()
@@ -239,8 +271,10 @@ def ws_read(sock):
         size = struct.unpack(">Q", recv_exact(sock, 8))[0]
     mask = recv_exact(sock, 4) if second & 0x80 else None
     payload = recv_exact(sock, size)
-    if mask:
-        payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+    if mask and size:
+        # As one big integer: a byte at a time takes minutes over 64 MiB.
+        key = (mask * (size // 4 + 1))[:size]
+        payload = (int.from_bytes(payload, "big") ^ int.from_bytes(key, "big")).to_bytes(size, "big")
     return bool(first & 0x80), first & 0x0F, payload
 
 
@@ -253,7 +287,9 @@ def ws_connection(sock):
                 return
             request += piece
         lines = request.split(b"\r\n")
-        path = lines[0].split(b" ")[1].decode("ascii")
+        target = urllib.parse.urlparse(lines[0].split(b" ")[1].decode("ascii"))
+        path = target.path
+        query = urllib.parse.parse_qs(target.query)
         headers = {}
         for line in lines[1:]:
             if b":" in line:
@@ -266,6 +302,11 @@ def ws_connection(sock):
         if path == "/refuse":
             sock.sendall(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             return
+
+        if path == "/slow-upgrade":
+            time.sleep(int(query.get("ms", ["1000"])[0]) / 1000.0)
+        sink = path == "/sink"
+        sunk = {"messages": 0, "bytes": 0, "bad": 0}
 
         accept = base64.b64encode(hashlib.sha1(headers[b"sec-websocket-key"] + WS_GUID).digest())
         sock.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + b"\r\n\r\n")
@@ -289,11 +330,27 @@ def ws_connection(sock):
             if not fin:
                 continue
 
+            if sink:
+                if message_opcode == 0x1 and message == b"report":
+                    ws_send(sock, 0x1, b"messages=%d bytes=%d bad=%d" % (sunk["messages"], sunk["bytes"], sunk["bad"]))
+                elif message_opcode == 0x1 and message.startswith(b"pause:"):
+                    time.sleep(int(message[6:]) / 1000.0)
+                else:
+                    sunk["messages"] += 1
+                    sunk["bytes"] += len(message)
+                    if message != pattern(len(message)):
+                        sunk["bad"] += 1
+                continue
             if message_opcode == 0x1 and message.startswith(b"send:"):
                 ws_send(sock, 0x2, pattern(int(message[5:])))
             elif message_opcode == 0x1 and message.startswith(b"burst:"):
                 for index in range(int(message[6:])):
                     ws_send(sock, 0x1, b"burst %d" % index)
+            elif message_opcode == 0x1 and message.startswith(b"pause:"):
+                time.sleep(int(message[6:]) / 1000.0)
+            elif message_opcode == 0x1 and message.startswith(b"pause-and-ping:"):
+                ws_send(sock, 0x9, b"are you there")
+                time.sleep(int(message[15:]) / 1000.0)
             elif message_opcode == 0x1 and message == b"close-me":
                 ws_send(sock, 0x8, struct.pack(">H", 4001) + b"as asked")
                 # The client's answer, or its going away.

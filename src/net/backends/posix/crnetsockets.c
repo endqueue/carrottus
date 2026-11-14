@@ -231,11 +231,15 @@ struct crnet_tcp_socket_t {
 	cr_object_head head;
 	crnet_instance instance;
 	// -1 until connect makes it; read by other calls only once `open` says
-	// the connection is up, and closed only by destroy.
+	// the connection is up (by a wait set once `connecting` does), and
+	// closed only by destroy.
 	int                        fd;
 	struct crnet_posix_abort abort;
 	atomic_bool                connect_called;
-	atomic_bool                open;
+	// Its connect returned CR_RESULT_NET_TIMED_OUT and no call has
+	// returned its outcome yet: the system's attempt goes on.
+	atomic_bool connecting;
+	atomic_bool open;
 	// By CRNET_ERROR_SIDE; each is written only by its side's caller.
 	crnet_error errors[CRNET_ERROR_SIDE_COUNT];
 };
@@ -252,6 +256,7 @@ static struct crnet_tcp_socket_t *crnet_posix_socket_alloc(crnet_instance instan
 	socket->instance       = instance;
 	socket->fd             = -1;
 	atomic_init(&socket->connect_called, false);
+	atomic_init(&socket->connecting, false);
 	atomic_init(&socket->open, false);
 	if (!crnet_posix_abort_init(&socket->abort)) {
 		crnet_posix_abort_free(&socket->abort);
@@ -263,11 +268,15 @@ static struct crnet_tcp_socket_t *crnet_posix_socket_alloc(crnet_instance instan
 
 // For a wait set to poll (see the end of crnetshared.h).
 
-bool crnet_tcp_socket_native(crnet_tcp_socket socket, intptr_t *out_native) {
-	if (!socket || !atomic_load(&socket->open))
-		return false;
+enum crnet_tcp_wait_state crnet_tcp_socket_wait_state(crnet_tcp_socket socket, intptr_t *out_native) {
+	if (!socket)
+		return CRNET_TCP_WAIT_NONE;
 	*out_native = socket->fd;
-	return true;
+	if (atomic_load(&socket->open))
+		return CRNET_TCP_WAIT_OPEN;
+	if (atomic_load(&socket->connecting))
+		return CRNET_TCP_WAIT_CONNECTING;
+	return CRNET_TCP_WAIT_NONE;
 }
 
 bool crnet_tcp_listener_native(crnet_tcp_listener listener, intptr_t *out_native) {
@@ -545,6 +554,28 @@ static CR_RESULT crnet_posix_socket_usable(struct crnet_tcp_socket_t *socket, co
 	return CR_SUCCESS;
 }
 
+/* Waits up to `timeout_ms` from `start` for a connect under way to have an
+ * outcome, and returns it. CR_RESULT_NET_TIMED_OUT and
+ * CR_RESULT_NET_ABORTED leave it under way (an abort leaves only destroy
+ * anyway); any other result is the outcome, and the socket is no longer
+ * connecting. */
+static CR_RESULT crnet_posix_connect_finish(struct crnet_tcp_socket_t *socket, uint64_t start, uint32_t timeout_ms) {
+	CR_RESULT waited = crnet_posix_wait(socket->fd, POLLOUT, &socket->abort, start, timeout_ms);
+	if (CR_FAILED(waited))
+		return waited;
+
+	crnet_error *record     = &socket->errors[CRNET_ERROR_SIDE_RECEIVING];
+	int          error        = 0;
+	socklen_t    error_length = sizeof(error);
+	atomic_store(&socket->connecting, false);
+	if (getsockopt(socket->fd, SOL_SOCKET, SO_ERROR, &error, &error_length) != 0)
+		return crnet_posix_failed(record, CR_RESULT_NET_CONNECT_FAILED, errno);
+	if (error != 0)
+		return crnet_posix_connection_failed(record, CR_RESULT_NET_CONNECT_FAILED, error);
+	atomic_store(&socket->open, true);
+	return CR_SUCCESS;
+}
+
 CR_RESULT crnet_tcp_socket_connect(
     crnet_tcp_socket socket,
     const crnet_tcp_socket_connect_desc *desc) {
@@ -570,9 +601,8 @@ CR_RESULT crnet_tcp_socket_connect(
 		return CR_RESULT_NET_ABORTED;
 	if (atomic_load(&socket->connect_called))
 		return CR_RESULT_NET_INVALID_TCP_SOCKET;
-	if (desc->timeout_ms == CRNET_NO_WAIT)
-		return CR_RESULT_NET_TIMED_OUT;
-	// From here the socket is spent unless this succeeds.
+	// From here the socket is spent unless the connect succeeds; with
+	// CRNET_NO_WAIT too, it is begun (crnet.h, "Steps").
 	atomic_store(&socket->connect_called, true);
 
 	crnet_error *record = &socket->errors[CRNET_ERROR_SIDE_RECEIVING];
@@ -580,26 +610,31 @@ CR_RESULT crnet_tcp_socket_connect(
 	if (socket->fd < 0)
 		return crnet_posix_failed(record, CR_RESULT_NET_CONNECT_FAILED, errno);
 
-	// On a non-blocking descriptor connect() only starts the attempt; the
-	// descriptor turns writable when it has ended, and SO_ERROR says how.
-	if (connect(socket->fd, (struct sockaddr *)&storage, length) != 0) {
-		if (errno != EINPROGRESS && errno != EINTR)
-			return crnet_posix_connection_failed(record, CR_RESULT_NET_CONNECT_FAILED, errno);
-
-		CR_RESULT waited = crnet_posix_wait(socket->fd, POLLOUT, &socket->abort, start, desc->timeout_ms);
-		if (CR_FAILED(waited))
-			return waited;
-
-		int       error        = 0;
-		socklen_t error_length = sizeof(error);
-		if (getsockopt(socket->fd, SOL_SOCKET, SO_ERROR, &error, &error_length) != 0)
-			return crnet_posix_failed(record, CR_RESULT_NET_CONNECT_FAILED, errno);
-		if (error != 0)
-			return crnet_posix_connection_failed(record, CR_RESULT_NET_CONNECT_FAILED, error);
+	// On a non-blocking descriptor connect() only starts the attempt (a
+	// loopback one may finish inside it); the descriptor turns writable
+	// when it has ended, and SO_ERROR says how.
+	if (connect(socket->fd, (struct sockaddr *)&storage, length) == 0) {
+		atomic_store(&socket->open, true);
+		return CR_SUCCESS;
 	}
+	if (errno != EINPROGRESS && errno != EINTR)
+		return crnet_posix_connection_failed(record, CR_RESULT_NET_CONNECT_FAILED, errno);
+	atomic_store(&socket->connecting, true);
+	return crnet_posix_connect_finish(socket, start, desc->timeout_ms);
+}
 
-	atomic_store(&socket->open, true);
-	return CR_SUCCESS;
+CR_RESULT crnet_tcp_socket_connect_continue(
+    crnet_tcp_socket socket,
+    uint32_t timeout_ms) {
+	if (!socket)
+		return CR_RESULT_NET_INVALID_TCP_SOCKET;
+	if (CR_STALE(socket, "crnet_tcp_socket_connect_continue", "socket"))
+		return CR_RESULT_NET_INVALID_TCP_SOCKET;
+	if (atomic_load(&socket->abort.aborted))
+		return CR_RESULT_NET_ABORTED;
+	if (!atomic_load(&socket->connecting))
+		return CR_RESULT_NET_INVALID_TCP_SOCKET;
+	return crnet_posix_connect_finish(socket, crnet_posix_now_ms(), timeout_ms);
 }
 
 CR_RESULT crnet_tcp_socket_send(

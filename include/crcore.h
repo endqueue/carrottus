@@ -80,7 +80,7 @@ extern "C" {
 /** @brief The major version of these headers. */
 #define CARROTTUS_VERSION_MAJOR 0
 /** @brief The minor version of these headers. */
-#define CARROTTUS_VERSION_MINOR 2
+#define CARROTTUS_VERSION_MINOR 3
 /** @brief The patch version of these headers. */
 #define CARROTTUS_VERSION_PATCH 0
 
@@ -515,7 +515,7 @@ typedef enum CR_RESULT {
 	CR_RESULT_NET_INVALID_HTTP_CLIENT   = 3012, /**< An HTTP client argument is NULL. */
 	CR_RESULT_NET_INVALID_WEBSOCKET     = 3013, /**< A WebSocket is NULL, not open, or already connected. */
 	CR_RESULT_NET_TLS_FAILED            = 3014, /**< Handshake or certificate check failed. */
-	CR_RESULT_NET_TIMED_OUT             = 3015, /**< The call's own time limit ran out, and nothing else. */
+	CR_RESULT_NET_TIMED_OUT             = 3015, /**< The call's own time limit ran out, and nothing else; the object is as usable as it was. */
 	CR_RESULT_NET_HTTP_FAILED           = 3016, /**< An HTTP transfer's start or its wait for the response failed. */
 	CR_RESULT_NET_WS_UPGRADE_REFUSED    = 3017, /**< The server answered, but not with 101. */
 	CR_RESULT_NET_WS_CLOSED             = 3018, /**< Closed by a close frame, either side's. */

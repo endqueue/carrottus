@@ -1118,10 +1118,21 @@ FACTORIES = {
 	crnet_http_client client     = make_http_client(instance);
 	crnet_http_transfer transfer = NULL;
 	if (client) {
-		if (crnet_http_transfer_create(client, &transfer) == CR_SUCCESS)
+		if (crnet_http_transfer_create(client, &transfer) == CR_SUCCESS) {
+			// Started, as a wait set takes one (crnet_wait_set_add_http_transfer):
+			// begun with CRNET_NO_WAIT towards a port nothing serves, so the
+			// destroyed handle is one whose request was under way.
+			crnet_http_transfer_desc desc;
+			memset(&desc, 0, sizeof(desc));
+			desc.base.type  = CR_STRUCT_TYPE_NET_HTTP_TRANSFER_DESC;
+			desc.method     = "GET";
+			desc.url        = "http://127.0.0.1:9/";
+			desc.timeout_ms = CRNET_NO_WAIT;
+			(void)crnet_http_transfer_start(transfer, &desc);
 			crnet_http_transfer_destroy(transfer);
-		else
+		} else {
 			why = "crnet_http_transfer_create failed";
+		}
 		crnet_http_client_destroy(client);
 	}
 	crnet_instance_destroy(instance);

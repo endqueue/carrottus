@@ -268,6 +268,11 @@ struct crnet_http_transfer_t {
 	struct crnet_http_head response; // its status and headers
 	crnet_error            error;
 
+	// The wait set it is in, or NULL: the front end's, written by the
+	// set's add and remove (src/net/crnetwaitset.c) and read by its own
+	// add to refuse a second set.
+	struct crnet_wait_set_t *wait_set;
+
 	void *backend;
 };
 
@@ -283,6 +288,15 @@ struct crnet_http_transfer_t {
  * stack reports is CR_RESULT_NET_STACK_TIMED_OUT. Each returns
  * CR_RESULT_NET_ABORTED once crnet_http_backend_abort has been
  * called.
+ *
+ * A start is a step (crnet.h, "Time limits", "Steps"): a backend's start
+ * begins getting the request out, whatever its limit, CRNET_NO_WAIT
+ * included, and waits for it no longer than the limit. A start that
+ * returns CR_RESULT_NET_TIMED_OUT has started the transfer - the front end
+ * moves it to CRNET_HTTP_PHASE_SENDING either way - and the backend's send
+ * and receive_response first carry it on, out of their own limit: send
+ * returns CR_RESULT_NET_TIMED_OUT, nothing taken, while the request isn't
+ * out, and either returns the start's failure.
  */
 
 /* Makes the backend's state for a transfer on `transfer->client`, which is
@@ -299,9 +313,10 @@ void crnet_http_backend_abort(struct crnet_http_transfer_t *transfer);
 bool crnet_http_backend_aborted(struct crnet_http_transfer_t *transfer);
 
 /* Starts the request. `desc` has passed crnet_http_transfer_start's
- * checks, its time limit is not CRNET_NO_WAIT, and `transfer`'s fields
- * from it are set. CR_RESULT_NET_INVALID_HTTP_TRANSFER when the
- * client already has a transfer under way. */
+ * checks, and `transfer`'s fields from it are set. Its time limit may be
+ * anything, CRNET_NO_WAIT included: see above.
+ * CR_RESULT_NET_INVALID_HTTP_TRANSFER when the client already has a
+ * transfer under way. */
 CR_RESULT crnet_http_backend_start(
     struct crnet_http_transfer_t *transfer,
     const crnet_http_transfer_desc *desc,
@@ -342,26 +357,63 @@ CR_RESULT crnet_http_backend_recv(
  * What a wait set (src/net/crnetwaitset.c) needs from the objects in it,
  * which only the file that defines each object can give.
  *
- * A set polls sockets and has one of its own to be woken through. An
- * object with a socket the system can poll hands it over (a descriptor, or
- * a Winsock SOCKET, in an intptr_t) and has nothing more to do. A WebSocket
- * on a stack that calls back instead (NSURLSession, WinHTTP) has no such
- * socket: it keeps the set it is in, calls crnet_wait_set_notify whenever
- * what crnet_websocket_wait_ready answers may have changed, and the set
- * asks.
+ * A wait is one poll() over descriptors and one descriptor of the set's
+ * own to be woken through. Before every poll, the set asks each member
+ * what to poll for it and whether it is ready already; a member's answer
+ * may change from one wait to the next (a connect that has ended, a
+ * stack's descriptors that come and go).
+ *
+ * - A TCP socket or listener has one descriptor the system can poll, and
+ *   says which and what state the socket is in; the set does the rest.
+ * - A WebSocket or an HTTP transfer answers through
+ *   crnet_websocket_wait_prepare / crnet_http_backend_wait_prepare: the
+ *   bits it is ready with already (what its stack has told it), any
+ *   descriptors of its stack's to poll (crnet_wait_poll_add), and a time
+ *   after which it is worth asking whatever the descriptors say
+ *   (crnet_wait_poll_timer, a stack's own timer). One whose stack calls
+ *   back instead (NSURLSession, WinHTTP) keeps the set it is in from its
+ *   attach to its detach, and calls crnet_wait_set_notify whenever its
+ *   answer may have changed, with whatever it guards its state with held,
+ *   so that a detach that takes it is never followed by a notify.
+ *
+ * A member whose connect is under way is named, whatever it was added
+ * for, once the connect has an outcome: its prepare returns `wait_for`
+ * then, or adds the descriptor that will show it with `outcome` set.
  */
 
-#if CRNET_EXT_TCP || CRNET_EXT_WEBSOCKET
-
-/* Wakes a set's wait. From any thread; never waits. */
+/* Wakes a set's wait. From any thread; never waits. Takes NULL. */
 void crnet_wait_set_notify(struct crnet_wait_set_t *set);
 
-#endif
+/* What a member is asked to fill at each wait: the set's own, opaque to
+ * the members. */
+struct crnet_wait_poll;
+
+/* Asks the wait to poll `native` (a descriptor, or a Winsock SOCKET) for
+ * the member being prepared. With `outcome`, whatever the poll reports on
+ * it names the member for every bit it was added with (a connect's
+ * outcome, a stack's own descriptor); otherwise readable is INCOMING,
+ * writable ROOM and an ending every bit, each as asked by `incoming` and
+ * `room`. A set that can't grow for it fails its wait with
+ * CR_RESULT_OUT_OF_MEMORY. */
+void crnet_wait_poll_add(struct crnet_wait_poll *poll, intptr_t native, bool incoming, bool room, bool outcome);
+
+/* Asks the wait to last no longer than `timeout_ms` from now, and to name
+ * the member for every bit it was added with if it gets that far. */
+void crnet_wait_poll_timer(struct crnet_wait_poll *poll, uint32_t timeout_ms);
 
 #if CRNET_EXT_TCP
 
-/* False for an object with no connection or no listening socket. */
-bool crnet_tcp_socket_native(crnet_tcp_socket socket, intptr_t *out_native);
+/* Where a TCP socket is, for a set. */
+enum crnet_tcp_wait_state {
+	CRNET_TCP_WAIT_NONE,       // connect never called, or it failed: refused by an add
+	CRNET_TCP_WAIT_CONNECTING, // its connect is under way, or has an outcome not yet returned
+	CRNET_TCP_WAIT_OPEN,       // connected
+};
+
+/* `*out_native` is the socket's descriptor where the state isn't NONE. */
+enum crnet_tcp_wait_state crnet_tcp_socket_wait_state(crnet_tcp_socket socket, intptr_t *out_native);
+
+/* False for a listener with no listening socket. */
 bool crnet_tcp_listener_native(crnet_tcp_listener listener, intptr_t *out_native);
 
 /* The instance an object was made with; an accepted socket's is its
@@ -376,27 +428,44 @@ crnet_instance crnet_tcp_listener_instance(crnet_tcp_listener listener);
 /* The instance the socket was made with. NULL for NULL. */
 crnet_instance crnet_websocket_instance(crnet_websocket socket);
 
-/* Puts a connected WebSocket in `set`. `*out_has_native` says which kind
- * it is; with a native socket, `*out_report_once` says whether the stack
- * may already be holding data its socket won't show (so the set names the
- * object once unasked). Fails as crnet_wait_set_add_websocket documents. */
-CR_RESULT crnet_websocket_wait_attach(
-    crnet_websocket socket,
-    struct crnet_wait_set_t *set,
-    bool *out_has_native,
-    intptr_t *out_native,
-    bool *out_report_once);
+/* Puts a WebSocket, connected or with its opening under way, in `set`.
+ * CR_RESULT_NET_INVALID_WEBSOCKET for one whose connect was never called
+ * or failed (or that was aborted), CR_RESULT_NET_ALREADY_IN_WAIT_SET for
+ * one in another set. */
+CR_RESULT crnet_websocket_wait_attach(crnet_websocket socket, struct crnet_wait_set_t *set);
 
 /* After this returns, the socket makes no further crnet_wait_set_notify
  * call on the set it was in. */
 void crnet_websocket_wait_detach(crnet_websocket socket);
 
-/* Whether crnet_websocket_recv would return something other than
- * CR_RESULT_NET_TIMED_OUT. Only asked of a socket without a native
- * one. */
-bool crnet_websocket_wait_ready(crnet_websocket socket);
+/* The member's answer at each wait (above). `wait_for` is what it was
+ * added for; the bits returned are ready already. */
+uint32_t crnet_websocket_wait_prepare(crnet_websocket socket, uint32_t wait_for, struct crnet_wait_poll *poll);
 
 #endif
+
+/* The instance an HTTP client was made with. NULL for NULL. Defined by
+ * each HTTP backend, whose client keeps it. */
+crnet_instance crnet_http_client_instance(crnet_http_client client);
+
+/* A started transfer in a set, for a backend that notifies; the front end
+ * has checked it and keeps `transfer->wait_set` itself. After detach
+ * returns, the backend makes no further crnet_wait_set_notify call on the
+ * set. */
+void crnet_http_backend_wait_attach(struct crnet_http_transfer_t *transfer, struct crnet_wait_set_t *set);
+void crnet_http_backend_wait_detach(struct crnet_http_transfer_t *transfer);
+
+/* The member's answer at each wait, for a transfer in SENDING, AWAITING
+ * or RESPONDED (the front end answers for the others): INCOMING when
+ * receive_response or recv, whichever `transfer->phase` makes next, would
+ * return something other than CR_RESULT_NET_TIMED_OUT; ROOM when send
+ * would. */
+uint32_t crnet_http_backend_wait_prepare(struct crnet_http_transfer_t *transfer, uint32_t wait_for, struct crnet_wait_poll *poll);
+
+/* The front end's answer for a transfer (src/net/crnethttp.c): every bit
+ * for one whose calls would all return at once (ended, failed, aborted),
+ * otherwise the backend's. */
+uint32_t crnet_http_transfer_wait_prepare(struct crnet_http_transfer_t *transfer, uint32_t wait_for, struct crnet_wait_poll *poll);
 
 #if __cplusplus
 }

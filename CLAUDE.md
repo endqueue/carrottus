@@ -66,7 +66,14 @@ blocks in it on a thread the caller supplies, `crnet_resolver_wait` waits for
 the answer on another. Carrottus Net itself starts no thread, anywhere. The HTTP and WebSocket clients follow the same
 rule one level up: they translate the platform's own client stack (TLS, proxies and
 framing are the stack's) and carry one request or one message, with every call
-blocking on the caller's thread. HTTP is a streaming transfer
+blocking on the caller's thread for no longer than its limit. Since 0.3.0
+(resumable starts, `crnet_resumable_draft.h`, approved 2026-11-13) a
+connect, an HTTP start and a WebSocket send begin their step whatever the
+limit, `CRNET_NO_WAIT` included, and a later call carries it on
+(`_connect_continue`, the transfer's next call, `crnet_websocket_flush`):
+`CR_RESULT_NET_TIMED_OUT` always leaves the object usable, and HTTP
+transfers and connecting sockets go in a wait set, so a caller that makes
+no thread drives everything from its own update. HTTP is a streaming transfer
 (`crnet_http_transfer`: start, send the body in pieces, receive the response,
 recv its body in pieces) - nothing of the caller's is buffered in Carrottus Net, and
 there is no one-shot request to add back. Each backend keeps the caller's time limit itself,
@@ -1416,6 +1423,16 @@ evening on the Mac (Known gaps below, `CRGPU_DEVICE_TODO.md`).
   S42, `crfiles_mode_draft.h`: `crfiles_path_copy_mode`, POSIX's nine
   bits or Windows' read-only attribute, links followed) was built the same
   day on Windows; its POSIX half written, not compiled.
+- Carrottus Net's resumable starts (0.3.0, `CRNET_TODO.md` "Resumable
+  starts") were built on 2026-11-14 on the Mac only: the front end, the
+  wait set's member question (`crnetshared.h`, "Wait set"), NSURLSession
+  and the BSD sockets file, run plain, Release, ASan, TSan and in the iOS
+  simulator. Until `prompts/crnet_resumable_windows.md` and `_fedora.md`
+  run, carrottus doesn't build on Windows or Linux: WinHTTP, Winsock and
+  libcurl don't define the new backend functions yet. What NSURLSession
+  showed: a WebSocket message counts as gone once Network.framework's
+  connection has it, about 35 ms after a 64 MiB one was taken against a
+  server that wasn't reading.
 - Carrottus Net was written on 2026-10-07 and its header reworked, and every backend
   rewritten to it, on 2026-10-08: streaming HTTP transfers, TLS and proxy
   descs, error detail, a resolver, a wait set. The Apple side compiles clean

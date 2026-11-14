@@ -26,7 +26,12 @@
  *   Nth call to its (N+100)th, everything Carrottus Audio does on that thread
  *   between the calls included. Skipped with no output device.
  * - Carrottus Net with a loopback connection open and idle: a receive with
- *   CRNET_NO_WAIT on each end and a wait set's poll, per round.
+ *   CRNET_NO_WAIT on each end and a wait set's poll, per round. And a
+ *   WebSocket, opened against a server this test writes over that
+ *   loopback: one message sent a round with CRNET_NO_WAIT and flushed with
+ *   it (the message buffer grown once, then kept), the server's end
+ *   drained. Where the stack copies a message itself (NSURLSession's
+ *   NSData), that copy is the platform's and is reported apart.
  * - Carrottus Input's poll, on the platform's native API, gamepads or none.
  * - Carrottus GPU's ray queries (CRGPU_EXT_RAY_QUERY), on an adapter with them:
  *   a bottom level and a top level built once, then per frame the instance
@@ -1097,6 +1102,10 @@ static void test_audio(void) {
 
 // ---- Carrottus Net ---------------------------------------------------------------
 
+#if CRNET_EXT_WEBSOCKET
+static void test_net_websocket(crnet_instance instance, crnet_tcp_listener listener, uint16_t port);
+#endif
+
 typedef struct idle_connection {
 	crnet_tcp_socket client, server;
 	crnet_wait_set set;
@@ -1175,12 +1184,189 @@ static void test_net(void) {
 		if (ok)
 			print_time("Carrottus Net idle round (two receives, a wait set poll)", best, TIMED_ITERATIONS);
 	}
+#if CRNET_EXT_WEBSOCKET
+	test_net_websocket(instance, listener, port);
+#endif
 	crnet_wait_set_destroy(c.set);
 	crnet_tcp_socket_destroy(c.server);
 	crnet_tcp_socket_destroy(c.client);
 	crnet_tcp_listener_destroy(listener);
 	crnet_instance_destroy(instance);
 }
+
+// ---- Carrottus Net: a WebSocket ---------------------------------------------
+
+#if CRNET_EXT_WEBSOCKET
+
+/* SHA-1 and base64, for the one thing the server here computes: the
+ * opening's Sec-WebSocket-Accept (RFC 6455). */
+static void ws_sha1(const uint8_t *data, size_t size, uint8_t out[20]) {
+	uint32_t h[5] = {0x67452301u, 0xEFCDAB89u, 0x98BADCFEu, 0x10325476u, 0xC3D2E1F0u};
+	uint8_t  block[64];
+	uint64_t bits  = (uint64_t)size * 8;
+	size_t   total = ((size + 8) / 64 + 1) * 64;
+	for (size_t at = 0; at < total; at += 64) {
+		for (size_t i = 0; i < 64; ++i) {
+			size_t n = at + i;
+			if (n < size)
+				block[i] = data[n];
+			else if (n == size)
+				block[i] = 0x80;
+			else if (n >= total - 8)
+				block[i] = (uint8_t)(bits >> (8 * (total - 1 - n)));
+			else
+				block[i] = 0;
+		}
+		uint32_t w[80];
+		for (int i = 0; i < 16; ++i)
+			w[i] = (uint32_t)block[i * 4] << 24 | (uint32_t)block[i * 4 + 1] << 16 | (uint32_t)block[i * 4 + 2] << 8 | block[i * 4 + 3];
+		for (int i = 16; i < 80; ++i) {
+			uint32_t x = w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16];
+			w[i]       = x << 1 | x >> 31;
+		}
+		uint32_t a = h[0], b = h[1], c = h[2], d = h[3], e = h[4];
+		for (int i = 0; i < 80; ++i) {
+			uint32_t f, k;
+			if (i < 20) {
+				f = (b & c) | (~b & d);
+				k = 0x5A827999u;
+			} else if (i < 40) {
+				f = b ^ c ^ d;
+				k = 0x6ED9EBA1u;
+			} else if (i < 60) {
+				f = (b & c) | (b & d) | (c & d);
+				k = 0x8F1BBCDCu;
+			} else {
+				f = b ^ c ^ d;
+				k = 0xCA62C1D6u;
+			}
+			uint32_t t = (a << 5 | a >> 27) + f + e + k + w[i];
+			e          = d;
+			d          = c;
+			c          = b << 30 | b >> 2;
+			b          = a;
+			a          = t;
+		}
+		h[0] += a;
+		h[1] += b;
+		h[2] += c;
+		h[3] += d;
+		h[4] += e;
+	}
+	for (int i = 0; i < 20; ++i)
+		out[i] = (uint8_t)(h[i / 4] >> (24 - 8 * (i % 4)));
+}
+
+static void ws_base64(const uint8_t *data, size_t size, char *out) {
+	static const char digits[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	size_t            o        = 0;
+	for (size_t i = 0; i < size; i += 3) {
+		uint32_t v = (uint32_t)data[i] << 16 | (i + 1 < size ? (uint32_t)data[i + 1] << 8 : 0) | (i + 2 < size ? data[i + 2] : 0);
+		out[o++]   = digits[v >> 18 & 63];
+		out[o++]   = digits[v >> 12 & 63];
+		out[o++]   = i + 1 < size ? digits[v >> 6 & 63] : '=';
+		out[o++]   = i + 2 < size ? digits[v & 63] : '=';
+	}
+	out[o] = '\0';
+}
+
+/* The server's half of the opening, on an accepted socket: reads the
+ * request and answers 101. */
+static bool ws_server_open(crnet_tcp_socket server) {
+	char     request[4096];
+	size_t   size = 0;
+	uint64_t got  = 0;
+	while (size < sizeof(request) - 1) {
+		if (crnet_tcp_socket_recv(server, request + size, sizeof(request) - 1 - size, 5000, &got) != CR_SUCCESS || got == 0)
+			return false;
+		size += (size_t)got;
+		request[size] = '\0';
+		if (strstr(request, "\r\n\r\n"))
+			break;
+	}
+	const char *key = strstr(request, "Sec-WebSocket-Key:");
+	if (!key)
+		key = strstr(request, "sec-websocket-key:");
+	if (!key)
+		return false;
+	key += 18;
+	while (*key == ' ')
+		key++;
+	char   joined[128];
+	size_t length = strcspn(key, "\r\n");
+	if (length > 60)
+		return false;
+	snprintf(joined, sizeof(joined), "%.*s258EAFA5-E914-47DA-95CA-C5AB0DC85B11", (int)length, key);
+	uint8_t digest[20];
+	char    accept[32];
+	ws_sha1((const uint8_t *)joined, strlen(joined), digest);
+	ws_base64(digest, sizeof(digest), accept);
+	char answer[256];
+	int  answer_size = snprintf(answer, sizeof(answer), "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", accept);
+	uint64_t sent    = 0;
+	return crnet_tcp_socket_send(server, answer, (uint64_t)answer_size, 5000, &sent) == CR_SUCCESS && sent == (uint64_t)answer_size;
+}
+
+typedef struct websocket_round {
+	crnet_websocket  client;
+	crnet_tcp_socket server;
+} websocket_round;
+
+static bool ws_round(const websocket_round *w) {
+	static const uint8_t message[32] = {1, 2, 3, 4};
+	static uint8_t       drained[4096];
+	uint64_t             got = 0;
+	CR_RESULT            result;
+	while ((result = crnet_tcp_socket_recv(w->server, drained, sizeof(drained), CRNET_NO_WAIT, &got)) == CR_SUCCESS && got > 0) {
+	}
+	if (result != CR_RESULT_NET_TIMED_OUT)
+		return false;
+	result = crnet_websocket_send(w->client, CRNET_WEBSOCKET_MESSAGE_BINARY, message, sizeof(message), CRNET_NO_WAIT);
+	if (result != CR_SUCCESS && result != CR_RESULT_NET_TIMED_OUT)
+		return false;
+	result = crnet_websocket_flush(w->client, CRNET_NO_WAIT);
+	return result == CR_SUCCESS || result == CR_RESULT_NET_TIMED_OUT;
+}
+
+static void test_net_websocket(crnet_instance instance, crnet_tcp_listener listener, uint16_t port) {
+	websocket_round w;
+	memset(&w, 0, sizeof(w));
+	if (crnet_websocket_create(instance, &w.client) != CR_SUCCESS) {
+		printf("cr_noalloc_tests: Carrottus Net: no WebSocket on this stack, skipped\n");
+		return;
+	}
+	char url[64];
+	snprintf(url, sizeof(url), "ws://127.0.0.1:%u/", (unsigned)port);
+	crnet_websocket_connect_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type        = CR_STRUCT_TYPE_NET_WEBSOCKET_CONNECT_DESC;
+	desc.url              = url;
+	desc.timeout_ms       = CRNET_NO_WAIT;
+	desc.max_message_size = 1024;
+	desc.proxy.mode       = CRNET_PROXY_NONE;
+	uint32_t  status      = 0;
+	CR_RESULT result      = crnet_websocket_connect(w.client, &desc, &status);
+	bool      ok          = result == CR_SUCCESS || result == CR_RESULT_NET_TIMED_OUT;
+	ok                    = ok && crnet_tcp_listener_accept(listener, 5000, &w.server) == CR_SUCCESS && ws_server_open(w.server);
+	if (ok && result == CR_RESULT_NET_TIMED_OUT)
+		result = crnet_websocket_connect_continue(w.client, 5000, &status);
+	ok = ok && result == CR_SUCCESS;
+	CHECK(ok);
+	for (int i = 0; i < WARM_UP && ok; ++i)
+		ok = ws_round(&w);
+	CHECK(ok);
+	alloc_trace_start();
+	for (int i = 0; i < ITERATIONS && ok; ++i)
+		ok = ws_round(&w);
+	alloc_trace_stop();
+	CHECK(ok);
+	if (ok)
+		report("Carrottus Net's WebSocket sends and flushes with CRNET_NO_WAIT, a message a round, the server's end drained");
+	crnet_tcp_socket_destroy(w.server);
+	crnet_websocket_destroy(w.client);
+}
+
+#endif // CRNET_EXT_WEBSOCKET
 
 // ---- Carrottus Input -------------------------------------------------------------
 

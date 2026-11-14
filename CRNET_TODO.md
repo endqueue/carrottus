@@ -810,7 +810,7 @@ Carrottus's rule is that it never decides on the caller's behalf. These do:
   across parts included, is the caller's, said in the header.
 Not started.
 
-## Resumable starts (decided 2026-11-13 with you, a; draft written, not approved)
+## Resumable starts (decided 2026-11-13 with you, a; draft approved 2026-11-13; built on the Mac 2026-11-14, Windows and Fedora next)
 
 Raised 2026-11-13 by a caller that may make no thread and advances all
 its network work from its own non-blocking update call (the workspace's
@@ -1047,7 +1047,16 @@ plain, `-asan` and `-tsan` where the platform has them, `cr_misuse_tests`
 ten runs in Debug with no failure, and `cr_noalloc_tests`' idle round
 counts none of Carrottus's own; step 1 is done when the Mac's step 2 is
 (the front end can't be run alone):
-1. Front end and header: `crnet.h` from the approved draft;
+**Where it stands (2026-11-14):** steps 1, 2 and 5 built and run on the
+Mac (below, each marked); steps 3 and 4 are
+`prompts/crnet_resumable_windows.md` and `prompts/crnet_resumable_fedora.md`,
+on the ThinkPad, Windows then Fedora. Until those run, carrottus doesn't
+build on Windows or Linux: the front end calls backend functions only the
+Mac's backends define yet (`crnetshared.h`, "Wait set" and the HTTP
+backend contract, has the list).
+
+1. **Built 2026-11-14 on the Mac** (with step 2: the front end can't run
+   alone). Front end and header: `crnet.h` from the approved draft;
    `src/net/crnethttp.c` loses its `CRNET_NO_WAIT` early return and keeps
    a started transfer on a time-out; `crnetshared.h`'s backend contract
    (a start may return with the request under way; send and
@@ -1055,13 +1064,34 @@ counts none of Carrottus's own; step 1 is done when the Mac's step 2 is
    an HTTP transfer (attach, detach, ready; for libcurl, descriptors and a
    timer); `src/net/crnetwaitset.c` takes HTTP members, asks `wait_for` of
    a WebSocket, names connecting sockets, and is built on every platform.
-2. The Mac (NSURLSession, BSD sockets): connect left going (no cancel on a
+   As built: every declaration under its real name with the draft's
+   contract text (`_as_changed` gone), carrottus 0.3.0. The wait set asks
+   each member before every poll what to poll for it and what it is ready
+   with already (`crnet_wait_poll_add`, `crnet_wait_poll_timer`, a
+   `_wait_prepare` per kind; a TCP socket reports its state,
+   `crnet_tcp_socket_wait_state`): the shape libcurl's changing
+   descriptors and timer need, and NSURLSession's and WinHTTP's answers
+   from their callbacks fit in it too (`../claude_made_decisions.md`,
+   2026-11-14). `./check.sh --update-abi`: the one break,
+   `crnet_wait_set_add_websocket` gaining `uint32_t wait_for`, and the
+   five added calls; the behaviour changes are the draft's "ABI" list.
+2. **Built and run 2026-11-14 on the Mac** (M5 Pro, macOS 27, Xcode 27.2's
+   clang). The Mac (NSURLSession, BSD sockets): connect left going (no cancel on a
    time-out), `connect_continue` on the condition; send's one message in
    flight with its completion recorded on the retained state and the set
    notified (C7.2); flush, an abort's `NSURLErrorCancelled` as `ABORTED`
    (C4.8); close's `TIMED_OUT`; transfers notify their set from the
    delegate and the body stream; the test server's new paths (C8.3). `macos-metal` Debug, Release, `-asan`, `-tsan`; the iOS
-   simulator.
+   simulator. What the run found about NSURLSession: a message is "gone"
+   (its completion called) once Network.framework's connection has taken
+   it, not once the peer reads it - a 64 MiB message against a server
+   that had stopped reading was in flight about 35 ms more after it was
+   taken (5 ms to copy), and a flush waiting forever on it had returned
+   before an abort 300 ms later. That is the contract's "handed to the
+   connection"; the tests take either and put the time on record. An
+   HTTP start returns `CR_SUCCESS` at once whatever the limit (P1). The
+   BSD sockets file is Linux's too: written here, first compiled there in
+   step 4.
 3. Windows (WinHTTP, Winsock): `WinHttpReceiveResponse` issued from the
    callback under the lock (C7.3); `connect_continue` completing the
    upgrade; the socket's own message buffer, freed after `HANDLE_CLOSING`;
@@ -1076,7 +1106,9 @@ counts none of Carrottus's own; step 1 is done when the Mac's step 2 is
    close frames; the transfer's descriptors and `curl_multi_timeout` given
    to the set; the `ASYNCHDNS` refusal (Q9). `linux-vulkan`, Debug,
    Release, `-asan`, `-tsan`, GCC and clang.
-5. `crnet_test` extended on each (the draft's "Tests"): a new `resumable`
+5. **On the Mac, 2026-11-14:** built first, and seen not to compile
+   against the library before it changed (the five calls missing, the
+   WebSocket's add without `wait_for`). `crnet_test` extended on each (the draft's "Tests"): a new `resumable`
    part - every step driven to its end with `CRNET_NO_WAIT` only, the
    thread sleeping in `crnet_wait_set_wait` between calls and never held
    in a call past a measured bound; refusals, a turned-away certificate and
@@ -1092,6 +1124,21 @@ counts none of Carrottus's own; step 1 is done when the Mac's step 2 is
    test server gains a slow-reading WebSocket path, so that a message
    stays in flight. `cr_misuse_tests` takes the five new calls;
    `cr_noalloc_tests`' idle round sends and flushes a message a frame.
+   As built on the Mac: the `resumable` part (121 checks), the `tcp` and
+   `http` parts' "does nothing" cases turned into "begins it", the
+   `websocket` part's add with `wait_for`, and the `internet` part's TCP
+   connect to 192.0.2.1 left going, continued and aborted (written, not
+   run here: it needs the internet and was not asked for). The test
+   server's `/sink` path was added beside the draft's four: a burst of
+   messages to `/echo` deadlocks on its own echoes, which nobody reads
+   while the burst is sent, so the burst goes to a path that checks each
+   message and reports. `cr_noalloc_tests` opens a WebSocket against a
+   server of its own over Carrottus Net's TCP (the handshake's SHA-1 in
+   the test) and sends and flushes a message a round with
+   `CRNET_NO_WAIT`. The misuse generator's destroyed transfer is a
+   started one (C5.5). The overlap checks (T11) wait for card X3's Debug
+   check in Carrottus Net, not built; the two-thread cases ran under
+   TSan. Figures in "The Mac run, 2026-11-14" below.
 
 **Approval record:**
 - 2026-11-13: written (version 1), two critique passes (P, T: version
@@ -1101,6 +1148,41 @@ counts none of Carrottus's own; step 1 is done when the Mac's step 2 is
   version 10, SHA-256 with carriage returns removed (card X23)
   `e61e52f8c76a070e8f578923621de418d71bce076cf7f27c54f2a6928e5d3369`. Every session building the plan checks it first and stops on a
   mismatch; the draft stays as the record.
+
+**The Mac run, 2026-11-14** (`prompts/crnet_resumable_mac.md`; MacBook
+M5 Pro, macOS 27.0.1, Xcode 27.2, Apple clang 21.0.0, Homebrew clang
+23.1.4 for the fuzz target). The draft's hash checked first
+(`e61e52f8...`, version 10).
+- Built with no warning in every configuration below.
+- `macos-metal` Debug and Release: 15 ctests each; `crnet_test` 465 of
+  465 (every part but `internet`); the `resumable` part 121 of 121, three
+  runs in a row in each. Longest call in any no-thread loop: 1 ms, against
+  a server holding each answer 1 s (the bound is 250 ms).
+- `-asan` and `-tsan` (the test presets' options): 15 ctests each,
+  `crnet_test` 465 of 465, `resumable` three runs each, 121 of 121; no
+  sanitizer report. The two-thread cases (an abort during each step under
+  way, a recv while another thread flushes, a wait on a set while another
+  thread sends on a member) ran under TSan.
+- The iOS simulator (iPhone 17 Pro, iOS 26.5): `crnet_test` 465 of 465,
+  `resumable` three runs, 121 of 121. Built in a fresh folder: the
+  workspace's `build-iossimulator-metal` and `build-macos-fuzz` caches
+  were made under the repository's old name (`eqdev/spudlib`) and no
+  longer configure.
+- `cr_misuse_tests` ten runs in Debug: 274 calls with zeroes, 239 with a
+  destroyed handle, no failure. `cr_noalloc_tests`, Debug and Release:
+  none of Carrottus's own in the idle round or the WebSocket round
+  (Foundation's message copy, block and object, about 1.4 a round,
+  reported apart).
+- `crnet_fuzz_http_head` (its source file changed, its functions not):
+  5 minutes on `macos-fuzz` (built in a fresh folder), 6,182,137 inputs, nothing found. The other three targets' sources didn't change; their
+  replays pass in the ctest.
+- `./check.sh`: the 9 findings it had before the change (8 `dep-locks`,
+  the locks' commits behind; 1 `caller-names` in `rabbittus/RBTARCHIVE_TODO.md`)
+  and nothing else; `check.sh --update-abi`: the one break listed above.
+- What builds on carrottus in the workspace was rebuilt against it and
+  passed with no change, once each build folder was configured again (a
+  folder configured at 0.2.0 fails `crcore_test`, built inside it); the
+  workspace's `ROADMAP.md`, section 12, has the figures.
 
 ## Order to do it in
 
