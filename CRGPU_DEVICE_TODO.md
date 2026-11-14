@@ -1012,6 +1012,55 @@ GPU's family (Apple's feature set tables). A translation, no policy: a
 caller compares its own sizes against it. Built when a caller first needs
 it, with the struct's ABI break listed then. Not built.
 
+**Drafted 2026-11-14** (`crgpu_max_image_size_draft.h`, version 1, written
+unattended on the Mac; waiting on your review): five fields at the end of
+`CRGPU_ADAPTER_PROPERTIES` (1D, 2D, 3D, cube, array layers; a listed
+layout break, 0.3.0 to 0.4.0), Metal's values by family from Apple's
+Metal feature set tables (the October 23, 2026 edition, page 8), its four
+questions numbered there. A caller sizing an atlas checks against it.
+
+**Reviewed 2026-11-14** (the workspace's review prompt of 2026-11-14; its record, in
+the workspace's `prompts/`, has every finding):
+
+- **Your answers (stage A):** Q1 a (fields at the struct's end), Q2 a
+  (all five), Q3 a (Metal by family), Q4 a (read and checked against each
+  API's floor).
+- **Seven cycles of critique,** each writing its fixes in. The draft
+  reached **version 6**. Measured on this Mac: Metal makes 32768 (1D, 2D,
+  cube) and 2048 (3D, layers; 341 cubes) and **aborts the process** one
+  texel or layer past, validation on or off (C2.1). **Answered
+  2026-11-14 with you:** `crgpu_image_create` and
+  `crgpu_image_create_placed` refuse past these limits on every backend
+  with `CR_RESULT_GPU_IMAGE_TOO_LARGE` (370), so a caller's size never
+  reaches Metal's assertion; **version 7**. Each field is now stated as an upper bound: a
+  Vulkan format may allow less (C2.2).
+- **APPROVED by you 2026-11-14, version 7;** frozen. SHA-256 (carriage
+  returns removed) of `crgpu_max_image_size_draft.h`:
+  `025c845f32cd4a1fdc15381406e31e05d93179f0d49ed82473605fd8686347f5`.
+  Ready to build, from the plan below: the Mac first,
+  `../prompts/crgpu_image_size_mac.md`, which writes the Windows and
+  Fedora prompts.
+- **The build plan** (tests first):
+  1. `tests/crgpu_device_test.c`: the five fields read on every adapter
+     and checked against each API's floor (Q4), each Vulkan driver's
+     numbers printed for this file; seen failing (the fields absent).
+  2. `include/crgpu.h`: the five fields at `CRGPU_ADAPTER_PROPERTIES`'s
+     end, with their comments; `include/crcore.h`:
+     `CARROTTUS_VERSION_MINOR` 3 to 4.
+  3. Vulkan (`src/gpu/backends/vulkan/crgpuvulkancontext.c`,
+     `crgpuvulkan___read_adapter_facts`): the five from the limits it
+     already reads. D3D12 (`crgpud3d12context.cpp`): the five constants
+     beside `max_samplers`. Metal (`crgpumetalcontext.m`,
+     `crgpumetal___internal_read_adapter_facts`): the family check beside
+     the depth bounds test's, with the table's edition and page.
+  4. The size check in `src/gpu/crgpushared.c` (written once, called by
+     every backend's two image creates at the same place), its result in
+     `crcore.h` and `cr_result_str()`, the refusals in `crgpu_objects_test`
+     first.
+  5. `./check.sh --update-abi` (the layout break listed), the misuse
+     generator rerun, `./check.sh`; built on the Mac, then Windows and
+     Fedora, each driver's numbers recorded here.
+
 ## A swap chain's image count (card S13, decided 2026-11-12 with you: b)
 
 `crgpu_swap_chain_desc::buffer_count` is the caller's on every backend,
