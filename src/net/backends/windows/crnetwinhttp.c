@@ -510,6 +510,7 @@ static bool crnet_win_tls_accepts(HINTERNET request, const struct crnet_win_tls 
 
 struct crnet_http_client_t {
 	cr_object_head head; // first: crnethttp.c reaches the allocator through it
+	crnet_instance instance; // for a wait set's instance check
 	// Holds the connections. Its proxy was settled when it was opened.
 	HINTERNET              session;
 	struct crnet_win_tls tls;
@@ -535,7 +536,9 @@ struct crnet_win_http {
 	HANDLE        closed_event; // WinHTTP is done with the request handle
 
 	// The operation in flight. The callback writes the outcome and sets
-	// the event; the calling thread reads the outcome after the event.
+	// the event; the calling thread reads the outcome after the event. The
+	// event is reset by hand as each operation begins, so that a wait set
+	// can look at it without taking it.
 	bool   operation_pending;
 	HANDLE step_event;
 	DWORD  step_error; // 0 for none
@@ -544,6 +547,14 @@ struct crnet_win_http {
 	// completion back until the response arrives, so start waits for this
 	// instead and leaves the completion in flight.
 	HANDLE sent_event;
+	// Start returned before either event came: send or receive_response
+	// carries it on first (crnetshared.h, the HTTP backend contract).
+	bool start_pending;
+
+	// Guards `wait_set`: the callback and abort notify the set with it
+	// held, so a detach that takes it is followed by no notify.
+	CRITICAL_SECTION         lock;
+	struct crnet_wait_set_t *wait_set;
 	// The callback turned the server's certificate away and closed the
 	// request, and why.
 	bool          tls_refused;
@@ -561,6 +572,14 @@ struct crnet_win_http {
 	bool     read_pending; // the operation in flight is a read
 	bool     body_ended;
 };
+
+/* Tells the transfer's wait set, if it is in one, that what a call would
+ * find may have changed. After the event that says what. */
+static void crnet_win_http_notify(struct crnet_win_http *http) {
+	EnterCriticalSection(&http->lock);
+	crnet_wait_set_notify(http->wait_set);
+	LeaveCriticalSection(&http->lock);
+}
 
 static void CALLBACK crnet_win_http_callback(
     HINTERNET handle,
@@ -584,29 +603,34 @@ static void CALLBACK crnet_win_http_callback(
 				WinHttpCloseHandle(handle);
 			http->step_error = ERROR_WINHTTP_SECURE_FAILURE;
 			SetEvent(http->step_event);
+			crnet_win_http_notify(http);
 		}
 		break;
 
 	case WINHTTP_CALLBACK_STATUS_REQUEST_SENT:
 		SetEvent(http->sent_event);
+		crnet_win_http_notify(http);
 		break;
 	case WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE:
 	case WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE:
 	case WINHTTP_CALLBACK_STATUS_WRITE_COMPLETE:
 		http->step_error = ERROR_SUCCESS;
 		SetEvent(http->step_event);
+		crnet_win_http_notify(http);
 		break;
 
 	case WINHTTP_CALLBACK_STATUS_READ_COMPLETE:
 		http->step_error = ERROR_SUCCESS;
 		http->step_bytes = information_length;
 		SetEvent(http->step_event);
+		crnet_win_http_notify(http);
 		break;
 
 	case WINHTTP_CALLBACK_STATUS_REQUEST_ERROR: {
 		const WINHTTP_ASYNC_RESULT *failed = (const WINHTTP_ASYNC_RESULT *)information;
 		http->step_error                   = failed->dwError ? failed->dwError : ERROR_WINHTTP_CONNECTION_ERROR;
 		SetEvent(http->step_event);
+		crnet_win_http_notify(http);
 		break;
 	}
 
@@ -664,6 +688,7 @@ CR_RESULT crnet_http_client_create(
 	}
 	client->head.allocator = *allocator;
 	CR_BIRTH_IN(client, &instance->quarantine);
+	client->instance       = instance;
 	result                 = crnet_win_tls_create(allocator, &desc->tls, &client->tls);
 	if (!CR_FAILED(result)) {
 		client->session = crnet_win_open_session(allocator, &proxy);
@@ -684,6 +709,8 @@ CR_RESULT crnet_http_client_create(
 	*out_client = client;
 	return CR_SUCCESS;
 }
+
+crnet_instance crnet_http_client_instance(crnet_http_client client) { return client ? client->instance : NULL; }
 
 /* Milliseconds left of `timeout_ms` since `start`, for a Win32 wait. */
 static DWORD crnet_win_remaining(ULONGLONG start, uint32_t timeout_ms) {
@@ -822,11 +849,12 @@ CR_RESULT crnet_http_backend_create(struct crnet_http_transfer_t *transfer) {
 	struct crnet_win_http *http      = CR_NEW_ZEROED(allocator, struct crnet_win_http);
 	if (!http)
 		return CR_RESULT_OUT_OF_MEMORY;
+	InitializeCriticalSection(&http->lock);
 	http->owner        = transfer;
 	http->client       = transfer->client;
 	http->abort_event  = CreateEventW(NULL, TRUE, FALSE, NULL);
 	http->closed_event = CreateEventW(NULL, TRUE, FALSE, NULL);
-	http->step_event   = CreateEventW(NULL, FALSE, FALSE, NULL);
+	http->step_event   = CreateEventW(NULL, TRUE, FALSE, NULL);
 	http->sent_event   = CreateEventW(NULL, TRUE, FALSE, NULL);
 	http->write_buffer = (uint8_t *)cr_allocate(allocator, CRNET_WIN_HTTP_BUFFER_SIZE + CRNET_WIN_HTTP_CHUNK_FRAME, 1);
 	http->read_buffer  = (uint8_t *)cr_allocate(allocator, CRNET_WIN_HTTP_BUFFER_SIZE, 1);
@@ -865,6 +893,7 @@ void crnet_http_backend_destroy(struct crnet_http_transfer_t *transfer) {
 	const CR_ALLOCATOR *allocator = &transfer->head.allocator;
 	cr_free(allocator, http->write_buffer, CRNET_WIN_HTTP_BUFFER_SIZE + CRNET_WIN_HTTP_CHUNK_FRAME, 1);
 	cr_free(allocator, http->read_buffer, CRNET_WIN_HTTP_BUFFER_SIZE, 1);
+	DeleteCriticalSection(&http->lock);
 	CR_DELETE(allocator, struct crnet_win_http, http);
 	transfer->backend = NULL;
 }
@@ -873,9 +902,107 @@ void crnet_http_backend_abort(struct crnet_http_transfer_t *transfer) {
 	struct crnet_win_http *http = (struct crnet_win_http *)transfer->backend;
 	InterlockedExchange(&http->aborted, 1);
 	SetEvent(http->abort_event);
+	// A set it is in names it: every call now returns at once (C7.9).
+	crnet_win_http_notify(http);
 	// Not needed to end the wait, which the event does; it stops the
 	// request going on under a caller that has stopped waiting for it.
 	crnet_win_http_close_request(http);
+}
+
+/* Marks an operation in flight, before the WinHTTP call that starts it. */
+static void crnet_win_http_begin(struct crnet_win_http *http) {
+	ResetEvent(http->step_event);
+	http->operation_pending = true;
+}
+
+/* Carries on a start that returned before the request was out, within
+ * this call's limit. CR_SUCCESS once it is out; CR_RESULT_NET_TIMED_OUT
+ * while it isn't; otherwise how the start failed. */
+static CR_RESULT crnet_win_http_carry_start(struct crnet_win_http *http, ULONGLONG start, uint32_t timeout_ms) {
+	if (!http->start_pending)
+		return CR_SUCCESS;
+	CR_RESULT result = crnet_win_http_wait_sent(http, start, timeout_ms);
+	if (result != CR_RESULT_NET_TIMED_OUT)
+		http->start_pending = false;
+	return result;
+}
+
+/* Whether a manual-reset event is set, without waiting or taking it. */
+static bool crnet_win_event_is_set(HANDLE event) { return WaitForSingleObject(event, 0) == WAIT_OBJECT_0; }
+
+// For a wait set (see the end of crnetshared.h). WinHTTP reports through
+// the status callback, which notifies the set; a wait on the set is a call
+// on the transfer, so what the calling thread keeps is read here without a
+// lock, and the callback's news through its events.
+
+void crnet_http_backend_wait_attach(struct crnet_http_transfer_t *transfer, struct crnet_wait_set_t *set) {
+	struct crnet_win_http *http = (struct crnet_win_http *)transfer->backend;
+	EnterCriticalSection(&http->lock);
+	http->wait_set = set;
+	LeaveCriticalSection(&http->lock);
+}
+
+void crnet_http_backend_wait_detach(struct crnet_http_transfer_t *transfer) {
+	struct crnet_win_http *http = (struct crnet_win_http *)transfer->backend;
+	// Every notification is made with the lock held, so none is under way
+	// once this has it.
+	EnterCriticalSection(&http->lock);
+	http->wait_set = NULL;
+	LeaveCriticalSection(&http->lock);
+}
+
+uint32_t crnet_http_backend_wait_prepare(struct crnet_http_transfer_t *transfer, uint32_t wait_for, struct crnet_wait_poll *poll) {
+	(void)poll;
+	struct crnet_win_http *http = (struct crnet_win_http *)transfer->backend;
+	// The operation in flight has finished (or there is none); it failed;
+	// the request is out.
+	const bool step_set = http->operation_pending && crnet_win_event_is_set(http->step_event);
+	const bool settled  = !http->operation_pending || step_set;
+	if (step_set && http->step_error != ERROR_SUCCESS)
+		return wait_for; // the next call reports it
+	const bool started = !http->start_pending || step_set || crnet_win_event_is_set(http->sent_event);
+
+	uint32_t ready = 0;
+	switch (transfer->phase) {
+	case CRNET_HTTP_PHASE_SENDING:
+		// send takes bytes once the request is out and the write before has
+		// gone; receive_response may begin once a sized body is all in.
+		if (started && settled) {
+			ready |= CRNET_WAIT_FOR_ROOM;
+			if (transfer->body != CRNET_HTTP_BODY_SIZED || transfer->body_sent == transfer->body_size)
+				ready |= CRNET_WAIT_FOR_INCOMING;
+		}
+		break;
+	case CRNET_HTTP_PHASE_AWAITING:
+		// The response has come, or - the step before it done - the next
+		// receive_response has its own step to take: the closing chunk of
+		// an unsized body, or asking for the response, which only a call
+		// makes.
+		if (started && settled)
+			ready |= CRNET_WAIT_FOR_INCOMING;
+		ready |= CRNET_WAIT_FOR_ROOM; // send returns at once, out of order
+		break;
+	case CRNET_HTTP_PHASE_RESPONDED:
+		if (http->read_offset < http->read_size || http->body_ended || step_set) {
+			ready |= CRNET_WAIT_FOR_INCOMING;
+		} else if ((wait_for & CRNET_WAIT_FOR_INCOMING) && !http->read_pending) {
+			// WinHTTP reads nothing but when asked; the read recv would start
+			// is started here, and recv takes it over. One that can't be
+			// started names the transfer, and recv's own try says why.
+			crnet_win_http_begin(http);
+			http->read_pending = true;
+			if (!WinHttpReadData(http->request, http->read_buffer, CRNET_WIN_HTTP_BUFFER_SIZE, NULL)) {
+				http->operation_pending = false;
+				http->read_pending      = false;
+				ready |= CRNET_WAIT_FOR_INCOMING;
+			}
+		}
+		ready |= CRNET_WAIT_FOR_ROOM;
+		break;
+	default:
+		break;
+	}
+	return ready;
 }
 
 bool crnet_http_backend_aborted(struct crnet_http_transfer_t *transfer) {
@@ -980,13 +1107,16 @@ CR_RESULT crnet_http_backend_start(
 
 	// Connects, does the TLS handshake and sends the request line and
 	// headers; the body, if any, follows in pieces.
-	http->operation_pending = true;
+	// Begun whatever the limit, CRNET_NO_WAIT included (crnet.h, "Steps"):
+	// out of time, the request goes on and the next call carries it on.
+	crnet_win_http_begin(http);
 	if (!WinHttpSendRequest(http->request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, WINHTTP_IGNORE_REQUEST_TOTAL_LENGTH, context)) {
 		http->operation_pending = false;
 		result                  = crnet_win_http_failed(http, GetLastError(), CR_RESULT_NET_HTTP_FAILED);
 		goto done;
 	}
-	result = crnet_win_http_wait_sent(http, start, desc->timeout_ms);
+	http->start_pending = true;
+	result              = crnet_win_http_carry_start(http, start, desc->timeout_ms);
 
 done:
 	crnet_win_wide_free(allocator, method, method_count);
@@ -1003,10 +1133,13 @@ CR_RESULT crnet_http_backend_send(
 	struct crnet_win_http *http  = (struct crnet_win_http *)transfer->backend;
 	ULONGLONG                start = GetTickCount64();
 
-	// The write before this one may still be on its way out of the buffer
-	// this one needs. Out of time here means nothing of this call's was
-	// taken.
-	CR_RESULT result = crnet_win_http_wait(http, start, timeout_ms, CR_RESULT_NET_SEND_FAILED);
+	// The start may not have got the request out yet, and the write before
+	// this one may still be on its way out of the buffer this one needs.
+	// Out of time here means nothing of this call's was taken.
+	CR_RESULT result = crnet_win_http_carry_start(http, start, timeout_ms);
+	if (CR_FAILED(result))
+		return result;
+	result = crnet_win_http_wait(http, start, timeout_ms, CR_RESULT_NET_SEND_FAILED);
 	if (CR_FAILED(result))
 		return result;
 
@@ -1026,7 +1159,7 @@ CR_RESULT crnet_http_backend_send(
 
 	// Handed over, the bytes count as sent: the write is left to finish by
 	// itself, and if it fails the next call is the one that hears of it.
-	http->operation_pending = true;
+	crnet_win_http_begin(http);
 	if (!WinHttpWriteData(http->request, http->write_buffer, total, NULL)) {
 		http->operation_pending = false;
 		return crnet_win_http_failed(http, GetLastError(), CR_RESULT_NET_SEND_FAILED);
@@ -1041,10 +1174,13 @@ CR_RESULT crnet_http_backend_receive_response(
 	struct crnet_win_http *http  = (struct crnet_win_http *)transfer->backend;
 	ULONGLONG                start = GetTickCount64();
 
-	// Whatever is in flight comes first: a write, the closing chunk, or -
-	// on a call made again after running out of time - the wait for the
-	// response itself.
-	CR_RESULT result = crnet_win_http_wait(http, start, timeout_ms, CR_RESULT_NET_HTTP_FAILED);
+	// Whatever is in flight comes first: the start, a write, the closing
+	// chunk, or - on a call made again after running out of time - the
+	// wait for the response itself.
+	CR_RESULT result = crnet_win_http_carry_start(http, start, timeout_ms);
+	if (CR_FAILED(result))
+		return result;
+	result = crnet_win_http_wait(http, start, timeout_ms, CR_RESULT_NET_HTTP_FAILED);
 	if (CR_FAILED(result))
 		return result;
 
@@ -1052,7 +1188,7 @@ CR_RESULT crnet_http_backend_receive_response(
 		// An unsized body ends with a chunk of no length.
 		if (transfer->body == CRNET_HTTP_BODY_UNSIZED && !http->final_chunk_written) {
 			memcpy(http->write_buffer, "0\r\n\r\n", 5);
-			http->operation_pending = true;
+			crnet_win_http_begin(http);
 			if (!WinHttpWriteData(http->request, http->write_buffer, 5, NULL)) {
 				http->operation_pending = false;
 				return crnet_win_http_failed(http, GetLastError(), CR_RESULT_NET_HTTP_FAILED);
@@ -1064,7 +1200,7 @@ CR_RESULT crnet_http_backend_receive_response(
 		}
 
 		// Said once: the request is complete, and the response is wanted.
-		http->operation_pending = true;
+		crnet_win_http_begin(http);
 		if (!WinHttpReceiveResponse(http->request, NULL)) {
 			http->operation_pending = false;
 			return crnet_win_http_failed(http, GetLastError(), CR_RESULT_NET_HTTP_FAILED);
@@ -1105,8 +1241,8 @@ CR_RESULT crnet_http_backend_recv(
 		// read is started, and a call that runs out of time leaves it in
 		// flight for the next to wait on.
 		if (!http->read_pending) {
-			http->operation_pending = true;
-			http->read_pending      = true;
+			crnet_win_http_begin(http);
+			http->read_pending = true;
 			if (!WinHttpReadData(http->request, http->read_buffer, CRNET_WIN_HTTP_BUFFER_SIZE, NULL)) {
 				http->operation_pending = false;
 				http->read_pending      = false;
@@ -1133,6 +1269,11 @@ CR_RESULT crnet_http_backend_recv(
 // How much of a message WinHTTP is asked for at a time. A bigger message
 // simply arrives in more parts.
 #define CRNET_WIN_RECEIVE_BUFFER_SIZE (16 * 1024)
+
+// Where the opening request has got to.
+#define CRNET_WIN_OPEN_GOING    0 // no outcome yet
+#define CRNET_WIN_OPEN_RESPONSE 1 // the response's headers are in
+#define CRNET_WIN_OPEN_FAILED   2 // `request_error`, or a certificate turned away
 
 struct crnet_websocket_t {
 	cr_object_head head;
@@ -1165,11 +1306,16 @@ struct crnet_websocket_t {
 	HANDLE abort_event;
 	bool   aborted;
 
-	// The opening request: a stage finished, with this error (0 for none).
+	// The opening request, carried on by the callback (C7.3): where it has
+	// got to, written under the lock; `request_event` is set once it has an
+	// outcome and never reset. connect or connect_continue returns that
+	// outcome once (`outcome_taken`), and only then is the socket `open`.
 	bool   connect_called;
+	int    open_stage; // CRNET_WIN_OPEN_*
+	bool   outcome_taken;
 	bool   open;
 	HANDLE request_event;
-	DWORD  request_error;
+	DWORD  request_error; // for CRNET_WIN_OPEN_FAILED
 
 	// Receive. `buffer` is what WinHTTP writes into, never the caller's
 	// memory: a receive can outlive the call that started it.
@@ -1190,9 +1336,18 @@ struct crnet_websocket_t {
 	uint16_t close_code;
 	bool     close_requested;
 
-	// Send.
-	HANDLE send_event;
-	DWORD  send_error;
+	// Send: one message in flight (crnet.h, crnet_websocket_send). The
+	// flags are written under the lock by the completion, which then sets
+	// `send_event` (reset when a message is taken) and notifies the set.
+	// `send_buffer` is WinHTTP's to read while a message is in flight, sized
+	// to exactly the largest message so far, through the instance's
+	// allocator, and freed by destroy only after every handle has closed.
+	HANDLE   send_event;
+	bool     send_in_flight;
+	bool     send_failed; // a message failed on its way; `send_failure` says how
+	DWORD    send_failure;
+	uint8_t *send_buffer;
+	uint64_t send_capacity;
 
 	// Filled in by connect before the request exists. `tls_refused`: the
 	// callback turned the server's certificate away and closed the request.
@@ -1210,6 +1365,17 @@ struct crnet_websocket_t {
 	// whenever what a receive would find has changed.
 	struct crnet_wait_set_t *wait_set;
 };
+
+/* The opening has failed, with `error`, unless it already had an outcome:
+ * recorded, its waiter woken and its set told. Called with the lock held. */
+static void crnet_win_websocket_open_ended(struct crnet_websocket_t *socket, DWORD error) {
+	if (socket->open_stage != CRNET_WIN_OPEN_GOING)
+		return;
+	socket->open_stage    = CRNET_WIN_OPEN_FAILED;
+	socket->request_error = error;
+	SetEvent(socket->request_event);
+	crnet_wait_set_notify(socket->wait_set);
+}
 
 static void CALLBACK crnet_win_websocket_callback(
     HINTERNET handle,
@@ -1234,16 +1400,32 @@ static void CALLBACK crnet_win_websocket_callback(
 				socket->request_closed = true;
 				WinHttpCloseHandle(socket->request);
 			}
+			crnet_win_websocket_open_ended(socket, ERROR_WINHTTP_SECURE_FAILURE);
 			LeaveCriticalSection(&socket->lock);
-			socket->request_error = ERROR_WINHTTP_SECURE_FAILURE;
-			SetEvent(socket->request_event);
 		}
 		break;
 
 	case WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE:
+		// The opening goes on without a call (C7.3): the response is asked
+		// for here, under the lock, on a request no abort has closed.
+		EnterCriticalSection(&socket->lock);
+		if (socket->open_stage == CRNET_WIN_OPEN_GOING) {
+			if (socket->request_closed)
+				crnet_win_websocket_open_ended(socket, ERROR_OPERATION_ABORTED);
+			else if (!WinHttpReceiveResponse(socket->request, NULL))
+				crnet_win_websocket_open_ended(socket, GetLastError());
+		}
+		LeaveCriticalSection(&socket->lock);
+		break;
+
 	case WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE:
-		socket->request_error = ERROR_SUCCESS;
-		SetEvent(socket->request_event);
+		EnterCriticalSection(&socket->lock);
+		if (socket->open_stage == CRNET_WIN_OPEN_GOING) {
+			socket->open_stage = CRNET_WIN_OPEN_RESPONSE;
+			SetEvent(socket->request_event);
+			crnet_wait_set_notify(socket->wait_set);
+		}
+		LeaveCriticalSection(&socket->lock);
 		break;
 
 	case WINHTTP_CALLBACK_STATUS_READ_COMPLETE: {
@@ -1261,16 +1443,28 @@ static void CALLBACK crnet_win_websocket_callback(
 	}
 
 	case WINHTTP_CALLBACK_STATUS_WRITE_COMPLETE:
-		socket->send_error = ERROR_SUCCESS;
+		// Written under the lock (C4.7), so send, flush and close see a
+		// completion whole.
+		EnterCriticalSection(&socket->lock);
+		socket->send_in_flight = false;
 		SetEvent(socket->send_event);
+		crnet_wait_set_notify(socket->wait_set);
+		LeaveCriticalSection(&socket->lock);
 		break;
 
 	case WINHTTP_CALLBACK_STATUS_REQUEST_ERROR:
 		if (handle == socket->websocket) {
 			const WINHTTP_WEB_SOCKET_ASYNC_RESULT *failed = (const WINHTTP_WEB_SOCKET_ASYNC_RESULT *)information;
 			if (failed->Operation == WINHTTP_WEB_SOCKET_SEND_OPERATION) {
-				socket->send_error = failed->AsyncResult.dwError ? failed->AsyncResult.dwError : ERROR_WINHTTP_CONNECTION_ERROR;
+				EnterCriticalSection(&socket->lock);
+				socket->send_in_flight = false;
+				if (!socket->send_failed) {
+					socket->send_failed  = true;
+					socket->send_failure = failed->AsyncResult.dwError ? failed->AsyncResult.dwError : ERROR_WINHTTP_CONNECTION_ERROR;
+				}
 				SetEvent(socket->send_event);
+				crnet_wait_set_notify(socket->wait_set);
+				LeaveCriticalSection(&socket->lock);
 			} else if (failed->Operation == WINHTTP_WEB_SOCKET_RECEIVE_OPERATION) {
 				EnterCriticalSection(&socket->lock);
 				socket->receive_pending = false;
@@ -1283,18 +1477,22 @@ static void CALLBACK crnet_win_websocket_callback(
 			// A failed close or shutdown has nobody waiting on it.
 		} else {
 			const WINHTTP_ASYNC_RESULT *failed = (const WINHTTP_ASYNC_RESULT *)information;
-			socket->request_error              = failed->dwError ? failed->dwError : ERROR_WINHTTP_CONNECTION_ERROR;
-			SetEvent(socket->request_event);
+			EnterCriticalSection(&socket->lock);
+			crnet_win_websocket_open_ended(socket, failed->dwError ? failed->dwError : ERROR_WINHTTP_CONNECTION_ERROR);
+			LeaveCriticalSection(&socket->lock);
 		}
 		break;
 
 	case WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING:
-		// WinHTTP has let go of everything this handle was given. A sender
-		// that gave up waiting is waiting for exactly that before it hands
-		// the caller's buffer back.
+		// WinHTTP has let go of everything this handle was given, a message
+		// in flight included: it was dropped with the connection, which only
+		// kill closes, so every sending call reports the ending.
 		if (handle == socket->websocket) {
-			socket->send_error = ERROR_OPERATION_ABORTED;
+			EnterCriticalSection(&socket->lock);
+			socket->send_in_flight = false;
 			SetEvent(socket->send_event);
+			crnet_wait_set_notify(socket->wait_set);
+			LeaveCriticalSection(&socket->lock);
 		}
 		if (InterlockedDecrement(&socket->context_handles) == 0)
 			SetEvent(socket->handles_closed_event);
@@ -1347,9 +1545,11 @@ void crnet_websocket_destroy(crnet_websocket socket) {
 	if (socket->send_event)
 		CloseHandle(socket->send_event);
 	// After every handle with this as its context has closed: no callback
-	// reaches it now.
+	// reaches it now, and WinHTTP reads the message buffer no more.
 	CR_KILL(socket);
 	const CR_ALLOCATOR allocator = socket->head.allocator;
+	if (socket->send_buffer)
+		cr_free(&allocator, socket->send_buffer, (size_t)socket->send_capacity, 1);
 	crnet_win_tls_free(&allocator, &socket->tls);
 	DeleteCriticalSection(&socket->lock);
 	cr_string_free(&allocator, socket->head.debug_name);
@@ -1378,9 +1578,9 @@ CR_RESULT crnet_websocket_create(
 	InitializeCriticalSection(&socket->lock);
 	socket->handles_closed_event = CreateEventW(NULL, TRUE, FALSE, NULL);
 	socket->abort_event          = CreateEventW(NULL, TRUE, FALSE, NULL);
-	socket->request_event        = CreateEventW(NULL, FALSE, FALSE, NULL);
+	socket->request_event        = CreateEventW(NULL, TRUE, FALSE, NULL);
 	socket->receive_event        = CreateEventW(NULL, TRUE, FALSE, NULL);
-	socket->send_event           = CreateEventW(NULL, FALSE, FALSE, NULL);
+	socket->send_event           = CreateEventW(NULL, TRUE, FALSE, NULL);
 	if (!socket->handles_closed_event || !socket->abort_event || !socket->request_event || !socket->receive_event || !socket->send_event) {
 		crnet_websocket_destroy(socket);
 		return CR_RESULT_OUT_OF_MEMORY;
@@ -1418,17 +1618,74 @@ void crnet_websocket_abort(crnet_websocket socket) {
 	crnet_win_websocket_kill(socket);
 }
 
-/* Waits for the stage of the opening request just started. ERROR_SUCCESS
- * when it finished cleanly, CRNET_WIN_OWN_TIME_OUT when time ran out,
- * ERROR_OPERATION_ABORTED on abort, or the stage's own error. */
-static DWORD crnet_win_wait_request(struct crnet_websocket_t *socket, ULONGLONG start, uint32_t timeout_ms) {
+/* Waits up to `timeout_ms` from `start` for the opening under way to have
+ * an outcome, and returns what connect returns. CR_RESULT_NET_TIMED_OUT
+ * leaves the opening going; an outcome is returned once: a response of 101
+ * has the upgrade completed here, on the caller's thread, and anything else
+ * ends the socket. */
+static CR_RESULT crnet_win_websocket_await_open(struct crnet_websocket_t *socket, ULONGLONG start, uint32_t timeout_ms, uint32_t *out_http_status) {
 	HANDLE waits[2] = {socket->abort_event, socket->request_event};
-	DWORD  waited   = WaitForMultipleObjects(2, waits, FALSE, crnet_win_remaining(start, timeout_ms));
-	if (waited == WAIT_OBJECT_0)
-		return ERROR_OPERATION_ABORTED;
-	if (waited == WAIT_OBJECT_0 + 1)
-		return socket->request_error;
-	return CRNET_WIN_OWN_TIME_OUT;
+	WaitForMultipleObjects(2, waits, FALSE, crnet_win_remaining(start, timeout_ms));
+
+	EnterCriticalSection(&socket->lock);
+	if (socket->aborted) {
+		LeaveCriticalSection(&socket->lock);
+		return CR_RESULT_NET_ABORTED;
+	}
+	if (socket->open_stage == CRNET_WIN_OPEN_GOING) {
+		LeaveCriticalSection(&socket->lock);
+		return CR_RESULT_NET_TIMED_OUT; // the opening goes on; status stays 0
+	}
+	socket->outcome_taken = true;
+
+	crnet_error *record = &socket->errors[CRNET_ERROR_SIDE_RECEIVING];
+	CR_RESULT    result = CR_RESULT_NET_CONNECT_FAILED;
+	if (socket->open_stage == CRNET_WIN_OPEN_FAILED) {
+		if (socket->tls_refused) {
+			// Whatever WinHTTP made of its handle closing, this is why it closed.
+			result  = CR_RESULT_NET_TLS_FAILED;
+			*record = socket->tls_reason;
+		} else {
+			result = crnet_win_failed(record, socket->request_error, CR_RESULT_NET_CONNECT_FAILED);
+		}
+		goto failed_locked;
+	}
+
+	DWORD status      = 0;
+	DWORD status_size = sizeof(status);
+	if (socket->request_closed ||
+	    !WinHttpQueryHeaders(socket->request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status, &status_size,
+	                         WINHTTP_NO_HEADER_INDEX)) {
+		result = crnet_win_failed(record, socket->request_closed ? ERROR_OPERATION_ABORTED : GetLastError(), CR_RESULT_NET_CONNECT_FAILED);
+		goto failed_locked;
+	}
+	if (out_http_status)
+		*out_http_status = status;
+	if (status != HTTP_STATUS_SWITCH_PROTOCOLS) {
+		result = CR_RESULT_NET_WS_UPGRADE_REFUSED;
+		goto failed_locked;
+	}
+
+	// Counted before the handle exists: its callbacks can start at once.
+	InterlockedIncrement(&socket->context_handles);
+	socket->websocket = WinHttpWebSocketCompleteUpgrade(socket->request, (DWORD_PTR)socket);
+	if (!socket->websocket) {
+		DWORD error = GetLastError();
+		InterlockedDecrement(&socket->context_handles);
+		result = crnet_win_failed(record, error, CR_RESULT_NET_CONNECT_FAILED);
+		goto failed_locked;
+	}
+	socket->request_closed = true;
+	WinHttpCloseHandle(socket->request);
+	socket->open = true;
+	LeaveCriticalSection(&socket->lock);
+	return CR_SUCCESS;
+
+failed_locked:
+	// This socket is spent.
+	LeaveCriticalSection(&socket->lock);
+	crnet_win_websocket_kill(socket);
+	return result;
 }
 
 CR_RESULT crnet_websocket_connect(
@@ -1480,10 +1737,8 @@ CR_RESULT crnet_websocket_connect(
 		result = CR_RESULT_NET_ABORTED;
 	else if (socket->connect_called)
 		result = CR_RESULT_NET_INVALID_WEBSOCKET;
-	else if (desc->timeout_ms == CRNET_NO_WAIT)
-		result = CR_RESULT_NET_TIMED_OUT;
 	else
-		socket->connect_called = true;
+		socket->connect_called = true; // begun whatever the limit (crnet.h, "Steps")
 	LeaveCriticalSection(&socket->lock);
 	if (CR_FAILED(result)) {
 		crnet_proxy_free(allocator, &proxy);
@@ -1495,7 +1750,6 @@ CR_RESULT crnet_websocket_connect(
 	socket->max_message_size = desc->max_message_size;
 
 	DWORD     error   = ERROR_SUCCESS;
-	DWORD     status  = 0;
 	DWORD_PTR context = (DWORD_PTR)socket;
 
 	// Everything up to the first wait is under the lock, so an abort either
@@ -1559,61 +1813,20 @@ CR_RESULT crnet_websocket_connect(
 		goto failed_locked;
 	result = CR_RESULT_NET_CONNECT_FAILED;
 
-	if (!WinHttpSendRequest(socket->request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, context))
+	// The callback carries the opening on from here, asking for the
+	// response once the request is out (C7.3).
+	if (!WinHttpSendRequest(socket->request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, context)) {
 		error = GetLastError();
+		goto failed_locked;
+	}
 	LeaveCriticalSection(&socket->lock);
-	if (error == ERROR_SUCCESS)
-		error = crnet_win_wait_request(socket, start, desc->timeout_ms);
-
-	if (error == ERROR_SUCCESS) {
-		EnterCriticalSection(&socket->lock);
-		if (socket->request_closed)
-			error = ERROR_OPERATION_ABORTED;
-		else if (!WinHttpReceiveResponse(socket->request, NULL))
-			error = GetLastError();
-		LeaveCriticalSection(&socket->lock);
-		if (error == ERROR_SUCCESS)
-			error = crnet_win_wait_request(socket, start, desc->timeout_ms);
-	}
-
-	EnterCriticalSection(&socket->lock);
-	if (error != ERROR_SUCCESS || socket->request_closed) {
-		result = crnet_win_result(error, CR_RESULT_NET_CONNECT_FAILED);
-		goto failed_locked;
-	}
-
-	DWORD status_size = sizeof(status);
-	if (!WinHttpQueryHeaders(socket->request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status, &status_size,
-	                         WINHTTP_NO_HEADER_INDEX)) {
-		error = GetLastError();
-		goto failed_locked;
-	}
-	if (out_http_status)
-		*out_http_status = status;
-	if (status != HTTP_STATUS_SWITCH_PROTOCOLS) {
-		result = CR_RESULT_NET_WS_UPGRADE_REFUSED;
-		goto failed_locked;
-	}
-
-	// Counted before the handle exists: its callbacks can start at once.
-	InterlockedIncrement(&socket->context_handles);
-	socket->websocket = WinHttpWebSocketCompleteUpgrade(socket->request, context);
-	if (!socket->websocket) {
-		error = GetLastError();
-		InterlockedDecrement(&socket->context_handles);
-		goto failed_locked;
-	}
-	socket->request_closed = true;
-	WinHttpCloseHandle(socket->request);
-	socket->open = true;
-	LeaveCriticalSection(&socket->lock);
-
 	crnet_win_url_free(allocator, &url);
-	return CR_SUCCESS;
+	return crnet_win_websocket_await_open(socket, start, desc->timeout_ms, out_http_status);
 
 failed_locked:
-	// This socket is spent; closing the request is also what stops an
-	// opening that ran out of time.
+	// This socket is spent, its outcome this failure.
+	socket->outcome_taken = true;
+	socket->open_stage    = CRNET_WIN_OPEN_FAILED;
 	if (socket->aborted) {
 		result = CR_RESULT_NET_ABORTED;
 	} else if (socket->tls_refused) {
@@ -1629,6 +1842,30 @@ failed_locked:
 	return result;
 }
 
+CR_RESULT crnet_websocket_connect_continue(
+    crnet_websocket socket,
+    uint32_t timeout_ms,
+    uint32_t *out_http_status) {
+	if (out_http_status)
+		*out_http_status = 0;
+	if (!socket)
+		return CR_RESULT_NET_INVALID_WEBSOCKET;
+	if (CR_STALE(socket, "crnet_websocket_connect_continue", "socket"))
+		return CR_RESULT_NET_INVALID_WEBSOCKET;
+
+	ULONGLONG start = GetTickCount64();
+	EnterCriticalSection(&socket->lock);
+	CR_RESULT result = CR_SUCCESS;
+	if (socket->aborted)
+		result = CR_RESULT_NET_ABORTED;
+	else if (!socket->connect_called || socket->outcome_taken)
+		result = CR_RESULT_NET_INVALID_WEBSOCKET;
+	LeaveCriticalSection(&socket->lock);
+	if (CR_FAILED(result))
+		return result;
+	return crnet_win_websocket_await_open(socket, start, timeout_ms, out_http_status);
+}
+
 /* What a call on a socket that can't carry it returns, or CR_SUCCESS for
  * one that can. Called with the lock held. */
 static CR_RESULT crnet_win_websocket_usable(const struct crnet_websocket_t *socket) {
@@ -1637,6 +1874,41 @@ static CR_RESULT crnet_win_websocket_usable(const struct crnet_websocket_t *sock
 	if (!socket->open)
 		return CR_RESULT_NET_INVALID_WEBSOCKET;
 	return CR_SUCCESS;
+}
+
+/* What a sending call on a usable socket returns before anything else: the
+ * failure of a message that failed on its way, put in the sending side's
+ * record, or an ended connection's; CR_SUCCESS where it can go on. Called
+ * with the lock held, by the one sending caller. */
+static CR_RESULT crnet_win_websocket_sending(struct crnet_websocket_t *socket) {
+	if (socket->send_failed)
+		return crnet_error_record(&socket->errors[CRNET_ERROR_SIDE_SENDING], CR_RESULT_NET_SEND_FAILED, CR_PLATFORM_ERROR_SOURCE_WIN32, socket->send_failure, NULL);
+	if (socket->finished || socket->websocket_closed)
+		return CR_RESULT_NET_SEND_FAILED;
+	return CR_SUCCESS;
+}
+
+/* Waits up to `timeout_ms` from `start` for the message in flight to have
+ * gone, and says where it has got to: CR_SUCCESS for none in flight.
+ * WinHTTP sends on by itself, so this only waits. Called with the lock
+ * held, which it lets go while it waits and holds again on return. An
+ * abort ends the wait (its event is waited on beside the completion's). */
+static CR_RESULT crnet_win_websocket_carry_on(struct crnet_websocket_t *socket, ULONGLONG start, uint32_t timeout_ms) {
+	for (;;) {
+		if (socket->aborted)
+			return CR_RESULT_NET_ABORTED;
+		if (socket->send_failed || !socket->send_in_flight)
+			return crnet_win_websocket_sending(socket);
+		DWORD remaining = crnet_win_remaining(start, timeout_ms);
+		if (remaining == 0)
+			return CR_RESULT_NET_TIMED_OUT;
+		HANDLE waits[2] = {socket->abort_event, socket->send_event};
+		LeaveCriticalSection(&socket->lock);
+		DWORD waited = WaitForMultipleObjects(2, waits, FALSE, remaining);
+		EnterCriticalSection(&socket->lock);
+		if (waited == WAIT_TIMEOUT && socket->send_in_flight && !socket->send_failed && !socket->aborted)
+			return CR_RESULT_NET_TIMED_OUT;
+	}
 }
 
 CR_RESULT crnet_websocket_send(
@@ -1658,40 +1930,79 @@ CR_RESULT crnet_websocket_send(
 
 	EnterCriticalSection(&socket->lock);
 	CR_RESULT result = crnet_win_websocket_usable(socket);
-	if (!CR_FAILED(result) && (socket->finished || socket->websocket_closed))
-		result = CR_RESULT_NET_SEND_FAILED;
-	if (!CR_FAILED(result) && timeout_ms == CRNET_NO_WAIT)
-		result = CR_RESULT_NET_TIMED_OUT;
-	// WinHTTP sends a UTF-8 buffer as it is given. Refused here, nothing is
-	// sent and the connection carries on.
-	if (!CR_FAILED(result) && type == CRNET_WEBSOCKET_MESSAGE_TEXT && !crnet_utf8_valid((const uint8_t *)data, (size_t)size))
-		result = CR_RESULT_NET_SEND_FAILED;
-	crnet_error *record = &socket->errors[CRNET_ERROR_SIDE_SENDING];
-	if (!CR_FAILED(result)) {
-		// Returns its error rather than leaving it for GetLastError.
-		DWORD started = WinHttpWebSocketSend(socket->websocket, buffer_type, size > 0 ? (PVOID)data : NULL, (DWORD)size);
-		if (started != ERROR_SUCCESS)
-			result = crnet_error_record(record, CR_RESULT_NET_SEND_FAILED, CR_PLATFORM_ERROR_SOURCE_WIN32, started, NULL);
-	}
+	if (!CR_FAILED(result))
+		result = crnet_win_websocket_sending(socket);
+	LeaveCriticalSection(&socket->lock);
+	if (CR_FAILED(result))
+		return result;
+	// WinHTTP sends a UTF-8 buffer as it is given. Refused here, before
+	// anything is taken or the message in flight waited for (T12): nothing
+	// is sent and the connection carries on.
+	if (type == CRNET_WEBSOCKET_MESSAGE_TEXT && !crnet_utf8_valid((const uint8_t *)(size > 0 ? data : ""), (size_t)size))
+		return CR_RESULT_NET_SEND_FAILED;
+
+	// The message before first, out of this call's limit.
+	EnterCriticalSection(&socket->lock);
+	result = crnet_win_websocket_carry_on(socket, start, timeout_ms);
 	LeaveCriticalSection(&socket->lock);
 	if (CR_FAILED(result))
 		return result;
 
-	HANDLE waits[2] = {socket->abort_event, socket->send_event};
-	DWORD  waited   = WaitForMultipleObjects(2, waits, FALSE, crnet_win_remaining(start, timeout_ms));
-	if (waited == WAIT_OBJECT_0 + 1) {
-		if (socket->send_error == ERROR_SUCCESS)
-			return CR_SUCCESS;
-		return crnet_error_record(record, CR_RESULT_NET_SEND_FAILED, CR_PLATFORM_ERROR_SOURCE_WIN32, socket->send_error, NULL);
+	// Nothing is in flight and nothing else sends (one sending call at a
+	// time), so WinHTTP holds no pointer into the buffer and the copy is
+	// made without the lock. Grown to exactly this message, the old block
+	// freed first (C6.1-C6.3); a refusal is the allocator's, not recorded.
+	const CR_ALLOCATOR *allocator = &socket->head.allocator;
+	if (size > socket->send_capacity) {
+		if (socket->send_buffer)
+			cr_free(allocator, socket->send_buffer, (size_t)socket->send_capacity, 1);
+		socket->send_capacity = 0;
+		socket->send_buffer   = (uint8_t *)cr_allocate(allocator, (size_t)size, 1);
+		if (!socket->send_buffer)
+			return CR_RESULT_OUT_OF_MEMORY;
+		socket->send_capacity = size;
 	}
+	if (size > 0)
+		memcpy(socket->send_buffer, data, (size_t)size);
 
-	// Aborted or out of time, with `data` still WinHTTP's to read. Part of
-	// the message may be on the wire, so the connection is dropped either
-	// way, and this stays until WinHTTP reports the send over or the handle
-	// closed - whichever comes first sets the event.
-	crnet_win_websocket_kill(socket);
-	WaitForSingleObject(socket->send_event, INFINITE);
-	return waited == WAIT_OBJECT_0 ? CR_RESULT_NET_ABORTED : CR_RESULT_NET_TIMED_OUT;
+	EnterCriticalSection(&socket->lock);
+	if (socket->aborted) {
+		result = CR_RESULT_NET_ABORTED;
+	} else if (socket->finished || socket->websocket_closed) {
+		result = CR_RESULT_NET_SEND_FAILED;
+	} else {
+		ResetEvent(socket->send_event);
+		socket->send_in_flight = true;
+		// Returns its error rather than leaving it for GetLastError.
+		DWORD started = WinHttpWebSocketSend(socket->websocket, buffer_type, size > 0 ? (PVOID)socket->send_buffer : NULL, (DWORD)size);
+		if (started != ERROR_SUCCESS) {
+			// Nothing went: the connection is over for sending, as a
+			// message that fails on its way leaves it.
+			socket->send_in_flight = false;
+			socket->send_failed    = true;
+			socket->send_failure   = started;
+			result                 = crnet_win_websocket_sending(socket);
+		}
+	}
+	LeaveCriticalSection(&socket->lock);
+	return result;
+}
+
+CR_RESULT crnet_websocket_flush(
+    crnet_websocket socket,
+    uint32_t timeout_ms) {
+	if (!socket)
+		return CR_RESULT_NET_INVALID_WEBSOCKET;
+	if (CR_STALE(socket, "crnet_websocket_flush", "socket"))
+		return CR_RESULT_NET_INVALID_WEBSOCKET;
+
+	ULONGLONG start = GetTickCount64();
+	EnterCriticalSection(&socket->lock);
+	CR_RESULT result = crnet_win_websocket_usable(socket);
+	if (!CR_FAILED(result))
+		result = crnet_win_websocket_carry_on(socket, start, timeout_ms);
+	LeaveCriticalSection(&socket->lock);
+	return result;
 }
 
 /* Why a finished socket finished. Called with the lock held. */
@@ -1724,33 +2035,19 @@ static void crnet_win_websocket_start_receive(struct crnet_websocket_t *socket) 
 // it whenever a receive has an answer or the connection is dropped, and is
 // asked here.
 
-CR_RESULT crnet_websocket_wait_attach(
-    crnet_websocket socket,
-    struct crnet_wait_set_t *set,
-    bool *out_has_native,
-    intptr_t *out_native,
-    bool *out_report_once) {
+CR_RESULT crnet_websocket_wait_attach(crnet_websocket socket, struct crnet_wait_set_t *set) {
 	EnterCriticalSection(&socket->lock);
 	CR_RESULT result = CR_SUCCESS;
-	if (socket->aborted || !socket->open)
+	// Connected or connecting; never connected, failed or aborted is
+	// refused.
+	if (socket->aborted || !socket->connect_called || (socket->outcome_taken && !socket->open))
 		result = CR_RESULT_NET_INVALID_WEBSOCKET;
 	else if (socket->wait_set)
 		result = CR_RESULT_NET_ALREADY_IN_WAIT_SET;
-	if (!CR_FAILED(result)) {
+	else
 		socket->wait_set = set;
-		// WinHTTP only says a message has arrived to a receive that was
-		// asked for; without one the set would never hear of it.
-		if (!socket->has_chunk && !socket->finished && !socket->receive_pending)
-			crnet_win_websocket_start_receive(socket);
-	}
 	LeaveCriticalSection(&socket->lock);
-	if (CR_FAILED(result))
-		return result;
-
-	*out_has_native  = false;
-	*out_native      = 0;
-	*out_report_once = false;
-	return CR_SUCCESS;
+	return result;
 }
 
 void crnet_websocket_wait_detach(crnet_websocket socket) {
@@ -1761,9 +2058,31 @@ void crnet_websocket_wait_detach(crnet_websocket socket) {
 	LeaveCriticalSection(&socket->lock);
 }
 
-bool crnet_websocket_wait_ready(crnet_websocket socket) {
+uint32_t crnet_websocket_wait_prepare(crnet_websocket socket, uint32_t wait_for, struct crnet_wait_poll *poll) {
+	(void)poll;
 	EnterCriticalSection(&socket->lock);
-	bool ready = socket->aborted || socket->has_chunk || socket->finished;
+	uint32_t ready = 0;
+	if (socket->aborted) {
+		ready = wait_for;
+	} else if (!socket->outcome_taken) {
+		// Opening: named once it has an outcome, for whatever was asked.
+		if (socket->open_stage != CRNET_WIN_OPEN_GOING)
+			ready = wait_for;
+	} else if (!socket->open) {
+		ready = wait_for; // its connect failed after it was added
+	} else {
+		if (wait_for & CRNET_WAIT_FOR_INCOMING) {
+			// WinHTTP only says a message has arrived to a receive that was
+			// asked for; without one the set would never hear of it. A
+			// receive left waiting is the one that will answer.
+			if (!socket->has_chunk && !socket->finished && !socket->receive_pending)
+				crnet_win_websocket_start_receive(socket);
+			if (socket->has_chunk || socket->finished)
+				ready |= CRNET_WAIT_FOR_INCOMING;
+		}
+		if ((wait_for & CRNET_WAIT_FOR_ROOM) && (!socket->send_in_flight || socket->send_failed || socket->finished))
+			ready |= CRNET_WAIT_FOR_ROOM;
+	}
 	LeaveCriticalSection(&socket->lock);
 	return ready;
 }
@@ -1894,16 +2213,25 @@ CR_RESULT crnet_websocket_close(
 
 	EnterCriticalSection(&socket->lock);
 	CR_RESULT result = crnet_win_websocket_usable(socket);
-	if (!CR_FAILED(result) && (socket->finished || socket->websocket_closed))
-		result = CR_RESULT_NET_SEND_FAILED; // already ended: no connection to send a frame on
+	// A message that failed, or an ended connection: no connection to send
+	// a frame on.
+	if (!CR_FAILED(result))
+		result = crnet_win_websocket_sending(socket);
+	// A close frame goes after the message in flight, never into it, and
+	// close takes no limit to wait for it with (T5; WinHTTP would refuse it
+	// anyway, ERROR_INVALID_OPERATION: "a close or send is pending").
+	if (!CR_FAILED(result) && socket->send_in_flight)
+		result = CR_RESULT_NET_TIMED_OUT;
 	if (!CR_FAILED(result)) {
 		// Shutdown starts the close frame on its way and returns
 		// (WinHttpWebSocketClose would wait for the peer's answer). It
 		// leaves WinHTTP receiving; crnet.h has every stack stop here, as
 		// the one that can't go on does, so the socket is marked finished
 		// and what WinHTTP delivers from now on is left where it lands.
+		// ERROR_IO_PENDING is the shutdown begun, finishing on WinHTTP's
+		// side (C4.5).
 		DWORD started = WinHttpWebSocketShutdown(socket->websocket, code, reason_length > 0 ? (PVOID)reason : NULL, (DWORD)reason_length);
-		if (started != ERROR_SUCCESS) {
+		if (started != ERROR_SUCCESS && started != ERROR_IO_PENDING) {
 			result = crnet_error_record(&socket->errors[CRNET_ERROR_SIDE_SENDING], CR_RESULT_NET_SEND_FAILED, CR_PLATFORM_ERROR_SOURCE_WIN32, started, NULL);
 		} else {
 			socket->close_requested = true;

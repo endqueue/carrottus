@@ -810,7 +810,7 @@ Carrottus's rule is that it never decides on the caller's behalf. These do:
   across parts included, is the caller's, said in the header.
 Not started.
 
-## Resumable starts (decided 2026-11-13 with you, a; draft approved 2026-11-13; built on the Mac 2026-11-14, Windows and Fedora next)
+## Resumable starts (decided 2026-11-13 with you, a; draft approved 2026-11-13; built on the Mac and on Windows 2026-11-14, Fedora next)
 
 Raised 2026-11-13 by a caller that may make no thread and advances all
 its network work from its own non-blocking update call (the workspace's
@@ -1048,12 +1048,11 @@ ten runs in Debug with no failure, and `cr_noalloc_tests`' idle round
 counts none of Carrottus's own; step 1 is done when the Mac's step 2 is
 (the front end can't be run alone):
 **Where it stands (2026-11-14):** steps 1, 2 and 5 built and run on the
-Mac (below, each marked); steps 3 and 4 are
-`prompts/crnet_resumable_windows.md` and `prompts/crnet_resumable_fedora.md`,
-on the ThinkPad, Windows then Fedora. Until those run, carrottus doesn't
-build on Windows or Linux: the front end calls backend functions only the
-Mac's backends define yet (`crnetshared.h`, "Wait set" and the HTTP
-backend contract, has the list).
+Mac, and step 3 on Windows (below, each marked); step 4 is
+`prompts/crnet_resumable_fedora.md`, on the ThinkPad's Fedora. Until it
+runs, carrottus doesn't build on Linux: the front end calls backend
+functions libcurl's backend doesn't define yet (`crnetshared.h`, "Wait
+set" and the HTTP backend contract, has the list).
 
 1. **Built 2026-11-14 on the Mac** (with step 2: the front end can't run
    alone). Front end and header: `crnet.h` from the approved draft;
@@ -1092,7 +1091,8 @@ backend contract, has the list).
    HTTP start returns `CR_SUCCESS` at once whatever the limit (P1). The
    BSD sockets file is Linux's too: written here, first compiled there in
    step 4.
-3. Windows (WinHTTP, Winsock): `WinHttpReceiveResponse` issued from the
+3. **Built and run 2026-11-14 on Windows** (`prompts/crnet_resumable_windows.md`).
+   Windows (WinHTTP, Winsock): `WinHttpReceiveResponse` issued from the
    callback under the lock (C7.3); `connect_continue` completing the
    upgrade; the socket's own message buffer, freed after `HANDLE_CLOSING`;
    `WRITE_COMPLETE` and its failure under the lock, notifying the set
@@ -1100,6 +1100,15 @@ backend contract, has the list).
    as begun (C4.5); start's wait split so a time-out leaves the request
    going; Winsock's `connect_continue`.
    `windows-d3d12` and `-vulkan`, Debug, Release, `-asan`.
+   As built: Winsock reads a connect's outcome from FD_CONNECT's own code
+   (SO_ERROR only where Winsock couldn't be asked); a transfer's step
+   event is manual-reset, so the set's prepare looks without taking it,
+   and a lock of the transfer's own guards its set; the WebSocket opening
+   keeps its stage and whether its outcome was returned, its event set
+   once; a send that fails as it is issued is the message's failure. No
+   change to `crnet.h`, the front end or the tests: the Mac's reading of
+   the contract held here. The choices are in `../claude_made_decisions.md`
+   (2026-11-14, Windows); figures in "The Windows run, 2026-11-14" below.
 4. Fedora (libcurl, BSD sockets): `crnet_curl_run` split into begin and
    drive; the opening left on the multi handle; the unsent rest of a frame
    kept in the socket's buffer and pushed by send, flush and recv's own
@@ -1183,6 +1192,48 @@ M5 Pro, macOS 27.0.1, Xcode 27.2, Apple clang 21.0.0, Homebrew clang
   passed with no change, once each build folder was configured again (a
   folder configured at 0.2.0 fails `crcore_test`, built inside it); the
   workspace's `ROADMAP.md`, section 12, has the figures.
+
+**The Windows run, 2026-11-14** (`prompts/crnet_resumable_windows.md`;
+ThinkPad P1 Gen 5, Windows 11 build 26300, MSVC 14.51.36231 (Visual
+Studio 18), Windows SDK 10.0.26100.0). The draft's hash checked first
+(`e61e52f8...`, version 10). Before the change carrottus' `windows-d3d12`
+Debug build failed only as expected: the hooks and calls the Windows
+backends didn't define (unresolved externals) and C4029 on the old
+`crnet_websocket_wait_attach`.
+- Built with no warning in every configuration below.
+- `windows-d3d12` and `windows-vulkan`, Debug and Release: 15 ctests each
+  (the fuzz targets' replays among them); `crnet_test` 462 of 462 (every
+  part but `internet`); the `resumable` part 118 of 118, three runs in a
+  row in each. The Mac's 121 less three: the loopback TCP connect finished
+  inside the call every time, so the checks on a socket still connecting
+  weren't reached; the refused connect was left going, named by the set
+  (WSAPoll on Windows past 2004, P9) and reported by `connect_continue`.
+  Longest call in any no-thread loop, in every run: 16 ms (a WebSocket
+  connect or send; one tick of the system's clock), against a bound of
+  250 ms.
+- `internet` (`windows-d3d12`, Debug): 25 of 25, the TCP connect to
+  192.0.2.1 left going with `CRNET_NO_WAIT`, continued and aborted.
+- `-asan` (both, from a developer prompt, the test presets' options): 15
+  ctests each, `crnet_test` 462 of 462, `resumable` three runs each, 118
+  of 118, `cr_misuse_tests` ten runs each; no sanitizer report, a destroy
+  straight after an abort with a 64 MiB message in flight included.
+- `cr_misuse_tests` ten runs in Debug on each preset: 258 calls with a
+  destroyed handle, no failure. `cr_noalloc_tests`, Debug and Release:
+  none of Carrottus's own in the idle round or the WebSocket round
+  (WinHTTP's `webio.dll` and `websocket.dll`, 2 a round, reported apart);
+  the message buffer grows once, at the first message.
+- What WinHTTP does unlike NSURLSession: a message is gone when
+  `WRITE_COMPLETE` comes, once its bytes are on the connection. The 64 MiB
+  message against a server that stopped reading for 1.5 s took 47 ms to
+  take and stayed in flight 3.1 to 3.4 s more in every run (the Mac:
+  about 35 ms), so the aborted flush is a real abort here: `ABORTED` at
+  about 300 ms each time.
+- `crnetwinhttphead.h` and the raw-header split didn't change, so
+  `crnet_fuzz_http_head` wasn't run on `windows-fuzz`; its replays pass.
+- `./check.sh`: every check passed, `abi` unchanged; its notes only (the
+  locks can't name an uncommitted carrottus; `mutable-globals` entries for
+  symbols not built on Windows).
+- What builds on carrottus: see `../ROADMAP.md`, section 12.
 
 ## Order to do it in
 

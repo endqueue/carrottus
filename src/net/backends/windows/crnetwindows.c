@@ -118,6 +118,10 @@ struct crnet_win_endpoint {
 	HANDLE   writable_event; // room to write, a connect finished, or a close
 	HANDLE   abort_event;    // set by abort and never reset
 	volatile LONG aborted;
+	// What FD_CONNECT said of a connect, once a wait has asked Winsock: its
+	// error code, 0 for connected. Read by the thread that waited.
+	bool connect_reported;
+	int  connect_error;
 };
 
 static void crnet_win_endpoint_free(struct crnet_win_endpoint *endpoint) {
@@ -136,6 +140,8 @@ static void crnet_win_endpoint_free(struct crnet_win_endpoint *endpoint) {
 static bool crnet_win_endpoint_init(struct crnet_win_endpoint *endpoint) {
 	endpoint->handle         = INVALID_SOCKET;
 	endpoint->aborted        = 0;
+	endpoint->connect_reported = false;
+	endpoint->connect_error    = 0;
 	endpoint->network_event  = WSACreateEvent();
 	endpoint->readable_event = CreateEventW(NULL, TRUE, FALSE, NULL);
 	endpoint->writable_event = CreateEventW(NULL, TRUE, FALSE, NULL);
@@ -194,6 +200,12 @@ static CR_RESULT crnet_win_endpoint_wait(struct crnet_win_endpoint *endpoint, HA
 		memset(&happened, 0, sizeof(happened));
 		if (WSAEnumNetworkEvents(endpoint->handle, endpoint->network_event, &happened) != 0)
 			return CR_SUCCESS; // the operation will say what is wrong
+		// A connect's outcome is said once, here, and SO_ERROR isn't
+		// promised to keep it after.
+		if (happened.lNetworkEvents & FD_CONNECT) {
+			endpoint->connect_reported = true;
+			endpoint->connect_error    = happened.iErrorCode[FD_CONNECT_BIT];
+		}
 		if (happened.lNetworkEvents & (FD_READ | FD_ACCEPT | FD_CLOSE))
 			SetEvent(endpoint->readable_event);
 		if (happened.lNetworkEvents & (FD_WRITE | FD_CONNECT | FD_CLOSE))
@@ -263,10 +275,14 @@ struct crnet_tcp_socket_t {
 	cr_object_head head;
 	crnet_instance instance;
 	// The endpoint's handle is made by connect, read by other calls only
-	// once `open` says the connection is up, and closed only by destroy.
+	// once `open` says the connection is up (by a wait set once `connecting`
+	// does), and closed only by destroy.
 	struct crnet_win_endpoint endpoint;
 	volatile LONG               connect_called;
-	volatile LONG               open;
+	// Its connect returned CR_RESULT_NET_TIMED_OUT and no call has
+	// returned its outcome yet: the system's attempt goes on.
+	volatile LONG connecting;
+	volatile LONG open;
 	// By CRNET_ERROR_SIDE; each is written only by its side's caller.
 	crnet_error errors[CRNET_ERROR_SIDE_COUNT];
 };
@@ -293,11 +309,15 @@ static struct crnet_tcp_socket_t *crnet_win_socket_alloc(crnet_instance instance
 // about a socket without disturbing the WSAEventSelect tie the calls here
 // wait through.
 
-bool crnet_tcp_socket_native(crnet_tcp_socket socket, intptr_t *out_native) {
-	if (!socket || InterlockedCompareExchange(&socket->open, 0, 0) == 0)
-		return false;
+enum crnet_tcp_wait_state crnet_tcp_socket_wait_state(crnet_tcp_socket socket, intptr_t *out_native) {
+	if (!socket)
+		return CRNET_TCP_WAIT_NONE;
 	*out_native = (intptr_t)socket->endpoint.handle;
-	return true;
+	if (InterlockedCompareExchange(&socket->open, 0, 0) != 0)
+		return CRNET_TCP_WAIT_OPEN;
+	if (InterlockedCompareExchange(&socket->connecting, 0, 0) != 0)
+		return CRNET_TCP_WAIT_CONNECTING;
+	return CRNET_TCP_WAIT_NONE;
 }
 
 bool crnet_tcp_listener_native(crnet_tcp_listener listener, intptr_t *out_native) {
@@ -571,6 +591,34 @@ static CR_RESULT crnet_win_socket_usable(struct crnet_tcp_socket_t *socket, cons
 	return CR_SUCCESS;
 }
 
+/* Waits up to `timeout_ms` from `start` for a connect under way to have an
+ * outcome, and returns it. CR_RESULT_NET_TIMED_OUT and
+ * CR_RESULT_NET_ABORTED leave it under way (an abort leaves only destroy
+ * anyway); any other result is the outcome, and the socket is no longer
+ * connecting. The connect reset the writable event before it began, and
+ * nothing else resets it while the socket connects, so news a wait set's
+ * poll saw is still there. */
+static CR_RESULT crnet_win_connect_finish(struct crnet_tcp_socket_t *socket, ULONGLONG start, uint32_t timeout_ms) {
+	struct crnet_win_endpoint *endpoint = &socket->endpoint;
+	CR_RESULT                  waited   = crnet_win_endpoint_wait(endpoint, endpoint->writable_event, start, timeout_ms);
+	if (CR_FAILED(waited))
+		return waited;
+
+	crnet_error *record = &socket->errors[CRNET_ERROR_SIDE_RECEIVING];
+	InterlockedExchange(&socket->connecting, 0);
+	int error = endpoint->connect_error;
+	if (!endpoint->connect_reported) {
+		// Winsock couldn't be asked what happened: SO_ERROR says.
+		int error_length = sizeof(error);
+		if (getsockopt(endpoint->handle, SOL_SOCKET, SO_ERROR, (char *)&error, &error_length) != 0)
+			return crnet_win_socket_failed(record, CR_RESULT_NET_CONNECT_FAILED, WSAGetLastError());
+	}
+	if (error != 0)
+		return crnet_win_connection_failed(record, CR_RESULT_NET_CONNECT_FAILED, error);
+	InterlockedExchange(&socket->open, 1);
+	return CR_SUCCESS;
+}
+
 CR_RESULT crnet_tcp_socket_connect(
     crnet_tcp_socket socket,
     const crnet_tcp_socket_connect_desc *desc) {
@@ -597,36 +645,40 @@ CR_RESULT crnet_tcp_socket_connect(
 		return CR_RESULT_NET_ABORTED;
 	if (InterlockedCompareExchange(&socket->connect_called, 0, 0) != 0)
 		return CR_RESULT_NET_INVALID_TCP_SOCKET;
-	if (desc->timeout_ms == CRNET_NO_WAIT)
-		return CR_RESULT_NET_TIMED_OUT;
-	// From here the socket is spent unless this succeeds.
+	// From here the socket is spent unless the connect succeeds; with
+	// CRNET_NO_WAIT too, it is begun (crnet.h, "Steps").
 	InterlockedExchange(&socket->connect_called, 1);
 
 	crnet_error *record = &socket->errors[CRNET_ERROR_SIDE_RECEIVING];
 	if (!crnet_win_endpoint_attach(endpoint, crnet_win_open_tcp(storage.ss_family), FD_READ | FD_WRITE | FD_CONNECT | FD_CLOSE))
 		return crnet_win_socket_failed(record, CR_RESULT_NET_CONNECT_FAILED, WSAGetLastError());
 
-	// On a non-blocking socket connect() only starts the attempt; Winsock
-	// reports it finished, and SO_ERROR says how it went.
+	// On a non-blocking socket connect() only starts the attempt (a loopback
+	// one may finish inside it); Winsock reports it finished with FD_CONNECT
+	// and the outcome's code.
 	ResetEvent(endpoint->writable_event);
-	if (connect(endpoint->handle, (struct sockaddr *)&storage, length) != 0) {
-		if (WSAGetLastError() != WSAEWOULDBLOCK)
-			return crnet_win_connection_failed(record, CR_RESULT_NET_CONNECT_FAILED, WSAGetLastError());
-
-		CR_RESULT waited = crnet_win_endpoint_wait(endpoint, endpoint->writable_event, start, desc->timeout_ms);
-		if (CR_FAILED(waited))
-			return waited;
-
-		int error        = 0;
-		int error_length = sizeof(error);
-		if (getsockopt(endpoint->handle, SOL_SOCKET, SO_ERROR, (char *)&error, &error_length) != 0)
-			return crnet_win_socket_failed(record, CR_RESULT_NET_CONNECT_FAILED, WSAGetLastError());
-		if (error != 0)
-			return crnet_win_connection_failed(record, CR_RESULT_NET_CONNECT_FAILED, error);
+	if (connect(endpoint->handle, (struct sockaddr *)&storage, length) == 0) {
+		InterlockedExchange(&socket->open, 1);
+		return CR_SUCCESS;
 	}
+	if (WSAGetLastError() != WSAEWOULDBLOCK)
+		return crnet_win_connection_failed(record, CR_RESULT_NET_CONNECT_FAILED, WSAGetLastError());
+	InterlockedExchange(&socket->connecting, 1);
+	return crnet_win_connect_finish(socket, start, desc->timeout_ms);
+}
 
-	InterlockedExchange(&socket->open, 1);
-	return CR_SUCCESS;
+CR_RESULT crnet_tcp_socket_connect_continue(
+    crnet_tcp_socket socket,
+    uint32_t timeout_ms) {
+	if (!socket)
+		return CR_RESULT_NET_INVALID_TCP_SOCKET;
+	if (CR_STALE(socket, "crnet_tcp_socket_connect_continue", "socket"))
+		return CR_RESULT_NET_INVALID_TCP_SOCKET;
+	if (crnet_win_endpoint_aborted(&socket->endpoint))
+		return CR_RESULT_NET_ABORTED;
+	if (InterlockedCompareExchange(&socket->connecting, 0, 0) == 0)
+		return CR_RESULT_NET_INVALID_TCP_SOCKET;
+	return crnet_win_connect_finish(socket, GetTickCount64(), timeout_ms);
 }
 
 CR_RESULT crnet_tcp_socket_send(
