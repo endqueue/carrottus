@@ -810,6 +810,298 @@ Carrottus's rule is that it never decides on the caller's behalf. These do:
   across parts included, is the caller's, said in the header.
 Not started.
 
+## Resumable starts (decided 2026-11-13 with you, a; draft written, not approved)
+
+Raised 2026-11-13 by a caller that may make no thread and advances all
+its network work from its own non-blocking update call (the workspace's
+threading rule). With `CRNET_NO_WAIT`, `crnet_tcp_socket_connect`,
+`crnet_http_transfer_start`, `crnet_websocket_connect` and
+`crnet_websocket_send` do nothing ("Time limits"), and a longer limit that
+runs out ends the object; and an HTTP transfer can't be in a wait set. So
+such a caller can't open a connection, start a request or send a message
+without stalling, nor sleep until a transfer has something for it.
+Decided with you the same day: Carrottus Net gains resumable starts, as
+its own draft (card X21) before anything is built. Every stack is
+asynchronous underneath (WinHTTP's async mode and callbacks, NSURLSession's
+tasks, libcurl's multi interface and `curl_ws_send`'s partial sends,
+non-blocking `connect()`), so this translates, and needs no thread of
+Carrottus's own.
+
+The draft: `crnet_resumable_draft.h`, tenth version (the decided shape,
+then two critique passes of its own: platform correctness per backend,
+P1-P11; misuse and threading, T1-T14; then, after the questions were
+decided, seven more at your asking, C3-C9, under "Critique" below).
+Compiled after every pass with `clang -fsyntax-only -Wall -Wextra
+-Wpedantic` as C11 and C++17, bare and with `-DCARROTTUS_PLATFORM_APPLE=1`:
+no warning.
+
+**For you, in short:**
+1. A connect, start or WebSocket send that runs out of time - `CRNET_NO_WAIT`
+   or any limit - leaves its step going instead of doing nothing or ending
+   the object; a later call carries it on (`_connect_continue` for the
+   two connects, the next call in the order of use for an HTTP start, the
+   next send or a new `crnet_websocket_flush` for a message).
+   `CR_RESULT_NET_TIMED_OUT` then always means "not yet; call again".
+2. A WebSocket send takes the whole message (copied) or none of it, one
+   message in flight at a time, and returns once it is taken; `flush`
+   says when it has gone, and is what moves it on libcurl. Close with a
+   message in flight sends nothing and says `TIMED_OUT`.
+3. HTTP transfers join the wait set (INCOMING, ROOM), a WebSocket is asked
+   with `wait_for` like a TCP socket (one listed break), connecting
+   sockets are named when their connect has an outcome, and the wait set
+   exists on watchOS too.
+
+**Questions** (the draft has each in full; it follows every recommendation):
+- Q1. Which time-outs leave the step going: **a, every one** (b: only
+  `CRNET_NO_WAIT`).
+- Q2. How a connect is carried on: **a, `crnet_tcp_socket_connect_continue`
+  and `crnet_websocket_connect_continue`** (b: connect again with a desc
+  of which only `timeout_ms` is read; c: recv and send carry it on).
+- Q3. Where an HTTP start is carried on: **a, the next call in the order of
+  use** (b: start never returns `TIMED_OUT`; c: a `_start_continue`).
+- Q4. What a WebSocket send takes: **a, the whole message, copied, one in
+  flight** (b: the caller's buffer lent until it has gone; c: a queue).
+- Q5. Seeing a message off: **a, `crnet_websocket_flush`** (b: none, the
+  next send or close carries it on - a last message never goes on
+  libcurl).
+- Q6. HTTP transfers in a wait set: **a, yes** (b: the caller polls on a
+  timer).
+- Q7. A wait set on watchOS: **a, on every platform** (b: behind the TCP and
+  WebSocket macros as today).
+- Q8. TCP connect too: **a, yes** (b: only the three calls named).
+- Q9. libcurl without an asynchronous resolver: **a, the HTTP client and
+  WebSocket creates return `CR_RESULT_NET_UNSUPPORTED`** (b: a known
+  problem, `CRNET_NO_WAIT` may block in the lookup).
+- Q10. A WebSocket's room in a wait set: **a, `crnet_wait_set_add_websocket`
+  gains `wait_for`** (b: a second add call; c: ROOM reported unasked).
+
+**Decided with you, 2026-11-13** (one by one; the draft revised once
+after the last):
+- Q1: a, every time-out leaves the step going; `CR_RESULT_NET_TIMED_OUT`
+  always means "not yet; call again", and giving up is the caller's
+  abort or destroy.
+- Q2: a, `crnet_tcp_socket_connect_continue` and
+  `crnet_websocket_connect_continue`, each with a time limit, answering
+  success, not yet, or the connect's own failure.
+- Q3: a, an HTTP start is carried on by the next call in the order of
+  use (send, or receive_response), which finishes the start first.
+- Q4: a, a WebSocket send copies the whole message or takes none, one
+  message in flight at a time; the caller's buffer is free on return. A
+  queue is the caller's policy, not Carrottus'.
+- Q5: a, `crnet_websocket_flush` pushes a part-sent message on and
+  answers success once it has gone; without it a last message would
+  never leave on libcurl.
+- Q6: a, HTTP transfers join the wait set (INCOMING, ROOM), so a caller
+  sleeping between events needs no timer.
+- Q7: a, the wait set exists on every platform, watchOS included (HTTP
+  transfers only there).
+- Q8: a, TCP connect too, through `crnet_tcp_socket_connect_continue`.
+- Q9: a, on a libcurl without `CURL_VERSION_ASYNCHDNS` the HTTP client
+  and WebSocket creates return `CR_RESULT_NET_UNSUPPORTED`, so a lookup
+  can never stall a no-wait call unseen.
+- Q10: a, `crnet_wait_set_add_websocket` gains `wait_for`, as the TCP
+  socket's add has it: the one listed break (before 1.0).
+
+Every answer was the recommendation the draft already follows, so its
+text needs no revision for them; its header block records the decision.
+
+What a backend can't do as decided, found by the passes: NSURLSession
+never says when it has connected, so its HTTP start returns `CR_SUCCESS`
+at once (P1; the caller treats both answers as "started"); libcurl moves
+a part-sent message only when called again, hence `flush` (P4); libcurl
+refuses a new frame while one is unfinished, hence close's `TIMED_OUT`
+(P5); a libcurl built with the synchronous resolver blocks in
+`curl_multi_perform` (P6, Q9); WSAPoll before Windows 10 2004 doesn't
+report a failed non-blocking connect to a wait set (P9, a known problem).
+
+**What was compared:** WinHTTP's asynchronous mode (its completions,
+calls from its callback, one outstanding WebSocket send), NSURLSession
+(tasks on the session's queue, `sendMessage:completionHandler:`),
+libcurl's multi interface (`curl_multi_perform`/`_poll`/`_waitfds`/
+`_fdset`/`_timeout`, CONNECT_ONLY 2 through the multi handle,
+`curl_ws_send`'s partial sends, `CURL_VERSION_ASYNCHDNS`), non-blocking
+`connect()` on POSIX and Winsock; industry practice: poll/epoll/kqueue,
+libcurl's own multi model, Rust's futures and wakers, Go's netpoller,
+asyncio's write and drain, the browser WebSocket's whole-message send.
+
+**Critique, passes 3-9 (2026-11-13, at your asking: "critique
+crnet_resumable_draft.h seven more times")**. Each pass's fixes applied
+before the next, each a version of the draft (4-10), marked in it with
+its finding's ID; none changes a decided answer.
+- **Pass 3, the decided answers (version 4).** Changed: C3.1 the draft's
+  questions marked decided, each kept as put; C3.2 this section's
+  approval record no longer waits for answers (below); C3.3
+  `crnet_websocket_connect` lists `CR_RESULT_OUT_OF_MEMORY`, as
+  `_connect_continue` does, and says `CR_RESULT_NET_UNSUPPORTED` never
+  comes from the continue; C3.4 a start that returned `TIMED_OUT` counts
+  as started for `crnet_wait_set_add_http_transfer`, and a failed
+  transfer is refused there, as a failed WebSocket is; C3.5 the ABI list's
+  "With Q7 a / Q9 a" made plain; C3.6 Q2-Q10's wording checked against
+  every declaration and the plan: consistent. Rejected: NSURLSession's
+  `CR_SUCCESS` from start as a breach of Q3 (Q3 a says the caller treats
+  both answers as started).
+- **Pass 4, each backend against its documentation (version 5).**
+  Checked: libcurl's `curl_ws_send`, `curl_multi_waitfds` and
+  `CURLOPT_CONNECT_ONLY` pages, WinHTTP's `WinHttpWebSocketSend` and
+  `WinHttpWebSocketShutdown`, Winsock's `WSAPoll` (curl.se, learn.microsoft.com,
+  read 2026-11-13). Changed: C4.1 libcurl's rest of a frame is what its
+  page requires be offered again ("only point to the remaining piece";
+  after `CURLE_AGAIN` "retry with the same data and length"); C4.2 a
+  connect-only handle stays on its multi handle for the connection's
+  life, as `CURLOPT_CONNECT_ONLY` requires; C4.3 `curl_multi_waitfds`
+  (8.8.0) may grow between sizing and filling (`CURLM_OUT_OF_MEMORY`), and
+  its page pairs it with no timer, so the set retries and asks
+  `curl_multi_timeout` itself; C4.4 T5's WinHTTP reason corrected to the
+  page's own words (`ERROR_INVALID_OPERATION`: "a close or send is
+  pending"); C4.10 a loopback connect may finish inside the call, so a
+  `CRNET_NO_WAIT` connect may return `CR_SUCCESS`. Recorded for the build,
+  no contract change: C4.5 `WinHttpWebSocketShutdown` may answer
+  `ERROR_IO_PENDING`, which today's close takes for a failure; C4.6
+  `WSAPoll` reports a failed connect as `POLLHUP | POLLERR | POLLWRNORM`
+  only from Windows 10 2004 (P9 confirmed); C4.7 today's
+  `WRITE_COMPLETE` handler writes `send_error` without the lock and wakes
+  no set; C4.8 an NSURLSession message cancelled by an abort completes
+  with `NSURLErrorCancelled`, reported as `ABORTED`; C4.9 libcurl's pong
+  behind a part-sent frame: no page says, left to the test (P5).
+  Rejected: sending libcurl frames with `CURLWS_OFFSET` (a streamed frame
+  is no use when the whole message is in hand).
+- **Pass 5, Carrottus's rules (version 6).** Changed: C5.1 the message
+  buffer's retention (a socket keeps its largest message's size until
+  destroyed) stated on send as a cost the caller carries, and asked
+  below (U1); C5.2 a buffer that can't grow is the allocator's refusal:
+  nothing recorded, no S10 message; C5.3 Q9's check asks `curl_version_info`
+  at each create and keeps nothing; C5.5 `CR_STALE` on every new call, a
+  started-transfer factory in the misuse generator; C5.7 the new add's
+  checks in `add_tcp_socket`'s order. Checked, nothing to change: C5.4
+  S10 (T6 already routes a stack thread's failure through the pending
+  slot), C5.6 naming (no caller named; card S5's renames don't touch the
+  new names). Rejected: a desc field for the buffer's retention (an API no
+  answer asked for; U1 instead).
+- **Pass 6, memory and data (version 7).** Changed, written on send:
+  C6.1 the buffer is sized at the first message that doesn't fit, never
+  at create; C6.2 grown to exactly the message, no growth factor; C6.3
+  the old block freed before the new one (nothing is in flight when a
+  message is taken), so a socket never holds two; C6.4 libcurl offers the
+  caller's bytes first and copies only what wasn't consumed, but grows
+  the buffer to the whole message before the first byte, so a failed
+  allocation leaves nothing on the wire; C6.5 bytes, alignment 1, freed
+  with their capacity; C6.6 a 64 MiB message's cost per backend
+  (NSURLSession's copy is Foundation's and not kept); C6.7 a socket's
+  added fields, tens of bytes in its own block; C6.8 the wait set's
+  libcurl entries grow and stay, so a steady set allocates nothing.
+  Rejected: doubling growth (a policy).
+- **Pass 7, concurrency and abort (version 8).** Changed: C7.1 a wait on
+  a set counts as a call on the whole socket while a member's connect is
+  under way (libcurl's set and `_connect_continue` both use its multi
+  handle); C7.2 NSURLSession's completion blocks capture the retained
+  state, never the socket, so a completion after destroy is safe; C7.3
+  WinHTTP's callback-issued `WinHttpReceiveResponse` holds the lock and
+  checks the handle against an abort; C7.4-C7.6 the in-flight flag and
+  failure written by the completion under the socket's lock, which then
+  notifies the set, so send, flush and close see a completion whole; an
+  abort during either ends the wait and drops the message. Checked: C7.7
+  destroying a set with connecting members, C7.8 a set's abort, C7.9 a
+  transfer aborted while in a set (named, then `ABORTED`). Rejected: a
+  lock-free in-flight flag (the socket's lock is already taken there).
+- **Pass 8, testability and the plan (version 9).** Changed: C8.1 tests
+  take `CR_SUCCESS` and `TIMED_OUT` both where a stack may finish at once;
+  a TCP connect left going is tested against 192.0.2.1 in the `internet`
+  part; C8.2 the "never held" bound is 250 ms against a server that holds
+  every answer 1 s (10 ms on loopback was flaky beside another session's
+  timings); C8.3 the server's new paths (`/slow-upgrade`, `pause:`,
+  `pause-and-ping:`, `/slow-read`); C8.5 T11's overlap checks wait on card
+  X3's Debug check, not yet in Carrottus Net; C8.6 each plan step's
+  done-criterion (below); C8.7 the two-thread cases under `-tsan`; C8.8
+  the part in the iOS simulator. Checked: C8.4 Q9 not reachable on the
+  test machines (read, and a build against a libcurl without the threaded
+  resolver where one is at hand). Rejected: forcing a pending loopback TCP
+  connect with a full backlog (Linux drops, Windows refuses).
+- **Pass 9, a final read (version 10).** Changed: C9.1 "why a draft"
+  counts the calls right (four and close, plus HTTP send and
+  receive_response); C9.2 the ABI list gains what was missing (send and
+  receive_response report a start's failures, both adds take a connecting
+  socket, `CRNET_WAIT_FOR_ROOM` widened, connect's
+  `CR_RESULT_OUT_OF_MEMORY`, `TIMED_OUT`'s comment); C9.3 the draft's
+  versions list one line a pass; C9.4 its status line no longer says the
+  text "stands as written"; C9.5 no caller named anywhere (checked).
+
+**For the user** (found by the passes; not applied where it would change
+an answer, and asked here):
+- **U1. Keep the WebSocket message buffer?** Q4 a copies a message; the
+  draft (C5.1, C6) keeps the buffer at the largest message's size until
+  the socket is destroyed, so a steady stream allocates nothing, and says
+  so on send as a cost. a. (Recommended, drafted) Keep it, stated: the
+  allocation-free round the workspace holds Carrottus to; a caller with a
+  rare large message sends it on a socket of its own. b. Free it once the
+  message has gone: an allocation per message on WinHTTP and libcurl,
+  which `cr_noalloc_tests` would then report. c. A setting on the connect
+  desc: a new field no answer asked for. Not a change to Q4's answer
+  either way. **Decided 2026-11-13 with you: a**, as drafted.
+
+**The plan once approved**, each step built and tested before the next,
+the new tests seen failing first, `check.sh` clean, `abi.txt` updated
+with the break listed, the misuse generator rerun, `CARROTTUS_VERSION_MINOR`
+3. **Done for a step (C8.6)** when its backends build with no warning, the
+existing `crnet_test` parts pass as changed, the `resumable` part passes
+plain, `-asan` and `-tsan` where the platform has them, `cr_misuse_tests`
+ten runs in Debug with no failure, and `cr_noalloc_tests`' idle round
+counts none of Carrottus's own; step 1 is done when the Mac's step 2 is
+(the front end can't be run alone):
+1. Front end and header: `crnet.h` from the approved draft;
+   `src/net/crnethttp.c` loses its `CRNET_NO_WAIT` early return and keeps
+   a started transfer on a time-out; `crnetshared.h`'s backend contract
+   (a start may return with the request under way; send and
+   receive_response finish it first) and the wait set's member hooks for
+   an HTTP transfer (attach, detach, ready; for libcurl, descriptors and a
+   timer); `src/net/crnetwaitset.c` takes HTTP members, asks `wait_for` of
+   a WebSocket, names connecting sockets, and is built on every platform.
+2. The Mac (NSURLSession, BSD sockets): connect left going (no cancel on a
+   time-out), `connect_continue` on the condition; send's one message in
+   flight with its completion recorded on the retained state and the set
+   notified (C7.2); flush, an abort's `NSURLErrorCancelled` as `ABORTED`
+   (C4.8); close's `TIMED_OUT`; transfers notify their set from the
+   delegate and the body stream; the test server's new paths (C8.3). `macos-metal` Debug, Release, `-asan`, `-tsan`; the iOS
+   simulator.
+3. Windows (WinHTTP, Winsock): `WinHttpReceiveResponse` issued from the
+   callback under the lock (C7.3); `connect_continue` completing the
+   upgrade; the socket's own message buffer, freed after `HANDLE_CLOSING`;
+   `WRITE_COMPLETE` and its failure under the lock, notifying the set
+   (C4.7); close taking `ERROR_IO_PENDING` from `WinHttpWebSocketShutdown`
+   as begun (C4.5); start's wait split so a time-out leaves the request
+   going; Winsock's `connect_continue`.
+   `windows-d3d12` and `-vulkan`, Debug, Release, `-asan`.
+4. Fedora (libcurl, BSD sockets): `crnet_curl_run` split into begin and
+   drive; the opening left on the multi handle; the unsent rest of a frame
+   kept in the socket's buffer and pushed by send, flush and recv's own
+   close frames; the transfer's descriptors and `curl_multi_timeout` given
+   to the set; the `ASYNCHDNS` refusal (Q9). `linux-vulkan`, Debug,
+   Release, `-asan`, `-tsan`, GCC and clang.
+5. `crnet_test` extended on each (the draft's "Tests"): a new `resumable`
+   part - every step driven to its end with `CRNET_NO_WAIT` only, the
+   thread sleeping in `crnet_wait_set_wait` between calls and never held
+   in a call past a measured bound; refusals, a turned-away certificate and
+   a refused upgrade reported by the continuing call; a longer limit that
+   runs out leaving the object usable; a 64 MiB message taken at once, the
+   next refused until flushed, both echoed whole and in order; close with
+   a message in flight; the caller's buffer overwritten after send; a ping
+   during a part-sent frame; aborts from another thread during each step;
+   HTTP transfers, connecting sockets and a WebSocket's room in a wait set;
+   continue without a connect, after an outcome, and twice - plus the
+   existing parts changed where they asserted "does nothing" (`tcp`'s
+   connect with `CRNET_NO_WAIT`, `http`'s start with `CRNET_NO_WAIT`). The
+   test server gains a slow-reading WebSocket path, so that a message
+   stays in flight. `cr_misuse_tests` takes the five new calls;
+   `cr_noalloc_tests`' idle round sends and flushes a message a frame.
+
+**Approval record:**
+- 2026-11-13: written (version 1), two critique passes (P, T: version
+  3); Q1-Q10 decided with you, every one as recommended; seven more
+  passes at your request (3 to 9: version 10); U1 decided a.
+- **Approved by you 2026-11-13** ("yes"): `crnet_resumable_draft.h`
+  version 10, SHA-256 with carriage returns removed (card X23)
+  `e61e52f8c76a070e8f578923621de418d71bce076cf7f27c54f2a6928e5d3369`. Every session building the plan checks it first and stops on a
+  mismatch; the draft stays as the record.
+
 ## Order to do it in
 
 0. Compiled on macOS (2026-10-08), Linux and Windows with MSVC (2026-10-14).

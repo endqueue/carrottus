@@ -1035,8 +1035,7 @@ refused where the surface can't take it, with a query to choose by:
   of `buffer_count` (a listed break: a caller asking for fewer than its
   surface's minimum now fails), its tests (the range on a hidden window's
   surface on every adapter, a count past each end refused, the count got
-  back). Each caller asks the query and chooses (Rend's swap chain, the
-  samples, LatranPlayer, Linxer's hosts). Not built.
+  back). Each caller asks the query and chooses. Not built.
 
 ## Later, not in this change
 
