@@ -141,6 +141,13 @@ static bool crgpu_d3d12___read_adapter_facts(crgpu_adapter_d3d12 *adapter) {
 	// a larger CBV/SRV/UAV heap; one limit is kept for every tier).
 	properties->max_descriptors = D3D12_MAX_SHADER_VISIBLE_DESCRIPTOR_HEAP_SIZE_TIER_1;
 	properties->max_samplers    = D3D12_MAX_SHADER_VISIBLE_SAMPLER_HEAP_SIZE;
+	// The largest image of each kind, fixed for feature level 11_0 and up,
+	// for every format (d3d12.h's D3D12_REQ_* constants).
+	properties->max_image_width_1d     = D3D12_REQ_TEXTURE1D_U_DIMENSION;
+	properties->max_image_size_2d      = D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION;
+	properties->max_image_size_3d      = D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION;
+	properties->max_image_size_cube    = D3D12_REQ_TEXTURECUBE_DIMENSION;
+	properties->max_image_array_layers = D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION;
 
 	// A device makes as many queues of each type as asked, and D3D12 says
 	// nothing about where they run.

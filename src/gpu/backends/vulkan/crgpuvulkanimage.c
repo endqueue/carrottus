@@ -160,6 +160,8 @@ CR_RESULT crgpu_image_create(
 
     const CR_RESULT descResult = crgpuvulkan___check_image_desc(desc);
     if (descResult != CR_SUCCESS) return descResult;
+    const CR_RESULT sizeResult = crgpu___internal_check_image_size(&device->_adapter->_facts.properties, desc);
+    if (sizeResult != CR_SUCCESS) return sizeResult;
 
     // Create the result struct
     crgpu_image_vulkan result = {0};

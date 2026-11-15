@@ -80,7 +80,7 @@ extern "C" {
 /** @brief The major version of these headers. */
 #define CARROTTUS_VERSION_MAJOR 0
 /** @brief The minor version of these headers. */
-#define CARROTTUS_VERSION_MINOR 3
+#define CARROTTUS_VERSION_MINOR 4
 /** @brief The patch version of these headers. */
 #define CARROTTUS_VERSION_PATCH 0
 
@@ -468,6 +468,9 @@ typedef enum CR_RESULT {
 	/** A build, copy or compacted-size write between
 	 * crgpu_command_list_begin_rendering() and crgpu_command_list_end_rendering(). */
 	CR_RESULT_GPU_ACCELERATION_STRUCTURE_INSIDE_RENDERING     = 369,
+	/** An image's size or layer count is past its adapter's limit
+	 * (CRGPU_ADAPTER_PROPERTIES::max_image_*). Since 0.4.0. */
+	CR_RESULT_GPU_IMAGE_TOO_LARGE                             = 370,
 	/** @} */
 
 	CR_RESULT_FILES_NULL_PATH = 1001, /**< A path is NULL or empty. */

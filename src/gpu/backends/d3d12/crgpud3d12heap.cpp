@@ -335,6 +335,9 @@ CR_RESULT crgpu_image_create_placed(
 	CR_RESULT sr = crgpu_d3d12_check_image_placement(heap, desc);
 	if (sr != CR_SUCCESS)
 		return sr;
+	sr = crgpu___internal_check_image_size(&heap->_device->_adapter->_facts.properties, desc);
+	if (sr != CR_SUCCESS)
+		return sr;
 
 	D3D12_RESOURCE_DESC d3dDesc = {};
 	sr = crgpu_d3d12_create_resource_desc_from_image(desc, &d3dDesc);

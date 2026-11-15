@@ -1438,6 +1438,20 @@ evening on the Mac (Known gaps below, `CRGPU_DEVICE_TODO.md`).
   one was taken against a server that wasn't reading, on WinHTTP (its
   `WRITE_COMPLETE`) 3.1 to 3.4 s, so on Windows a flush waiting on it is
   truly aborted.
+- **The largest image sizes (0.4.0, card S33,
+  `crgpu_max_image_size_draft.h`, approved 2026-11-14):**
+  `CRGPU_ADAPTER_PROPERTIES` ends with five upper bounds (1D, 2D, 3D, cube,
+  array layers) from each API (Vulkan's limits, D3D12's constants, Metal's
+  feature set tables by family), and `crgpu_image_create` and
+  `crgpu_image_create_placed` refuse an image past them with
+  `CR_RESULT_GPU_IMAGE_TOO_LARGE`, checked once
+  (`crgpu___internal_check_image_size`, `src/gpu/crgpushared.c`), since
+  Metal ends the process on one (exit 134, validation off as well). Built
+  on the Mac 2026-11-15 (Apple M5 Pro: 32768, 32768, 2048, 32768, 2048);
+  Vulkan's half type-checked there against the SDK's headers, D3D12's
+  written, not compiled. `crgpu_heap_get_image_placement_requirements`
+  still aborts on Metal for such an image (`CRGPU_DEVICE_TODO.md`, S33,
+  "For you").
 - Carrottus Net was written on 2026-10-07 and its header reworked, and every backend
   rewritten to it, on 2026-10-08: streaming HTTP transfers, TLS and proxy
   descs, error detail, a resolver, a wait set. The Apple side compiles clean

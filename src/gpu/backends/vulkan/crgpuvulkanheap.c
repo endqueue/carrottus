@@ -502,6 +502,8 @@ CR_RESULT crgpu_image_create_placed(
     if (!out_image) return CR_RESULT_NULL_OUTPUT_PARAMETER;
     CR_RESULT sr = crgpuvulkan___internal_check_image_placement(heap, desc);
     if (sr != CR_SUCCESS) return sr;
+    sr = crgpu___internal_check_image_size(&heap->_device._adapter->_facts.properties, desc);
+    if (sr != CR_SUCCESS) return sr;
 
     VkDevice vk_device = heap->_device._logical_device_vk;
     VkImageCreateInfo info;

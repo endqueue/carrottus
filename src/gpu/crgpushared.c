@@ -1037,3 +1037,21 @@ void crgpu___internal_live_check_none(crgpu___live_objects *live, const char *de
 #if __cplusplus
 }
 #endif
+
+CR_RESULT crgpu___internal_check_image_size(
+    const CRGPU_ADAPTER_PROPERTIES *limits,
+    const crgpu_image_desc *desc) {
+	if (desc->type == CRGPU_IMAGE_TYPE_1D && desc->width > limits->max_image_width_1d)
+		return CR_RESULT_GPU_IMAGE_TOO_LARGE;
+	if (desc->type == CRGPU_IMAGE_TYPE_2D && !desc->cube_capable &&
+	    (desc->width > limits->max_image_size_2d || desc->height > limits->max_image_size_2d))
+		return CR_RESULT_GPU_IMAGE_TOO_LARGE;
+	if (desc->type == CRGPU_IMAGE_TYPE_3D &&
+	    (desc->width > limits->max_image_size_3d || desc->height > limits->max_image_size_3d || desc->depth > limits->max_image_size_3d))
+		return CR_RESULT_GPU_IMAGE_TOO_LARGE;
+	if (desc->type == CRGPU_IMAGE_TYPE_2D && desc->cube_capable && desc->width > limits->max_image_size_cube)
+		return CR_RESULT_GPU_IMAGE_TOO_LARGE;
+	if (desc->array_layers > limits->max_image_array_layers)
+		return CR_RESULT_GPU_IMAGE_TOO_LARGE;
+	return CR_SUCCESS;
+}

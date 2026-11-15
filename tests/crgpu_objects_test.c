@@ -708,6 +708,117 @@ static crgpu_heap make_heap(crgpu_device device, CRGPU_HEAP_RESOURCE_CLASS resou
 	return heap;
 }
 
+// An image desc of [type], sampled R8, one mip; the size and layers the
+// caller's.
+static crgpu_image_desc sized_image_desc(CRGPU_IMAGE_TYPE type, uint32_t width, uint32_t height, uint32_t depth, uint32_t layers, bool cube) {
+	crgpu_image_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type          = CR_STRUCT_TYPE_GPU_IMAGE_DESC;
+	desc.usage              = CRGPU_IMAGE_USAGE_SAMPLED;
+	desc.type               = type;
+	desc.format             = CRGPU_FORMAT_R8_UNORM;
+	desc.clear_value.format = CRGPU_FORMAT_R8_UNORM;
+	desc.width              = width;
+	desc.height             = height;
+	desc.depth              = depth;
+	desc.array_layers       = layers;
+	desc.mip_levels         = 1;
+	desc.cube_capable       = cube;
+	desc.debug_name         = "crgpu_objects_test sized";
+	return desc;
+}
+
+// One case of test_image_size_limits: [desc] refused by both creates with
+// CR_RESULT_GPU_IMAGE_TOO_LARGE, nothing handed out. Refused before any
+// memory is asked for, so the placed create's heap needs no room for it.
+static void expect_too_large(crgpu_device device, crgpu_heap heap, const crgpu_image_desc *desc, const char *what) {
+	crgpu_image image = (crgpu_image)(uintptr_t)1;
+	const CR_RESULT committed = crgpu_image_create(device, desc, &image);
+	if (committed != CR_RESULT_GPU_IMAGE_TOO_LARGE)
+		fprintf(stderr, "crgpu_objects_test: %s: crgpu_image_create returned %s\n", what, cr_result_str(committed));
+	CHECK(committed == CR_RESULT_GPU_IMAGE_TOO_LARGE);
+	CHECK(image == (crgpu_image)(uintptr_t)1 || image == NULL);
+	if (committed == CR_SUCCESS)
+		crgpu_image_destroy(image);
+	if (heap) {
+		image                  = (crgpu_image)(uintptr_t)1;
+		const CR_RESULT placed = crgpu_image_create_placed(heap, 0, desc, &image);
+		if (placed != CR_RESULT_GPU_IMAGE_TOO_LARGE)
+			fprintf(stderr, "crgpu_objects_test: %s: crgpu_image_create_placed returned %s\n", what, cr_result_str(placed));
+		CHECK(placed == CR_RESULT_GPU_IMAGE_TOO_LARGE);
+		if (placed == CR_SUCCESS)
+			crgpu_image_destroy(image);
+	}
+}
+
+// A small image of [desc] still made, committed and placed.
+static void expect_made(crgpu_device device, crgpu_heap heap, const crgpu_image_desc *desc, const char *what) {
+	crgpu_image image         = NULL;
+	const CR_RESULT committed = crgpu_image_create(device, desc, &image);
+	if (committed != CR_SUCCESS)
+		fprintf(stderr, "crgpu_objects_test: %s: crgpu_image_create returned %s\n", what, cr_result_str(committed));
+	CHECK(committed == CR_SUCCESS);
+	crgpu_image_destroy(image);
+	if (heap) {
+		image                  = NULL;
+		const CR_RESULT placed = crgpu_image_create_placed(heap, 0, desc, &image);
+		if (placed != CR_SUCCESS)
+			fprintf(stderr, "crgpu_objects_test: %s: crgpu_image_create_placed returned %s\n", what, cr_result_str(placed));
+		CHECK(placed == CR_SUCCESS);
+		crgpu_image_destroy(image);
+	}
+}
+
+// The largest image sizes (card S33): both creates refuse an image one
+// texel or layer past each of the adapter's limits, each case on its own,
+// with CR_RESULT_GPU_IMAGE_TOO_LARGE. On Metal, before the refusal, each of
+// these ended the process inside newTextureWithDescriptor (exit 134).
+static void test_image_size_limits(crgpu_device device, const CRGPU_ADAPTER_PROPERTIES *limits) {
+	const uint32_t w1     = limits->max_image_width_1d;
+	const uint32_t s2     = limits->max_image_size_2d;
+	const uint32_t s3     = limits->max_image_size_3d;
+	const uint32_t cube   = limits->max_image_size_cube;
+	const uint32_t layers = limits->max_image_array_layers;
+	// The fewest layers past the limit that are whole cubes.
+	const uint32_t cube_layers = (layers / 6 + 1) * 6;
+	crgpu_heap heap            = make_heap(device, CRGPU_HEAP_RESOURCE_CLASS_IMAGES, "crgpu_objects_test sized");
+
+	crgpu_image_desc desc;
+	desc = sized_image_desc(CRGPU_IMAGE_TYPE_1D, w1 + 1, 1, 1, 1, false);
+	expect_too_large(device, heap, &desc, "1D width");
+	desc = sized_image_desc(CRGPU_IMAGE_TYPE_2D, s2 + 1, 1, 1, 1, false);
+	expect_too_large(device, heap, &desc, "2D width");
+	desc = sized_image_desc(CRGPU_IMAGE_TYPE_2D, 1, s2 + 1, 1, 1, false);
+	expect_too_large(device, heap, &desc, "2D height");
+	desc = sized_image_desc(CRGPU_IMAGE_TYPE_3D, s3 + 1, 1, 1, 1, false);
+	expect_too_large(device, heap, &desc, "3D width");
+	desc = sized_image_desc(CRGPU_IMAGE_TYPE_3D, 1, s3 + 1, 1, 1, false);
+	expect_too_large(device, heap, &desc, "3D height");
+	desc = sized_image_desc(CRGPU_IMAGE_TYPE_3D, 1, 1, s3 + 1, 1, false);
+	expect_too_large(device, heap, &desc, "3D depth");
+	desc = sized_image_desc(CRGPU_IMAGE_TYPE_2D, cube + 1, cube + 1, 1, 6, true);
+	expect_too_large(device, heap, &desc, "cube width");
+	desc = sized_image_desc(CRGPU_IMAGE_TYPE_2D, 4, 4, 1, layers + 1, false);
+	expect_too_large(device, heap, &desc, "2D array layers");
+	desc = sized_image_desc(CRGPU_IMAGE_TYPE_2D, 4, 4, 1, cube_layers, true);
+	expect_too_large(device, heap, &desc, "cube array layers");
+
+	// A small one of each type is still made.
+	desc = sized_image_desc(CRGPU_IMAGE_TYPE_1D, 16, 1, 1, 1, false);
+	expect_made(device, heap, &desc, "small 1D");
+	desc = sized_image_desc(CRGPU_IMAGE_TYPE_2D, 16, 16, 1, 1, false);
+	expect_made(device, heap, &desc, "small 2D");
+	desc = sized_image_desc(CRGPU_IMAGE_TYPE_2D, 16, 16, 1, 4, false);
+	expect_made(device, heap, &desc, "small 2D array");
+	desc = sized_image_desc(CRGPU_IMAGE_TYPE_3D, 16, 16, 16, 1, false);
+	expect_made(device, heap, &desc, "small 3D");
+	desc = sized_image_desc(CRGPU_IMAGE_TYPE_2D, 16, 16, 1, 6, true);
+	expect_made(device, heap, &desc, "small cube");
+	desc = sized_image_desc(CRGPU_IMAGE_TYPE_2D, 16, 16, 1, 12, true);
+	expect_made(device, heap, &desc, "small cube array");
+	crgpu_heap_destroy(heap);
+}
+
 // A graphics pipeline over the test's shaders: [mesh] in place of the
 // vertex shader where given; depth as asked.
 static crgpu_graphics_pipeline make_pipeline(crgpu_device device, crgpu_shader_module vertex, crgpu_shader_module mesh, crgpu_shader_module fragment,
@@ -3971,6 +4082,7 @@ int main(int argc, char **argv) {
 		test_semaphore(device);
 		test_buffer_and_view(device);
 		test_heap_desc(device);
+		test_image_size_limits(device, &properties);
 		test_descriptor_pool_reset(device);
 		test_present_scaling_without_present(device);
 #if CRGPU_EXT_RAY_QUERY

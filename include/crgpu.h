@@ -765,6 +765,73 @@ typedef struct CRGPU_ADAPTER_PROPERTIES {
 	CRGPU_QUEUE_POOL queue_pools[3];
 	/** The number of entries of #queue_pools in use. */
 	uint32_t queue_pool_count;
+
+	/*
+	 * Every field below is an upper bound for its kind of image, whatever
+	 * its format, usage or mip levels: no image past it is created on the
+	 * adapter, and crgpu_image_create() and crgpu_image_create_placed()
+	 * refuse one with CR_RESULT_GPU_IMAGE_TOO_LARGE on every backend.
+	 * Vulkan may allow less for a given format, usage and tiling
+	 * (vkGetPhysicalDeviceImageFormatProperties' maxExtent and
+	 * maxArrayLayers, the specification's "Image Creation Limits"), which
+	 * Carrottus GPU doesn't report; such a create fails. D3D12's and Metal's
+	 * hold for every format. Within the bound, memory may still refuse
+	 * (16384 x 16384 RGBA8 is 1 GiB; a 32768 cube of R8 6.2 GiB).
+	 * Since 0.4.0.
+	 */
+	/**
+	 * The largest width of a CRGPU_IMAGE_TYPE_1D image the adapter creates,
+	 * in texels: an upper bound (above).
+	 *
+	 * Vulkan: `VkPhysicalDeviceLimits::maxImageDimension1D`. D3D12: 16384
+	 * (`D3D12_REQ_TEXTURE1D_U_DIMENSION`). Metal: 32768 on a GPU in
+	 * `MTLGPUFamilyApple10`, 16384 on every other it lists (Apple's Metal
+	 * feature set tables, "Maximum 1D texture width").
+	 */
+	uint32_t max_image_width_1d;
+	/**
+	 * The largest width or height of a CRGPU_IMAGE_TYPE_2D image the
+	 * adapter creates, in texels, for an image that isn't cube-capable: an
+	 * upper bound (above).
+	 *
+	 * Vulkan: `VkPhysicalDeviceLimits::maxImageDimension2D`. D3D12: 16384
+	 * (`D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION`). Metal: 32768 on a GPU in
+	 * `MTLGPUFamilyApple10`, 16384 on every other it lists ("Maximum 2D
+	 * texture width and height").
+	 */
+	uint32_t max_image_size_2d;
+	/**
+	 * The largest width, height or depth of a CRGPU_IMAGE_TYPE_3D image the
+	 * adapter creates, in texels: an upper bound (above).
+	 *
+	 * Vulkan: `VkPhysicalDeviceLimits::maxImageDimension3D`. D3D12: 2048
+	 * (`D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION`). Metal: 2048 ("Maximum 3D
+	 * texture width, height, and depth").
+	 */
+	uint32_t max_image_size_3d;
+	/**
+	 * The largest width (equal to its height) of a cube-capable image
+	 * (crgpu_image_desc::cube_capable), in texels: an upper bound (above).
+	 *
+	 * Vulkan: `VkPhysicalDeviceLimits::maxImageDimensionCube`. D3D12: 16384
+	 * (`D3D12_REQ_TEXTURECUBE_DIMENSION`). Metal: 32768 on a GPU in
+	 * `MTLGPUFamilyApple10`, 16384 on every other it lists ("Maximum cube
+	 * map texture width and height").
+	 */
+	uint32_t max_image_size_cube;
+	/**
+	 * The most array layers (crgpu_image_desc::array_layers) an image of
+	 * CRGPU_IMAGE_TYPE_1D or CRGPU_IMAGE_TYPE_2D has: an upper bound
+	 * (above). A cube-capable image's faces count, six layers a cube, and
+	 * its layers are a multiple of six, so at 2048 it holds 341 cubes (2046
+	 * layers).
+	 *
+	 * Vulkan: `VkPhysicalDeviceLimits::maxImageArrayLayers`. D3D12: 2048
+	 * (`D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION`, the 1D array's the
+	 * same). Metal: 2048 ("Maximum number of layers per 1D texture array,
+	 * 2D texture array, or 3D texture array").
+	 */
+	uint32_t max_image_array_layers;
 } CRGPU_ADAPTER_PROPERTIES;
 
 /**
@@ -2376,6 +2443,17 @@ typedef struct crgpu_image_desc {
  *         `desc->type` is not CRGPU_IMAGE_TYPE_2D.
  * @retval CR_RESULT_GPU_INVALID_FORMAT `desc->format` is
  *         CRGPU_FORMAT_UNKNOWN.
+ * @retval CR_RESULT_GPU_IMAGE_TOO_LARGE A dimension or the layer count is
+ *         past the device's adapter's limit for the image's type
+ *         (CRGPU_ADAPTER_PROPERTIES): for CRGPU_IMAGE_TYPE_1D, `width`
+ *         past max_image_width_1d; for CRGPU_IMAGE_TYPE_2D, `width` or
+ *         `height` past max_image_size_2d, or, with `cube_capable`, past
+ *         max_image_size_cube; for CRGPU_IMAGE_TYPE_3D, `width`, `height`
+ *         or `depth` past max_image_size_3d; for any type, `array_layers`
+ *         past max_image_array_layers. Checked after every result above,
+ *         in that order, before the backend makes anything; nothing is
+ *         made. A size within the limit may still fail for memory, or on
+ *         Vulkan for a format that allows less. Since 0.4.0.
  * @return Another CR_RESULT if the backend fails, such as
  *         CR_RESULT_OUT_OF_MEMORY or CR_RESULT_API_SPECIFIC_FAILURE.
  *
@@ -2955,6 +3033,12 @@ CR_RESULT crgpu_buffer_create_placed(
  * @retval (each result of crgpu_heap_get_image_placement_requirements(), in
  *         its order, with `out_image` in place of `out_requirements`, and
  *         without the two about `out_requirements->base`.)
+ * @retval CR_RESULT_GPU_IMAGE_TOO_LARGE A dimension or the layer count is
+ *         past the heap's device's adapter's limit, as crgpu_image_create()
+ *         has it; checked before the size and alignment the offset is
+ *         held to are asked of the graphics API, which on Metal ends the
+ *         process for an image past the limit. Nothing is made. Since
+ *         0.4.0.
  * @retval CR_RESULT_GPU_PLACEMENT_MISALIGNED `offset` is not a multiple of
  *         the reported alignment.
  * @retval CR_RESULT_GPU_PLACEMENT_OUT_OF_RANGE `offset` plus the reported

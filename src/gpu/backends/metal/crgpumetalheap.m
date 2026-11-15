@@ -344,6 +344,9 @@ CR_RESULT crgpu_image_create_placed(
 	CR_RESULT sr                  = crgpumetal___internal_check_image_placement(heap_metal, desc);
 	if (sr != CR_SUCCESS)
 		return sr;
+	sr = crgpu___internal_check_image_size(&heap_metal->_parent_device->_adapter->_facts.properties, desc);
+	if (sr != CR_SUCCESS)
+		return sr;
 
 	MTLTextureDescriptor *texture_desc = crgpumetal___internal_new_placed_texture_descriptor(desc);
 	crgpu_placement_requirements placement;

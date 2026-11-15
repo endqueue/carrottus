@@ -622,6 +622,12 @@ if(NOT TARGET carrottus)
         # skipped.
         add_executable(crgpu_device_test tests/crgpu_device_test.c)
         target_link_libraries(crgpu_device_test PRIVATE carrottus)
+        if(GRAPHICS_BACKEND STREQUAL "Metal")
+            # The image limits Metal gives by family, checked against the
+            # family the GPU answers to.
+            target_sources(crgpu_device_test PRIVATE tests/crgpu_test_metal_family.m)
+            target_link_libraries(crgpu_device_test PRIVATE "-framework Metal" "-framework Foundation")
+        endif()
         add_test(NAME crgpu_device_test COMMAND crgpu_device_test)
         set_tests_properties(crgpu_device_test PROPERTIES SKIP_RETURN_CODE 77)
 

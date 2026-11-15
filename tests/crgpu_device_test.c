@@ -17,6 +17,9 @@
 #include <crgpu.h>
 
 #include "crtest_allocator.h"
+#if CRGPU_COMPILE_METAL_API
+#include "crgpu_test_metal_family.h"
+#endif
 
 #include <stdio.h>
 #include <string.h>
@@ -154,6 +157,47 @@ static void test_adapter_properties(crgpu_adapter adapter) {
 	bool supported = true;
 	CHECK(crgpu_adapter_supports_surface(NULL, NULL, &supported) == CR_RESULT_GPU_INVALID_ADAPTER);
 	CHECK(crgpu_adapter_supports_surface(adapter, NULL, &supported) == CR_RESULT_GPU_INVALID_SURFACE);
+}
+
+/* The largest image sizes (card S33) on one adapter: each non-zero, each at
+ * least the floor its graphics API guarantees, and printed. No API promises
+ * 2D >= 1D, so it isn't checked. */
+static void test_image_limits(uint32_t index, crgpu_adapter adapter) {
+	CRGPU_ADAPTER_PROPERTIES properties;
+	memset(&properties, 0, sizeof(properties));
+	properties.base.type = CR_STRUCT_TYPE_GPU_ADAPTER_PROPERTIES;
+	CHECK(crgpu_adapter_get_properties(adapter, &properties) == CR_SUCCESS);
+	printf("crgpu_device_test: adapter %u (%s): image limits 1D %u, 2D %u, 3D %u, cube %u, layers %u\n", index,
+	       properties.description, properties.max_image_width_1d, properties.max_image_size_2d, properties.max_image_size_3d,
+	       properties.max_image_size_cube, properties.max_image_array_layers);
+	CHECK(properties.max_image_width_1d > 0);
+	CHECK(properties.max_image_size_2d > 0);
+	CHECK(properties.max_image_size_3d > 0);
+	CHECK(properties.max_image_size_cube > 0);
+	CHECK(properties.max_image_array_layers > 0);
+#if CRGPU_COMPILE_VULKAN_API
+	// Vulkan 1.3's required minimums (Vulkan 1.0's, which 1.3 keeps).
+	CHECK(properties.max_image_width_1d >= 4096);
+	CHECK(properties.max_image_size_2d >= 4096);
+	CHECK(properties.max_image_size_3d >= 256);
+	CHECK(properties.max_image_size_cube >= 4096);
+	CHECK(properties.max_image_array_layers >= 256);
+#elif CRGPU_COMPILE_D3D12_API
+	// Fixed for feature level 11_0 and up.
+	CHECK(properties.max_image_width_1d == 16384);
+	CHECK(properties.max_image_size_2d == 16384);
+	CHECK(properties.max_image_size_3d == 2048);
+	CHECK(properties.max_image_size_cube == 16384);
+	CHECK(properties.max_image_array_layers == 2048);
+#elif CRGPU_COMPILE_METAL_API
+	// By family: 32768 exactly on an Apple10 GPU, else 16384.
+	const uint32_t size = crgpu_test_metal_is_apple10(properties.adapter_id) ? 32768u : 16384u;
+	CHECK(properties.max_image_width_1d == size);
+	CHECK(properties.max_image_size_2d == size);
+	CHECK(properties.max_image_size_cube == size);
+	CHECK(properties.max_image_size_3d == 2048);
+	CHECK(properties.max_image_array_layers == 2048);
+#endif
 }
 
 static void test_device_desc_checks(crgpu_adapter adapter) {
@@ -352,6 +396,8 @@ int main(void) {
 	}
 	const crgpu_adapter adapter = adapters[0];
 
+	for (uint32_t i = 0; i < adapter_count; ++i)
+		test_image_limits(i, adapters[i]);
 	test_adapter_properties(adapter);
 	test_device_desc_checks(adapter);
 

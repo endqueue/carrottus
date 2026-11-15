@@ -292,6 +292,9 @@ CR_RESULT crgpu_image_create(
 	const CR_RESULT descResult = crgpu_d3d12_check_image_desc(desc);
 	if (descResult != CR_SUCCESS)
 		return descResult;
+	const CR_RESULT sizeResult = crgpu___internal_check_image_size(&device->_adapter->_facts.properties, desc);
+	if (sizeResult != CR_SUCCESS)
+		return sizeResult;
 
 	crgpu_image_d3d12 *pResult =
 	    CR_NEW(&device->head.allocator, crgpu_image_d3d12);

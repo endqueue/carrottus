@@ -34,9 +34,13 @@
 // apart under its module, with the nearest frame of ours that led to it,
 // and not counted.
 //
-// Only the thread that called alloc_trace_start() is counted. Each library
-// that uses it keeps an identical copy in its own tests/, held equal by the
-// workspace's check.sh (alloc-trace-copies).
+// Only the thread that called alloc_trace_start() is counted, and a second
+// thread if one called alloc_trace_add_thread() before counting started
+// (a render thread beside a tick, say), its count kept and read apart:
+// alloc_trace_second_ours(), alloc_trace_second_apart() and
+// alloc_trace_report_second(). Each library that uses it keeps an
+// identical copy in its own tests/, held equal by the workspace's check.sh
+// (alloc-trace-copies).
 
 #ifndef ALLOCTRACE_H
 #define ALLOCTRACE_H
@@ -72,24 +76,27 @@ typedef struct alloc_trace_internal_stack
     unsigned long count;
 } alloc_trace_internal_stack;
 
-static alloc_trace_internal_stack alloc_trace_internal_stacks[ALLOC_TRACE_STACKS];
-static unsigned long alloc_trace_internal_unrecorded; // allocations the table had no room for
+// [0]: the thread that started counting; [1]: the second, if added.
+static alloc_trace_internal_stack alloc_trace_internal_stacks[2][ALLOC_TRACE_STACKS];
+static unsigned long alloc_trace_internal_unrecorded[2]; // allocations each table had no room for
+static volatile bool alloc_trace_internal_second_added = false;
 static volatile bool alloc_trace_internal_counting = false;
 static const char *alloc_trace_internal_skips[ALLOC_TRACE_SKIPS];
 static unsigned alloc_trace_internal_skip_count;
 
-static unsigned long alloc_trace_internal_ours;  // after alloc_trace_stop()
-static unsigned long alloc_trace_internal_apart; // after alloc_trace_stop()
+static unsigned long alloc_trace_internal_ours[2];  // after alloc_trace_stop()
+static unsigned long alloc_trace_internal_apart[2]; // after alloc_trace_stop()
 
-// Keeps one stack: the same stack again adds to its count.
-static void alloc_trace_internal_record(void **pcs, unsigned depth)
+// Keeps one stack of a thread's table: the same stack again adds to its
+// count.
+static void alloc_trace_internal_record(unsigned table, void **pcs, unsigned depth)
 {
     uint64_t hash = 1469598103934665603ull;
     for (unsigned i = 0; i < depth; i++)
         hash = (hash ^ (uint64_t)(uintptr_t)pcs[i]) * 1099511628211ull;
     for (unsigned probe = 0; probe < ALLOC_TRACE_STACKS; probe++)
     {
-        alloc_trace_internal_stack *s = &alloc_trace_internal_stacks[(hash + probe) % ALLOC_TRACE_STACKS];
+        alloc_trace_internal_stack *s = &alloc_trace_internal_stacks[table][(hash + probe) % ALLOC_TRACE_STACKS];
         if (s->count == 0)
         {
             memcpy(s->pcs, pcs, depth * sizeof(void *));
@@ -103,7 +110,7 @@ static void alloc_trace_internal_record(void **pcs, unsigned depth)
             return;
         }
     }
-    alloc_trace_internal_unrecorded++;
+    alloc_trace_internal_unrecorded[table]++;
 }
 
 // ---- Platforms ---------------------------------------------------------------
@@ -113,6 +120,9 @@ static void alloc_trace_internal_record(void **pcs, unsigned depth)
 static bool alloc_trace_internal_platform_available(void)
 {
     return false;
+}
+static void alloc_trace_internal_add_thread(void)
+{
 }
 static void alloc_trace_internal_platform_start(void)
 {
@@ -143,15 +153,34 @@ typedef PVOID(NTAPI *alloc_trace_internal_reallocate_fn)(PVOID heap, ULONG flags
 static alloc_trace_internal_allocate_fn alloc_trace_internal_real_allocate;
 static alloc_trace_internal_reallocate_fn alloc_trace_internal_real_reallocate;
 static DWORD alloc_trace_internal_thread;
+static DWORD alloc_trace_internal_second;
+
+// Which table the calling thread's allocations go in, or -1 for none.
+static int alloc_trace_internal_table(void)
+{
+    const DWORD me = GetCurrentThreadId();
+    if (me == alloc_trace_internal_thread)
+        return 0;
+    if (alloc_trace_internal_second_added && me == alloc_trace_internal_second)
+        return 1;
+    return -1;
+}
+static void alloc_trace_internal_add_thread(void)
+{
+    alloc_trace_internal_second = GetCurrentThreadId();
+}
 
 static void alloc_trace_internal_note(void)
 {
-    if (!alloc_trace_internal_counting || GetCurrentThreadId() != alloc_trace_internal_thread)
+    if (!alloc_trace_internal_counting)
+        return;
+    const int table = alloc_trace_internal_table();
+    if (table < 0)
         return;
     void *pcs[ALLOC_TRACE_DEPTH];
     // 2: this function and the counter that called it.
     const USHORT depth = RtlCaptureStackBackTrace(2, ALLOC_TRACE_DEPTH, pcs, NULL);
-    alloc_trace_internal_record(pcs, depth);
+    alloc_trace_internal_record((unsigned)table, pcs, depth);
 }
 static PVOID NTAPI alloc_trace_internal_allocate(PVOID heap, ULONG flags, SIZE_T size)
 {
@@ -308,16 +337,35 @@ typedef void(alloc_trace_internal_logger_t)(uint32_t type, uintptr_t arg1, uintp
                                   uint32_t frames_to_skip);
 extern alloc_trace_internal_logger_t *malloc_logger;
 static pthread_t alloc_trace_internal_thread;
+static pthread_t alloc_trace_internal_second;
+
+// Which table the calling thread's allocations go in, or -1 for none.
+static int alloc_trace_internal_table(void)
+{
+    const pthread_t me = pthread_self();
+    if (pthread_equal(me, alloc_trace_internal_thread))
+        return 0;
+    if (alloc_trace_internal_second_added && pthread_equal(me, alloc_trace_internal_second))
+        return 1;
+    return -1;
+}
+static void alloc_trace_internal_add_thread(void)
+{
+    alloc_trace_internal_second = pthread_self();
+}
 
 static void alloc_trace_internal_logged(uint32_t type, uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t result, uint32_t skip)
 {
     (void)a, (void)b, (void)c, (void)result, (void)skip;
-    if (!alloc_trace_internal_counting || !(type & 2u) || !pthread_equal(pthread_self(), alloc_trace_internal_thread)) // 2: an allocation
+    if (!alloc_trace_internal_counting || !(type & 2u)) // 2: an allocation
+        return;
+    const int table = alloc_trace_internal_table();
+    if (table < 0)
         return;
     void *pcs[ALLOC_TRACE_DEPTH + 1];
     const int depth = backtrace(pcs, ALLOC_TRACE_DEPTH + 1);
     if (depth > 1)
-        alloc_trace_internal_record(pcs + 1, (unsigned)depth - 1); // 1: this function
+        alloc_trace_internal_record((unsigned)table, pcs + 1, (unsigned)depth - 1); // 1: this function
 }
 static bool alloc_trace_internal_platform_available(void)
 {
@@ -346,18 +394,35 @@ extern void *__libc_calloc(size_t, size_t);
 extern void *__libc_realloc(void *, size_t);
 extern void *__libc_memalign(size_t, size_t);
 static pthread_t alloc_trace_internal_thread;
+static pthread_t alloc_trace_internal_second;
 static __thread bool alloc_trace_internal_inside = false;
+
+// Which table the calling thread's allocations go in, or -1 for none.
+static int alloc_trace_internal_table(void)
+{
+    const pthread_t me = pthread_self();
+    if (pthread_equal(me, alloc_trace_internal_thread))
+        return 0;
+    if (alloc_trace_internal_second_added && pthread_equal(me, alloc_trace_internal_second))
+        return 1;
+    return -1;
+}
+static void alloc_trace_internal_add_thread(void)
+{
+    alloc_trace_internal_second = pthread_self();
+}
 
 #define ALLOC_TRACE_NOTE()                                                                                             \
     do                                                                                                                \
     {                                                                                                                 \
-        if (alloc_trace_internal_counting && !alloc_trace_internal_inside && pthread_equal(pthread_self(), alloc_trace_internal_thread))            \
+        const int table_ = alloc_trace_internal_counting && !alloc_trace_internal_inside ? alloc_trace_internal_table() : -1; \
+        if (table_ >= 0)                                                                                              \
         {                                                                                                             \
             alloc_trace_internal_inside = true;                                                                                 \
             void *pcs_[ALLOC_TRACE_DEPTH + 1];                                                                         \
             const int depth_ = backtrace(pcs_, ALLOC_TRACE_DEPTH + 1);                                                 \
             if (depth_ > 1)                                                                                           \
-                alloc_trace_internal_record(pcs_ + 1, (unsigned)depth_ - 1);                                                    \
+                alloc_trace_internal_record((unsigned)table_, pcs_ + 1, (unsigned)depth_ - 1);                                  \
             alloc_trace_internal_inside = false;                                                                                \
         }                                                                                                             \
     } while (0)
@@ -414,6 +479,9 @@ static void alloc_trace_internal_platform_stop(void)
 static bool alloc_trace_internal_platform_available(void)
 {
     return false;
+}
+static void alloc_trace_internal_add_thread(void)
+{
 }
 static void alloc_trace_internal_platform_start(void)
 {
@@ -530,12 +598,21 @@ static bool alloc_trace_available(void)
     return alloc_trace_internal_platform_available();
 }
 
+// Counts the calling thread too, into a table of its own, from the next
+// alloc_trace_start() on: call it on that thread before counting starts,
+// and keep the thread alive until it stops. One second thread at a time.
+static void alloc_trace_add_thread(void)
+{
+    alloc_trace_internal_add_thread();
+    alloc_trace_internal_second_added = true;
+}
+
 static void alloc_trace_start(void)
 {
     memset(alloc_trace_internal_stacks, 0, sizeof(alloc_trace_internal_stacks));
-    alloc_trace_internal_unrecorded = 0;
-    alloc_trace_internal_ours = 0;
-    alloc_trace_internal_apart = 0;
+    memset(alloc_trace_internal_unrecorded, 0, sizeof(alloc_trace_internal_unrecorded));
+    memset(alloc_trace_internal_ours, 0, sizeof(alloc_trace_internal_ours));
+    memset(alloc_trace_internal_apart, 0, sizeof(alloc_trace_internal_apart));
     alloc_trace_internal_platform_start();
     alloc_trace_internal_counting = true;
 }
@@ -549,14 +626,19 @@ static void alloc_trace_end(void)
     alloc_trace_internal_platform_stop();
 }
 
-// Attributes what was counted. Looks symbols up, which may allocate.
+// Attributes what was counted, each thread's table apart. Looks symbols
+// up, which may allocate. The second thread is let go of: a later count
+// adds it again if asked.
 static void alloc_trace_attribute(void)
 {
-    alloc_trace_internal_ours = 0;
-    alloc_trace_internal_apart = 0;
+    alloc_trace_internal_second_added = false;
+    for (unsigned table = 0; table < 2; table++)
+    {
+    alloc_trace_internal_ours[table] = 0;
+    alloc_trace_internal_apart[table] = 0;
     for (unsigned i = 0; i < ALLOC_TRACE_STACKS; i++)
     {
-        alloc_trace_internal_stack *s = &alloc_trace_internal_stacks[i];
+        alloc_trace_internal_stack *s = &alloc_trace_internal_stacks[table][i];
         if (s->count == 0)
             continue;
         bool ours = true;
@@ -574,13 +656,14 @@ static void alloc_trace_attribute(void)
             break;
         }
         if (ours)
-            alloc_trace_internal_ours += s->count;
+            alloc_trace_internal_ours[table] += s->count;
         else
-            alloc_trace_internal_apart += s->count;
+            alloc_trace_internal_apart[table] += s->count;
     }
     // Unrecorded allocations can't be attributed: they count as ours, so
     // they can't pass for none.
-    alloc_trace_internal_ours += alloc_trace_internal_unrecorded;
+    alloc_trace_internal_ours[table] += alloc_trace_internal_unrecorded[table];
+    }
 }
 
 // Stops counting and attributes what was counted: alloc_trace_end() and
@@ -591,30 +674,41 @@ static void alloc_trace_stop(void)
     alloc_trace_attribute();
 }
 
-// Allocations whose asker is this executable, after alloc_trace_stop().
+// Allocations whose asker is this executable, after alloc_trace_stop(): the
+// thread that started counting.
 static unsigned long alloc_trace_ours(void)
 {
-    return alloc_trace_internal_ours;
+    return alloc_trace_internal_ours[0];
 }
 
 // Allocations whose asker is another module, after alloc_trace_stop().
 static unsigned long alloc_trace_apart(void)
 {
-    return alloc_trace_internal_apart;
+    return alloc_trace_internal_apart[0];
 }
 
-// Prints every stack counted, ours first, each as its asker and the [frames]
-// of ours above it; a stack apart as its module and the nearest frame of
-// ours that led to it.
-static void alloc_trace_report(const char *what, unsigned frames)
+// The same of the second thread (alloc_trace_add_thread).
+static unsigned long alloc_trace_second_ours(void)
 {
-    printf("  %s: %lu of ours, %lu apart\n", what, alloc_trace_internal_ours, alloc_trace_internal_apart);
-    if (alloc_trace_internal_unrecorded)
-        printf("    %lu more not recorded: the table is full\n", alloc_trace_internal_unrecorded);
+    return alloc_trace_internal_ours[1];
+}
+static unsigned long alloc_trace_second_apart(void)
+{
+    return alloc_trace_internal_apart[1];
+}
+
+// Prints every stack of a thread's table, ours first, each as its asker and
+// the [frames] of ours above it; a stack apart as its module and the
+// nearest frame of ours that led to it.
+static void alloc_trace_internal_report(unsigned table, const char *what, unsigned frames)
+{
+    printf("  %s: %lu of ours, %lu apart\n", what, alloc_trace_internal_ours[table], alloc_trace_internal_apart[table]);
+    if (alloc_trace_internal_unrecorded[table])
+        printf("    %lu more not recorded: the table is full\n", alloc_trace_internal_unrecorded[table]);
     for (int pass = 0; pass < 2; pass++)
         for (unsigned i = 0; i < ALLOC_TRACE_STACKS; i++)
         {
-            const alloc_trace_internal_stack *s = &alloc_trace_internal_stacks[i];
+            const alloc_trace_internal_stack *s = &alloc_trace_internal_stacks[table][i];
             if (s->count == 0)
                 continue;
             char line[2048];
@@ -657,6 +751,18 @@ static void alloc_trace_report(const char *what, unsigned frames)
                 continue;
             printf("    %6lu  %s%s\n", s->count, ours ? "" : "apart: ", line);
         }
+}
+
+// The thread that started counting's stacks, as above.
+static void alloc_trace_report(const char *what, unsigned frames)
+{
+    alloc_trace_internal_report(0, what, frames);
+}
+
+// The second thread's (alloc_trace_add_thread).
+static void alloc_trace_report_second(const char *what, unsigned frames)
+{
+    alloc_trace_internal_report(1, what, frames);
 }
 
 #endif

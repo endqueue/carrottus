@@ -427,6 +427,14 @@ static bool crgpuvulkan___read_adapter_facts(
     // Descriptor pools have no device-wide count to keep under.
     properties->max_descriptors = UINT32_MAX;
     properties->max_samplers    = UINT32_MAX;
+    // The largest image of each kind, an upper bound for every format
+    // (VkPhysicalDeviceLimits; a format may allow less, which
+    // vkGetPhysicalDeviceImageFormatProperties would say).
+    properties->max_image_width_1d     = props->limits.maxImageDimension1D;
+    properties->max_image_size_2d      = props->limits.maxImageDimension2D;
+    properties->max_image_size_3d      = props->limits.maxImageDimension3D;
+    properties->max_image_size_cube    = props->limits.maxImageDimensionCube;
+    properties->max_image_array_layers = props->limits.maxImageArrayLayers;
 
     VkPhysicalDeviceFeatures available = {0};
     vkGetPhysicalDeviceFeatures(physicalDevice, &available);

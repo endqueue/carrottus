@@ -92,6 +92,17 @@ typedef struct crgpu___adapter_facts {
 	uint32_t ray_query_placement_alignment;
 } crgpu___adapter_facts;
 
+/* The size check of crgpu_image_create() and crgpu_image_create_placed()
+ * (CR_RESULT_GPU_IMAGE_TOO_LARGE), the same on every backend: one `if` per
+ * field of [limits], in the order CRGPU_ADAPTER_PROPERTIES lists them (1D,
+ * 2D, 3D, cube, layers), each reached only for the image's own type. Called
+ * after the desc's other checks and before anything is asked of the
+ * graphics API, which on Metal ends the process for an image past these
+ * limits. [desc] has passed the backend's desc checks. */
+CR_RESULT crgpu___internal_check_image_size(
+    const CRGPU_ADAPTER_PROPERTIES *limits,
+    const crgpu_image_desc *desc);
+
 /* crgpu_adapter_get_properties() after its adapter check, the same on
  * every backend: CR_RESULT_NULL_OUTPUT_PARAMETER, the base's type, then the
  * chain (CR_RESULT_STRUCT_UNKNOWN_IN_CHAIN, _DUPLICATE_IN_CHAIN), all before

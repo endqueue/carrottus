@@ -69,6 +69,23 @@ static void crgpumetal___internal_read_adapter_facts(crgpu_adapter_metal *adapte
 	properties->max_descriptors = UINT32_MAX;
 	properties->max_samplers    = UINT32_MAX;
 
+	// Metal has no query for the largest image: Apple's "Metal Feature Set
+	// Tables" give it by family (the edition dated October 23, 2026, page 8,
+	// "Resources"). 1D, 2D and cube: 32768 from Apple10 (Apple11 the same),
+	// 16384 for every other family this backend lists (Apple7-Apple9, and a
+	// Mac2 GPU that reaches Metal 3, which the edition has no column for).
+	// 3D and array layers: 2048 in every family. A family the table adds
+	// later takes the highest known family's values until the table is read
+	// again. Measured on an Apple M5 Pro (Apple10, 2026-11-14): one texel or
+	// layer past each ends the process in newTextureWithDescriptor, which is
+	// why the image creates check against these.
+	const uint32_t image_size           = [mtl supportsFamily:MTLGPUFamilyApple10] ? 32768u : 16384u;
+	properties->max_image_width_1d      = image_size;
+	properties->max_image_size_2d       = image_size;
+	properties->max_image_size_3d       = 2048;
+	properties->max_image_size_cube     = image_size;
+	properties->max_image_array_layers  = 2048;
+
 	// Any MTLCommandQueue encodes any work: one pool per kind, as many as
 	// asked.
 	properties->queue_pool_count           = 3;

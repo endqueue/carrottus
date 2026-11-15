@@ -1060,6 +1060,40 @@ the workspace's `prompts/`, has every finding):
   5. `./check.sh --update-abi` (the layout break listed), the misuse
      generator rerun, `./check.sh`; built on the Mac, then Windows and
      Fedora, each driver's numbers recorded here.
+- **Built on the Mac 2026-11-15** (card X25: Windows and Linux owed;
+  `../prompts/crgpu_image_size_mac.md`, its Progress has the run). Each
+  step of the plan: 1 built on the Mac; 2 built on the Mac; 3 Metal built
+  on the Mac, Vulkan written and type-checked on the Mac (`clang
+  -fsyntax-only` against Vulkan SDK 1.4.363.0's headers, not linked or
+  run), D3D12 written, not compiled; 4 built on the Mac, the Vulkan and
+  D3D12 call sites written as above; 5 built on the Mac.
+  - **The numbers, per adapter and driver:**
+    - Apple M5 Pro (Apple10, macOS 27), Metal: 1D 32768, 2D 32768, 3D
+      2048, cube 32768, layers 2048.
+    - Owed: the Iris Xe, the RTX A2000 and WARP over D3D12 (the five
+      constants), the Iris Xe and the A2000 over Vulkan on Windows, ANV,
+      NVK and llvmpipe on the ThinkPad's Fedora, RADV on the desktop.
+  - **Seen failing first:** the fields didn't compile; a 2D image 32769
+    wide made through `crgpu_image_create` ended the process inside
+    `newTextureWithDescriptor` (exit 134, "MTLTextureDescriptor has width
+    (32769) greater than the maximum allowed size of 32768"). Now every
+    case of `crgpu_objects_test` (a 1D width, a 2D width and height, a 3D
+    width, height and depth, a cube's width, a 2D array's and a cube
+    array's layers, each on both creates) is refused with
+    `CR_RESULT_GPU_IMAGE_TOO_LARGE` under Metal API and shader validation,
+    warnings fatal, and a small image of each type is still made.
+  - **Where the placed create checks:** before the size and alignment
+    query the offset's checks need, so between the requirement query's
+    results and `CR_RESULT_GPU_PLACEMENT_MISALIGNED`, on every backend:
+    Metal's query (`heapTextureSizeAndAlignWithDescriptor`) ends the
+    process for the same image too (measured, exit 134).
+  - **For you:** `crgpu_heap_get_image_placement_requirements` also ends
+    the process on Metal for an image past the limits (the same query,
+    measured on the M5 Pro). The approved contract gives the refusal to
+    the two creates only, so it wasn't added there: a caller that asks the
+    requirements of an image past the limits still aborts on Metal. The
+    fix would be the same check in that call, `CR_RESULT_GPU_IMAGE_TOO_LARGE`
+    added to its result list (a draft change, a card).
 
 ## A swap chain's image count (card S13, decided 2026-11-12 with you: b)
 

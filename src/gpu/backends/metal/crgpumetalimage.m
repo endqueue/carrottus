@@ -135,8 +135,11 @@ CR_RESULT crgpu_image_create(
 	const CR_RESULT desc_result = crgpumetal___check_image_desc(desc);
 	if (desc_result != CR_SUCCESS)
 		return desc_result;
-
 	crgpu_device_metal *device_metal = (crgpu_device_metal *)device;
+	const CR_RESULT size_result       = crgpu___internal_check_image_size(&device_metal->_adapter->_facts.properties, desc);
+	if (size_result != CR_SUCCESS)
+		return size_result;
+
 	CR_RESULT sr                      = CR_SUCCESS;
 
 	crgpu_image_metal *image_metal = CR_NEW_ZEROED(&device_metal->head.allocator, crgpu_image_metal);
