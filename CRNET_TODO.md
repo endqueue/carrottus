@@ -1054,7 +1054,9 @@ all three. Fedora's run changed the wait set (two hooks added, an
 outcome entry polled for what is asked) and `cr_noalloc_tests`' WebSocket
 round, both compiled everywhere: **the Mac and Windows rerun**
 `cr_noalloc_tests` and `crnet_test` (plain, Release, and their sanitizer
-presets) on those two changes before the locks move.
+presets) on those two changes. The locks above carrottus moved to
+`f56721f` on 2026-11-16 ahead of the reruns (the user's call); a rerun
+that fails is fixed here and the locks moved again.
 
 1. **Built 2026-11-14 on the Mac** (with step 2: the front end can't run
    alone). Front end and header: `crnet.h` from the approved draft;
