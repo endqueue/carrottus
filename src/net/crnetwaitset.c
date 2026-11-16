@@ -99,9 +99,11 @@ struct crnet_wait_member {
 	void                  *user;
 	uint32_t               wait_for;
 	// Asked afresh before every poll: the bits it was ready with already,
-	// and when a timer of its stack's makes it worth naming (0: none).
+	// when a timer of its stack's makes it worth naming, and when only
+	// worth asking again (0: none).
 	uint32_t ready;
 	uint64_t timer_at_ms;
+	uint64_t wake_at_ms;
 };
 
 /* Whose each poll entry is, and how what poll() says of it is read. */
@@ -110,6 +112,7 @@ struct crnet_wait_entry_info {
 	bool     incoming;
 	bool     room;
 	bool     outcome; // anything at all names the member for every bit
+	bool     wake;    // anything at all names nothing: the members are asked again
 };
 
 typedef EQ_ARRAY(struct crnet_wait_member) crnet_wait_member_array;
@@ -664,7 +667,7 @@ struct crnet_wait_poll {
 	bool                     failed; // the entries couldn't grow
 };
 
-void crnet_wait_poll_add(struct crnet_wait_poll *poll, intptr_t native, bool incoming, bool room, bool outcome) {
+static void crnet_wait_poll_push(struct crnet_wait_poll *poll, intptr_t native, bool incoming, bool room, bool outcome, bool wake) {
 	struct crnet_wait_set_t *set = poll->set;
 	if (poll->failed)
 		return;
@@ -679,17 +682,17 @@ void crnet_wait_poll_add(struct crnet_wait_poll *poll, intptr_t native, bool inc
 	crnet_poll_entry entry;
 	memset(&entry, 0, sizeof(entry));
 	entry.fd = (crnet_poll_socket)native;
-	if (outcome) {
-		// A connect's outcome shows as writable, or as an error or hang-up,
-		// which poll() reports whatever was asked.
+	if (incoming)
+		entry.events |= CRNET_POLL_INCOMING;
+	if (room)
+		entry.events |= CRNET_POLL_ROOM;
+	// An outcome or wake entry with nothing asked is a connect's, whose
+	// outcome shows as writable, or as an error or hang-up, which poll()
+	// reports whatever was asked. One with either asked is a stack's own
+	// descriptor, polled for what the stack wants.
+	if ((outcome || wake) && !incoming && !room)
 		entry.events = CRNET_POLL_ROOM;
-	} else {
-		if (incoming)
-			entry.events |= CRNET_POLL_INCOMING;
-		if (room)
-			entry.events |= CRNET_POLL_ROOM;
-	}
-	const struct crnet_wait_entry_info info = {poll->member, incoming, room, outcome};
+	const struct crnet_wait_entry_info info = {poll->member, incoming, room, outcome, wake};
 	// Room was made above for both.
 	EQ_RESULT pushed = eq_array_push(&set->entries, &entry);
 	assert(pushed == EQ_SUCCESS);
@@ -697,6 +700,23 @@ void crnet_wait_poll_add(struct crnet_wait_poll *poll, intptr_t native, bool inc
 	assert(pushed == EQ_SUCCESS);
 	(void)pushed;
 }
+
+void crnet_wait_poll_add(struct crnet_wait_poll *poll, intptr_t native, bool incoming, bool room, bool outcome) {
+	crnet_wait_poll_push(poll, native, incoming, room, outcome, false);
+}
+
+void crnet_wait_poll_wake(struct crnet_wait_poll *poll, intptr_t native, bool incoming, bool room) {
+	crnet_wait_poll_push(poll, native, incoming, room, false, true);
+}
+
+void crnet_wait_poll_wake_after(struct crnet_wait_poll *poll, uint32_t timeout_ms) {
+	struct crnet_wait_member *member = &poll->set->members.data[poll->member];
+	uint64_t                  at     = poll->now_ms + timeout_ms;
+	if (member->wake_at_ms == 0 || at < member->wake_at_ms)
+		member->wake_at_ms = at;
+}
+
+void crnet_wait_poll_out_of_memory(struct crnet_wait_poll *poll) { poll->failed = true; }
 
 void crnet_wait_poll_timer(struct crnet_wait_poll *poll, uint32_t timeout_ms) {
 	struct crnet_wait_member *member = &poll->set->members.data[poll->member];
@@ -709,6 +729,7 @@ void crnet_wait_poll_timer(struct crnet_wait_poll *poll, uint32_t timeout_ms) {
  * already. */
 static uint32_t crnet_wait_member_prepare(struct crnet_wait_member *member, struct crnet_wait_poll *poll) {
 	member->timer_at_ms = 0;
+	member->wake_at_ms  = 0;
 	switch (member->kind) {
 #if CRNET_EXT_TCP
 	case CRNET_WAIT_KIND_TCP_SOCKET: {
@@ -796,6 +817,10 @@ CR_RESULT crnet_wait_set_wait(
 				ready_already = true;
 			if (member->timer_at_ms != 0 && (timer_at_ms == 0 || member->timer_at_ms < timer_at_ms))
 				timer_at_ms = member->timer_at_ms;
+			// A time to be asked again ends the poll as a timer does; what
+			// the asking finds is the member's to say.
+			if (member->wake_at_ms != 0 && (timer_at_ms == 0 || member->wake_at_ms < timer_at_ms))
+				timer_at_ms = member->wake_at_ms;
 		}
 		if (poll.failed)
 			return CR_RESULT_OUT_OF_MEMORY;
@@ -829,6 +854,10 @@ CR_RESULT crnet_wait_set_wait(
 				continue;
 			const struct crnet_wait_entry_info *info   = &set->infos.data[e];
 			struct crnet_wait_member           *member = &set->members.data[info->member];
+			// Only a reason to ask the member again, which the next round
+			// of the wait does.
+			if (info->wake)
+				continue;
 			if (info->outcome || (happened & CRNET_POLL_ENDED)) {
 				// An outcome, or an ended connection, is reported as
 				// whatever was asked for; the call the caller then makes
@@ -868,7 +897,8 @@ CR_RESULT crnet_wait_set_wait(
 
 		// Otherwise the time ran out, or it was only the wake socket - an
 		// abort seen at the top, a notification whose member was read
-		// before this looked, a stray datagram.
+		// before this looked, a stray datagram - or a member's own reason
+		// to be asked again.
 		if (crnet_wait_remaining(start, timeout_ms) == 0)
 			return CR_RESULT_NET_TIMED_OUT;
 	}

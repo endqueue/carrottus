@@ -1430,14 +1430,22 @@ evening on the Mac (Known gaps below, `CRGPU_DEVICE_TODO.md`).
   simulator. WinHTTP's and Winsock's halves were built the same day on
   Windows 11 (`prompts/crnet_resumable_windows.md`): `windows-d3d12` and
   `-vulkan`, Debug, Release and `-asan`, every ctest and `crnet_test`
-  passing, the `internet` part too, no sanitizer report. Until
-  `prompts/crnet_resumable_fedora.md` runs, carrottus doesn't build on
-  Linux: libcurl's backend doesn't define the new backend functions yet.
-  What the stacks showed: a WebSocket message counts as gone once the
+  passing, the `internet` part too, no sanitizer report. libcurl's half
+  was built on 2026-11-15 on Fedora 44 (`prompts/crnet_resumable_fedora.md`,
+  libcurl 8.18.0): `linux-vulkan` Debug and Release, `-asan` and `-tsan`
+  with GCC 16.2.1 and with clang 22.1.8, every ctest and `crnet_test`
+  passing (457 of 457, `internet` 25 of 25), no sanitizer report; the
+  BSD sockets file compiled there unchanged. libcurl moves only inside a
+  call, so a wait set carries a libcurl opening on in its prepare and
+  wakes on its descriptors without naming it (`crnet_wait_poll_wake`),
+  naming it once the opening has an outcome. What the stacks showed: a
+  WebSocket message counts as gone once the
   stack's connection has it - on NSURLSession about 35 ms after a 64 MiB
   one was taken against a server that wasn't reading, on WinHTTP (its
-  `WRITE_COMPLETE`) 3.1 to 3.4 s, so on Windows a flush waiting on it is
-  truly aborted.
+  `WRITE_COMPLETE`) 3.1 to 3.4 s, on libcurl about 1.25 s - so on Windows
+  and Linux a flush waiting on it is truly aborted. libcurl's send masks
+  a message a byte at a time as the connection takes it: 64 MiB taken
+  with `CRNET_NO_WAIT` cost 253 ms of work in Release.
 - **The largest image sizes (0.4.0, card S33,
   `crgpu_max_image_size_draft.h`, approved 2026-11-14):**
   `CRGPU_ADAPTER_PROPERTIES` ends with five upper bounds (1D, 2D, 3D, cube,

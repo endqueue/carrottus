@@ -378,7 +378,11 @@ CR_RESULT crnet_http_backend_recv(
  *
  * A member whose connect is under way is named, whatever it was added
  * for, once the connect has an outcome: its prepare returns `wait_for`
- * then, or adds the descriptor that will show it with `outcome` set.
+ * then, or adds the descriptor that will show it with `outcome` set. One
+ * whose descriptors don't show the outcome (libcurl's opening, which only
+ * a call moves) carries the connect on in its prepare and hands them over
+ * to wake the wait instead (crnet_wait_poll_wake), so the set asks it
+ * again and names it once its prepare has seen the outcome.
  */
 
 /* Wakes a set's wait. From any thread; never waits. Takes NULL. */
@@ -389,13 +393,32 @@ void crnet_wait_set_notify(struct crnet_wait_set_t *set);
 struct crnet_wait_poll;
 
 /* Asks the wait to poll `native` (a descriptor, or a Winsock SOCKET) for
- * the member being prepared. With `outcome`, whatever the poll reports on
- * it names the member for every bit it was added with (a connect's
- * outcome, a stack's own descriptor); otherwise readable is INCOMING,
- * writable ROOM and an ending every bit, each as asked by `incoming` and
- * `room`. A set that can't grow for it fails its wait with
- * CR_RESULT_OUT_OF_MEMORY. */
+ * the member being prepared, for readable as `incoming` asks and writable
+ * as `room` does. With `outcome`, whatever the poll reports on it names
+ * the member for every bit it was added with (a connect's outcome, a
+ * stack's own descriptor), and with neither asked it is polled for
+ * writable (a connect's outcome shows so); otherwise readable is INCOMING,
+ * writable ROOM and an ending every bit. A set that can't grow for it
+ * fails its wait with CR_RESULT_OUT_OF_MEMORY. */
 void crnet_wait_poll_add(struct crnet_wait_poll *poll, intptr_t native, bool incoming, bool room, bool outcome);
+
+/* Asks the wait to poll `native` as crnet_wait_poll_add does, but to name
+ * nothing for it: whatever the poll reports on it ends the poll, and the
+ * set asks every member again. For a member that has to be called to learn
+ * what a descriptor's news means (libcurl's opening, which its prepare
+ * drives on: a wait is then a call on the whole socket, crnet.h), so that
+ * it is named only once it knows. */
+void crnet_wait_poll_wake(struct crnet_wait_poll *poll, intptr_t native, bool incoming, bool room);
+
+/* Asks the wait to last no longer than `timeout_ms` from now and then to
+ * ask every member again, naming nothing for it: crnet_wait_poll_wake's
+ * timer. */
+void crnet_wait_poll_wake_after(struct crnet_wait_poll *poll, uint32_t timeout_ms);
+
+/* Fails the wait with CR_RESULT_OUT_OF_MEMORY, as a set that can't grow
+ * does: for a member whose own array of descriptors to hand over couldn't
+ * grow. */
+void crnet_wait_poll_out_of_memory(struct crnet_wait_poll *poll);
 
 /* Asks the wait to last no longer than `timeout_ms` from now, and to name
  * the member for every bit it was added with if it gets that far. */

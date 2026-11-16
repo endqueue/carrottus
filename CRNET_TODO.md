@@ -810,7 +810,7 @@ Carrottus's rule is that it never decides on the caller's behalf. These do:
   across parts included, is the caller's, said in the header.
 Not started.
 
-## Resumable starts (decided 2026-11-13 with you, a; draft approved 2026-11-13; built on the Mac and on Windows 2026-11-14, Fedora next)
+## Resumable starts (decided 2026-11-13 with you, a; draft approved 2026-11-13; built on the Mac and on Windows 2026-11-14, on Fedora 2026-11-15)
 
 Raised 2026-11-13 by a caller that may make no thread and advances all
 its network work from its own non-blocking update call (the workspace's
@@ -1047,12 +1047,14 @@ plain, `-asan` and `-tsan` where the platform has them, `cr_misuse_tests`
 ten runs in Debug with no failure, and `cr_noalloc_tests`' idle round
 counts none of Carrottus's own; step 1 is done when the Mac's step 2 is
 (the front end can't be run alone):
-**Where it stands (2026-11-14):** steps 1, 2 and 5 built and run on the
-Mac, and step 3 on Windows (below, each marked); step 4 is
-`prompts/crnet_resumable_fedora.md`, on the ThinkPad's Fedora. Until it
-runs, carrottus doesn't build on Linux: the front end calls backend
-functions libcurl's backend doesn't define yet (`crnetshared.h`, "Wait
-set" and the HTTP backend contract, has the list).
+**Where it stands (2026-11-15):** steps 1, 2 and 5 built and run on the
+Mac, step 3 on Windows and step 4 on Fedora (below, each marked): every
+step built and run on its platform, so the client's step 0 is done on
+all three. Fedora's run changed the wait set (two hooks added, an
+outcome entry polled for what is asked) and `cr_noalloc_tests`' WebSocket
+round, both compiled everywhere: **the Mac and Windows rerun**
+`cr_noalloc_tests` and `crnet_test` (plain, Release, and their sanitizer
+presets) on those two changes before the locks move.
 
 1. **Built 2026-11-14 on the Mac** (with step 2: the front end can't run
    alone). Front end and header: `crnet.h` from the approved draft;
@@ -1109,12 +1111,41 @@ set" and the HTTP backend contract, has the list).
    change to `crnet.h`, the front end or the tests: the Mac's reading of
    the contract held here. The choices are in `../claude_made_decisions.md`
    (2026-11-14, Windows); figures in "The Windows run, 2026-11-14" below.
-4. Fedora (libcurl, BSD sockets): `crnet_curl_run` split into begin and
-   drive; the opening left on the multi handle; the unsent rest of a frame
-   kept in the socket's buffer and pushed by send, flush and recv's own
-   close frames; the transfer's descriptors and `curl_multi_timeout` given
-   to the set; the `ASYNCHDNS` refusal (Q9). `linux-vulkan`, Debug,
-   Release, `-asan`, `-tsan`, GCC and clang.
+4. **Built and run 2026-11-15 on Fedora** (`prompts/crnet_resumable_fedora.md`).
+   Fedora (libcurl, BSD sockets): `crnet_curl_run` split into begin and
+   drive (`crnet_curl_drive`; the connect-only handle added once and kept
+   on the multi handle for the connection's life); the opening's end kept
+   on the socket (`opening_done`, `opening_code`) and returned once
+   (`outcome_taken`); an HTTP start that runs out of time leaves the
+   transfer on the multi handle (`start_pending`), carried on first by send
+   and receive_response (`crnet_curl_http_carry_start`); the unsent rest
+   of a frame kept in the socket's buffer (grown to exactly the message
+   before its first byte is offered, the caller's bytes offered first) and
+   pushed by send, flush and recv's own close frames
+   (`crnet_curl_carry_on`); the transfer's and the opening's descriptors
+   from `curl_multi_waitfds` and `curl_multi_timeout` given to the set
+   (`crnet_curl_wait_multi`, its array grown and kept), `curl_multi_fdset`
+   before 8.8 (written, not compiled: 8.18 here); the `ASYNCHDNS` refusal
+   (Q9). `linux-vulkan`, Debug, Release, `-asan`, `-tsan`, GCC and clang.
+   As built, two changes outside libcurl's file, both inside the
+   contract (`../claude_made_decisions.md`, 2026-11-15):
+   - **The wait set:** an `outcome` entry is polled for what `incoming`
+     and `room` ask (writable when neither: the TCP connect, the Mac and
+     Windows unchanged), and two hooks: `crnet_wait_poll_wake` /
+     `_wake_after`, descriptors and a time that only have the set ask
+     the members again, and `crnet_wait_poll_out_of_memory`. libcurl's
+     opening is carried on one pass in its prepare (a wait is a call on
+     the whole socket while it opens, C7.1) and hands its descriptors over
+     as wake entries, so the set names it only once the opening has an
+     outcome, as `crnet.h` promises; without that a wss opening was named
+     for each round of its TLS handshake.
+   - **`cr_noalloc_tests`' WebSocket round** drives the client's opening
+     with `connect_continue(CRNET_NO_WAIT)` between its server's 1 ms
+     waits: on libcurl the opening moves only inside a call, and the test
+     has one thread, so it deadlocked (the server waiting for an upgrade
+     request nobody drove).
+   No change to `crnet.h`; the shape the Mac and Windows read held.
+   Figures in "The Fedora run, 2026-11-15" below.
 5. **On the Mac, 2026-11-14:** built first, and seen not to compile
    against the library before it changed (the five calls missing, the
    WebSocket's add without `wait_for`). `crnet_test` extended on each (the draft's "Tests"): a new `resumable`
@@ -1233,6 +1264,69 @@ backends didn't define (unresolved externals) and C4029 on the old
 - `./check.sh`: every check passed, `abi` unchanged; its notes only (the
   locks can't name an uncommitted carrottus; `mutable-globals` entries for
   symbols not built on Windows).
+- What builds on carrottus: see `../ROADMAP.md`, section 12.
+
+**The Fedora run, 2026-11-15** (`prompts/crnet_resumable_fedora.md`;
+ThinkPad P1 Gen 5, Fedora 44, kernel 6.19.10-300.fc44, GCC 16.2.1, clang
+22.1.8, libcurl 8.18.0 (`libcurl-devel-8.18.0-14.fc44`: AsynchDNS,
+threadsafe, ws and wss), Python 3.14.10, OpenSSL 3.5.9). The draft's hash
+checked first (`e61e52f8...`, version 10). Before the change carrottus'
+`linux-vulkan` Debug build failed only in `crnetcurl.c` (the old
+`crnet_websocket_wait_attach`'s conflicting type); the BSD sockets file,
+the Mac's, compiled here for the first time, unchanged and with no
+warning.
+- Built with no warning in every configuration below.
+- `linux-vulkan` Debug and Release: 15 ctests each; `crnet_test` 457 of
+  457 (every part but `internet`); the `resumable` part 115 of 115,
+  three runs in a row in each. The Mac's 121 less six: the loopback TCP
+  connect finished inside the call (three checks on a socket still
+  connecting, as on Windows), the sized POST's body never backed up
+  against the slow reader (the ROOM check behind it), and two more not
+  told apart (the Mac's log isn't here to compare). Longest call in any no-thread loop: 5 ms in Release, 1 ms
+  in Debug, against a bound of 250 ms.
+- `internet` (Debug): 25 of 25, the TCP connect to 192.0.2.1 left going
+  with `CRNET_NO_WAIT` and aborted.
+- `-asan` and `-tsan` with GCC, and with clang 22 (`-asan-clang`,
+  `-tsan-clang`, `ASAN_SYMBOLIZER_PATH=/usr/bin/addr2line` and
+  `external_symbolizer_path` in `TSAN_OPTIONS`), the test presets'
+  options: 15 ctests each, `crnet_test` 457 of 457, `resumable` three
+  runs each, 115 of 115; no sanitizer report. Longest no-thread call
+  7 ms under ASan, 13 ms under TSan.
+- `cr_misuse_tests` ten runs in Debug: 285 calls with zeroes, 244 with a
+  destroyed handle, no failure. `cr_noalloc_tests`, Debug and Release:
+  none of Carrottus's own, and none apart, in the idle round or the
+  WebSocket round.
+- What libcurl does unlike the other stacks: `curl_ws_send` takes as
+  much of a message as the connection will at once, masking it a byte at
+  a time (libcurl's own `ws_enc_write_payload`, "not the most performant
+  way"), so the 64 MiB message's send with `CRNET_NO_WAIT` took 253 ms in
+  Release (436 to 475 ms under ASan, 1.1 to 1.4 s under TSan), 2.6 MB
+  of it consumed and the rest copied in 19 ms: work, never a wait. A
+  message is gone once libcurl has handed its last bytes to the socket;
+  against a server that stopped reading for 1.5 s the 64 MiB message
+  stayed in flight about 1.25 s more in Release, so the aborted flush is
+  a real abort here (`ABORTED` at 301 ms). A ping during a part-sent
+  frame (`pause-and-ping:`) didn't break the frame: libcurl holds its
+  pong until the frame has gone (C4.9; libcurl 8.18's `lib/ws.c` read
+  the same way). After `CURLE_AGAIN` nothing was consumed, and a part
+  consumed is `CURLE_OK` with its count (C4.1, as `ws_enc_send` has it).
+- Q9: not reachable on Fedora's libcurl (it has AsynchDNS); checked by
+  reading. No libcurl built with `--disable-threaded-resolver` was at
+  hand, so the refusal hasn't run.
+- `crnet_fuzz_http_head`: libcurl's header handling didn't change, so not
+  run on `linux-fuzz`; its replays pass in the ctest.
+- `./check.sh` (rerun 2026-11-16, after the pull): nothing of this
+  work's. The lock and `caller-names` findings it gives are outside this
+  repository's code (`../ROADMAP.md`, section 12); `abi` unchanged;
+  `alloc-trace-copies` passes, every copy of `alloctrace.h` carrying its
+  `dladdr` fix.
+- **Run again 2026-11-16 after the pull** (carrottus 0.4.0, card S33's
+  image sizes beside this work; every folder configured again):
+  `linux-vulkan` Debug and Release, `-asan` and `-tsan` with GCC and with
+  clang: 15 ctests each, `crnet_test` 457 of 457, `resumable` 115 of 115
+  three runs each, no warning, no sanitizer report; `internet` 25 of 25;
+  `cr_misuse_tests` ten runs, no failure; `cr_noalloc_tests` none of
+  Carrottus's own in Debug and Release.
 - What builds on carrottus: see `../ROADMAP.md`, section 12.
 
 ## Order to do it in

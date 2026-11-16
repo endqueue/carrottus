@@ -512,7 +512,10 @@ static bool alloc_trace_internal_module(void *pc, char *name, size_t size, bool 
         return false;
     const char *slash = strrchr(info.dli_fname, '/');
     snprintf(name, size, "%s", slash ? slash + 1 : info.dli_fname);
-    *ours = dladdr((void *)alloc_trace_internal_record, &self) && self.dli_fbase == info.dli_fbase;
+    // Any address in this module serves: a data object's, since ISO C has
+    // no conversion from a function pointer to void * (GCC's -Wpedantic,
+    // compiling this from C).
+    *ours = dladdr(alloc_trace_internal_stacks, &self) && self.dli_fbase == info.dli_fbase;
     return true;
 }
 extern char *__cxa_demangle(const char *mangled, char *out, size_t *length, int *status);

@@ -1270,14 +1270,29 @@ static void ws_base64(const uint8_t *data, size_t size, char *out) {
 	out[o] = '\0';
 }
 
+/* Carries the client's opening on with CRNET_NO_WAIT while the server's
+ * end waits for it: on libcurl the opening moves only inside a call
+ * (crnet.h, crnet_websocket_connect_continue()), and this test has one
+ * thread. False once the opening has failed. */
+static bool ws_drive_opening(crnet_websocket client, CR_RESULT *result, uint32_t *status) {
+	if (*result == CR_RESULT_NET_TIMED_OUT)
+		*result = crnet_websocket_connect_continue(client, CRNET_NO_WAIT, status);
+	return *result == CR_SUCCESS || *result == CR_RESULT_NET_TIMED_OUT;
+}
+
 /* The server's half of the opening, on an accepted socket: reads the
- * request and answers 101. */
-static bool ws_server_open(crnet_tcp_socket server) {
+ * request and answers 101, driving the client's opening between its
+ * waits. */
+static bool ws_server_open(crnet_tcp_socket server, crnet_websocket client, CR_RESULT *result, uint32_t *status) {
 	char     request[4096];
 	size_t   size = 0;
 	uint64_t got  = 0;
+	int      waits = 0;
 	while (size < sizeof(request) - 1) {
-		if (crnet_tcp_socket_recv(server, request + size, sizeof(request) - 1 - size, 5000, &got) != CR_SUCCESS || got == 0)
+		CR_RESULT received = crnet_tcp_socket_recv(server, request + size, sizeof(request) - 1 - size, 1, &got);
+		if (received == CR_RESULT_NET_TIMED_OUT && ++waits < 5000 && ws_drive_opening(client, result, status))
+			continue;
+		if (received != CR_SUCCESS || got == 0)
 			return false;
 		size += (size_t)got;
 		request[size] = '\0';
@@ -1347,7 +1362,13 @@ static void test_net_websocket(crnet_instance instance, crnet_tcp_listener liste
 	uint32_t  status      = 0;
 	CR_RESULT result      = crnet_websocket_connect(w.client, &desc, &status);
 	bool      ok          = result == CR_SUCCESS || result == CR_RESULT_NET_TIMED_OUT;
-	ok                    = ok && crnet_tcp_listener_accept(listener, 5000, &w.server) == CR_SUCCESS && ws_server_open(w.server);
+	CR_RESULT accepted    = CR_RESULT_NET_TIMED_OUT;
+	for (int waits = 0; ok && accepted == CR_RESULT_NET_TIMED_OUT && waits < 5000; ++waits) {
+		accepted = crnet_tcp_listener_accept(listener, 1, &w.server);
+		if (accepted == CR_RESULT_NET_TIMED_OUT)
+			ok = ws_drive_opening(w.client, &result, &status);
+	}
+	ok = ok && accepted == CR_SUCCESS && ws_server_open(w.server, w.client, &result, &status);
 	if (ok && result == CR_RESULT_NET_TIMED_OUT)
 		result = crnet_websocket_connect_continue(w.client, 5000, &status);
 	ok = ok && result == CR_SUCCESS;
