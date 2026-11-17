@@ -3507,11 +3507,25 @@ static void test_ray_queries(crgpu_adapter adapter, CRGPU_FEATURES supported) {
 	desc.required_features  = CRGPU_FEATURE_RAY_QUERY;
 	desc.direct_queue_count = 1;
 	// A copy queue, whose lists every build, copy and size write refuses
-	// (rq_test_list_refusals).
-	desc.copy_queue_count   = 1;
-	desc.max_descriptors    = 16;
-	desc.max_samplers       = 4;
-	desc.debug_name         = "crgpu_objects_test ray queries";
+	// (rq_test_list_refusals), where the adapter's pools hold one beside the
+	// direct queue: a pool shared by both kinds needs room for two
+	// (llvmpipe's one family has one queue).
+	bool copy_fits = true;
+	for (uint32_t i = 0; i < properties.queue_pool_count; ++i) {
+		const CRGPU_QUEUE_POOL *pool = &properties.queue_pools[i];
+		uint64_t asked               = 0;
+		if (pool->kinds & CRGPU_QUEUE_KIND_DIRECT)
+			asked += 1;
+		if (pool->kinds & CRGPU_QUEUE_KIND_COPY)
+			asked += 1;
+		copy_fits = copy_fits && asked <= pool->max_queues;
+	}
+	if (!copy_fits)
+		printf("crgpu_objects_test: ray queries: the adapter's pools can't hold a direct and a copy queue; the copy list's refusals skipped\n");
+	desc.copy_queue_count = copy_fits ? 1 : 0;
+	desc.max_descriptors  = 16;
+	desc.max_samplers     = 4;
+	desc.debug_name       = "crgpu_objects_test ray queries";
 	CHECK(crgpu_device_create(adapter, &desc, &r.device) == CR_SUCCESS);
 	if (!r.device)
 		return;
@@ -3682,7 +3696,8 @@ static void test_ray_queries(crgpu_adapter adapter, CRGPU_FEATURES supported) {
 		rq_record_trace(&r, r.cmd, 0xFF);
 		rq_submit(&r);
 		rq_check(&r, triangle_at, box_at, 0xFF, "rq_trace's grid, both instances");
-		rq_test_list_refusals(&r);
+		if (copy_fits)
+			rq_test_list_refusals(&r);
 		rq_test_layout_updates(&r, &top_inputs);
 		rq_test_shared_scratch(&r, &triangle_inputs, &box_inputs, &top_inputs, triangle_at, box_at);
 

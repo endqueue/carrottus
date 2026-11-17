@@ -1461,7 +1461,13 @@ evening on the Mac (Known gaps below, `CRGPU_DEVICE_TODO.md`).
   tests on every adapter under every validation mode, Debug, Release and
   `-asan`, every refusal reached and nothing reported (D3D12 16384, 16384,
   2048, 16384, 2048 on every adapter; Vulkan the same on the Iris Xe, and
-  32768, 32768, 16384, 32768, 2048 on the RTX A2000). Linux owed.
+  32768, 32768, 16384, 32768, 2048 on the RTX A2000), and on Fedora 44
+  2026-11-17 (the same ThinkPad, Mesa 26.2.6): `linux-vulkan` Debug,
+  Release, `-asan` and `-tsan` with GCC and with clang, both GPU tests on
+  ANV, NVK and llvmpipe under validation and synchronization validation,
+  every refusal reached, nothing reported but llvmpipe's own (card S37;
+  ANV 16384, 16384, 2048, 16384, 2048; NVK 32768, 32768, 16384, 32768,
+  2048; llvmpipe 16384, 16384, 4096, 32768, 2048). RADV owed.
   `crgpu_heap_get_image_placement_requirements`
   still aborts on Metal for such an image (`CRGPU_DEVICE_TODO.md`, S33,
   "For you").

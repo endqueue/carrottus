@@ -1060,7 +1060,7 @@ the workspace's `prompts/`, has every finding):
   5. `./check.sh --update-abi` (the layout break listed), the misuse
      generator rerun, `./check.sh`; built on the Mac, then Windows and
      Fedora, each driver's numbers recorded here.
-- **Built on the Mac 2026-11-15** (card X25: Linux owed, Windows built below;
+- **Built on the Mac 2026-11-15** (card X25: Windows and Linux built below;
   `../prompts/crgpu_image_size_mac.md`, its Progress has the run). Each
   step of the plan: 1 built on the Mac; 2 built on the Mac; 3 Metal built
   on the Mac, Vulkan written and type-checked on the Mac (`clang
@@ -1078,8 +1078,13 @@ the workspace's `prompts/`, has every finding):
       1D 16384, 2D 16384, 3D 2048, cube 16384, layers 2048; the RTX A2000
       (NVIDIA 597.30, Vulkan 1.4.329) 1D 32768, 2D 32768, 3D 16384, cube
       32768, layers 2048.
-    - Owed: ANV, NVK and llvmpipe on the ThinkPad's Fedora, RADV on the
-      desktop.
+    - Fedora 44 (the ThinkPad P1 Gen 5, Mesa 26.2.6, Vulkan 1.4.354): ANV
+      on the Iris Xe 1D 16384, 2D 16384, 3D 2048, cube 16384, layers 2048;
+      NVK on the RTX A2000 1D 32768, 2D 32768, 3D 16384, cube 32768,
+      layers 2048; llvmpipe (LLVM 22.1.8) 1D 16384, 2D 16384, 3D 4096,
+      cube 32768, layers 2048 (its cube past its 2D, which Vulkan
+      allows). Every one at or above Vulkan 1.3's floors.
+    - Owed: RADV on the Fedora desktop, not reachable from the ThinkPad.
   - **Built on Windows 2026-11-16 and 17** (the ThinkPad P1 Gen 5; MSVC
     14.51, Vulkan SDK 1.4.363.0; `../prompts/crgpu_image_size_windows.md`,
     its Progress). Each step of the plan: 1 to 5 built on Windows. The
@@ -1095,6 +1100,25 @@ the workspace's `prompts/`, has every finding):
     message, no report. `cr_misuse_tests` ten times on each backend
     (285 calls with zeroes, 258 with a destroyed handle, no failure);
     `cr_noalloc_tests` none of ours on either.
+  - **Built on Linux 2026-11-17** (Fedora 44, the ThinkPad P1 Gen 5; GCC
+    16.2.1 and clang 22.1.8, Vulkan SDK 1.4.363.1;
+    `../prompts/crgpu_image_size_fedora.md`, its Progress). Each step of
+    the plan: 1 to 5 built on Linux. The Vulkan half linked and ran as
+    type-checked on the Mac: nothing in the library changed.
+    `linux-vulkan` Debug and Release, `-asan` and `-tsan` with GCC and
+    with clang, no warning, 15 of 15 ctests in each;
+    `crgpu_device_test` and `crgpu_objects_test` on ANV, NVK and
+    llvmpipe under validation with performance warnings and again under
+    synchronization validation, in all six builds: every refusal reached
+    on both creates and every small image made, the layer silent.
+    `cr_misuse_tests` ten times (244 calls with a destroyed handle, no
+    failure); `cr_noalloc_tests` none of ours, Debug and Release. One
+    fix, in the test: llvmpipe reports ray queries since Mesa 26.2, and
+    its one queue family holds one queue, so the ray query device's copy
+    queue is asked only where the pools hold it, and its list's refusals
+    skipped (and said) where not. Under the sanitizers llvmpipe alone
+    still reports its own leak and fence race (card S37), named and not
+    counted.
   - **Seen failing first:** the fields didn't compile; a 2D image 32769
     wide made through `crgpu_image_create` ended the process inside
     `newTextureWithDescriptor` (exit 134, "MTLTextureDescriptor has width
