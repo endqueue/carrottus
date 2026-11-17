@@ -5,9 +5,14 @@
  * shipping BC7 packs for desktop GPUs and ASTC 4x4 packs for iPad and
  * iPhone, Apple Silicon Macs either).
  *
- * DRAFT, 2026-11-16, version 8 (version 1, then seven critique passes,
- * each fixed before the next: the revision notes below), for the user's
- * approval. Written unattended
+ * DRAFT, 2026-11-16, version 9 (version 1, then seven critique passes,
+ * each fixed before the next, then a third round of seven: the revision
+ * notes below). APPROVED by the
+ * user 2026-11-17 (card S48, every question as recommended: Q1a to Q8a),
+ * with one correction: no version is raised for it while carrottus' 0.4
+ * is untagged (card X2; it lands in 0.4.0, and every "Since" below says
+ * so); amended by the third critique round, 2026-11-17, at the user's
+ * asking. Written unattended
  * on the Mac (Apple M5 Pro) against include/crgpu.h, include/crcore.h,
  * src/gpu/crgpuformat.c and the three backends' format tables and copy
  * code (crgpumetalformat.m, crgpumetalrenderpass.m, crgpuvulkancontext.c,
@@ -26,6 +31,111 @@
  *
  * 2026-11-17: caller names removed (check.sh caller-names), meaning kept.
  *
+ * Third round, 2026-11-17, at the user's asking: passes 8 to 14 (the
+ * workspace's seven lenses, each fixed before the next). Version 9.
+ *
+ * Pass 8 (general purpose). 1. "Who else uses it", the breaks and the
+ * tests still named the layer above by name (its renderer, its tests'
+ * repository, its scalar-type function): a lower layer never names its
+ * caller. Changed to "a caller", meaning kept; card numbers stay as
+ * records. 2. Checked: nothing assumes one genre or one platform's
+ * caller; CAD, Android and the samples stay listed.
+ *
+ * Pass 9 (industry standard). 1. WebGPU's GPUImageCopyBuffer.bytesPerRow
+ * is a multiple of 256 and wgpu names it (COPY_BYTES_PER_ROW_ALIGNMENT);
+ * D3D12's RowPitch is too (D3D12_TEXTURE_DATA_PITCH_ALIGNMENT, d3d12.h
+ * line 1406). The draft checked a copy's offset alignment, for which
+ * there is a query, but not its row pitch, for which there was none: a
+ * tight row from a caller reached D3D12 invalid, the bad input Q6 refuses.
+ * Changed: crgpu_image_get_buffer_copy_row_pitch_alignment() [ADDED],
+ * beside the offset query, and the copies refuse a row pitch not a
+ * multiple of it (Q6's checks, one more). 2. D3D12's
+ * OPTIONS13::UnrestrictedBufferTextureCopyPitchSupported (line 2896) lifts
+ * both alignments on a device that has it: left out, a later change of the
+ * two queries' answers with no API change (under "Left out").
+ *
+ * Pass 10 (the C API). 1. The copies' result list lacked the buffer's and
+ * image's usages and the buffer's range: a region past the buffer's end
+ * is read or written out of bounds by the GPU on every API. Changed: the
+ * buffer's TRANSFER_SRC or _DST usage (CR_RESULT_GPU_INVALID_BUFFER_USAGE),
+ * the image's (CR_RESULT_GPU_INVALID_IMAGE_USAGE) and the bytes the region
+ * covers within the buffer's size (CR_RESULT_DESC_INVALID_PARAMETERS), in
+ * parameter order. 2. crgpu_image_get_buffer_copy_offset_alignment()'s
+ * refusal pointed at crgpu_format_get_bit_count(), which gives 0 for every
+ * ASTC format: it reads the texel block now ([CHANGED], its retval). 3.
+ * crgpu_image_get_buffer_copy_size() (void) said nothing for a format with
+ * no texel block: it writes 0 to both outputs. 4. "Since 0.5.0" on the
+ * creates' results: 0.4.0 (card X2).
+ *
+ * Pass 11 (data and allocation). Checked: the block table is one static
+ * array indexed by value (and Metal's ASTC rows a second array from
+ * 1000), no allocation in the new or changed calls, the copies' checks
+ * reading only the desc, the image's and the buffer's own fields.
+ * Nothing changed.
+ *
+ * Pass 12 (threads and errors). Checked: the code alone (card A2), each
+ * refusal its own code in parameter order; the format queries callable
+ * from any thread, the image queries under the image's rule, the copies
+ * the command list's. Nothing changed.
+ *
+ * Pass 13 (the platforms and the code as built: crgpu.h, crcore.h,
+ * crgpuformat.c, the three backends' tables and copy code, d3d12.h and
+ * dxgiformat.h, vulkan_core.h of SDK 1.4.363.0, the macOS SDK's
+ * MTLPixelFormat.h and MTLDevice.h, all re-read). 1. The texel block's
+ * refusals named "the formats from CRGPU_FORMAT_AYUV to CRGPU_FORMAT_V408":
+ * that range holds CRGPU_FORMAT_B4G4R4A4_UNORM (115, an ordinary 16-bit
+ * format) and single-texel and 2 x 1 packed formats that are copied today
+ * (AYUV, Y410, Y416, YUY2, Y210, Y216, AI44, IA44, P8, A8P8), so the
+ * change would have refused copies that work. Changed: every format with
+ * a texel block has its own (1 x 1 for a single-texel one; 2 x 1 of 4
+ * bytes for R8G8_B8G8, G8R8_G8B8 and YUY2 and of 8 for Y210 and Y216,
+ * Vulkan's texel blocks of the matching _422 formats), and only UNKNOWN,
+ * R1_UNORM, the planar formats (NV12, P010, P016, 420_OPAQUE, NV11, P208,
+ * V208, V408) and unnamed values are refused; those planar formats have
+ * no copy layout today either (crgpu___internal_format_block_bytes() gives
+ * them 0 or a plane's guess). R8G8_B8G8, G8R8_G8B8, Y210 and Y216 were
+ * laid out at their bit count's bytes a texel, wrong (4 and 8 bytes are a
+ * pair of texels): fixed by the block, listed. 2. D3D12's
+ * crgpu_d3d12_make_footprint() (crgpud3d12renderpass.cpp) computes the
+ * row pitch from the bit count, the next layer's offset as the row pitch
+ * times buffer_image_height in texels, and the readback's source box in
+ * texels: for a block format the pitch and the layer step are in rows of
+ * blocks, and a box (like the footprint) is whole blocks, rounded up where
+ * it reaches the level's edge. Changed under "Where each backend does it".
+ * 3. D3D12 places every layer's footprint at its own Offset, a multiple
+ * of 512 (D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT, line 1408); a copy of
+ * several layers whose layer step isn't one was invalid there and valid
+ * elsewhere. Changed: the copy desc's rule, for every backend, is that
+ * each layer's start is a multiple of the offset alignment; checked
+ * (CR_RESULT_DESC_INVALID_PARAMETERS). 4. The copies treated
+ * array_layer_count and depth of 0 as 1 (every backend); the draft
+ * refuses 0. No caller passes 0 (searched: the samples, the objects test,
+ * the layer above): listed under the breaks. 5. Checked and right:
+ * MTLPixelFormatASTC_4x4_LDR (204) to _12x12_LDR and the _sRGB ones
+ * (186 to 200), MTLPixelFormatBC1_RGBA (130) to BC7_RGBAUnorm_sRGB (153),
+ * supportsBCTextureCompression (macOS 11, iOS 16.4), MTLGPUFamilyMac2
+ * deprecated in the macOS 27 SDK for Apple7; VK_FORMAT_BC1_RGB_UNORM_BLOCK
+ * (131) to BC7_SRGB_BLOCK (146), ASTC_4x4_UNORM_BLOCK (157) to
+ * ASTC_12x12_SRGB_BLOCK (184), textureCompressionASTC_LDR and _BC (lines
+ * 3548 and 3549); DXGI's gap from 133 to 188 and its 189, 190 and 191;
+ * Vulkan's offset alignment as the least common multiple of the block's
+ * bytes and 4 (crgpuvulkanrenderpass.c), Metal's the block's bytes
+ * (crgpumetalrenderpass.m), D3D12's 512.
+ *
+ * Pass 14 (tests, records, the build). 1. Added: the row pitch query on
+ * each backend (256 on D3D12, the block's bytes on Vulkan and Metal) and a
+ * tight-row copy refused on D3D12 and taken elsewhere; a region past the
+ * buffer, a buffer and an image without the transfer usage, a three-layer
+ * copy whose layer step isn't a multiple of the offset alignment (refused
+ * on D3D12, taken on Vulkan and Metal: each layer starts where the rule
+ * says), array_layer_count and depth of 0; the readback of a 1 x 1 BC
+ * level on D3D12 (the rounded box); the texel block of B4G4R4A4, YUY2 and
+ * AYUV. 2. Feature bits: S48 takes 16 and 17; card S49 (anisotropy) and
+ * card S50 (dual-source blending), drafted next, take 18 and 19, in the
+ * order decided; ASTC HDR and ETC2, when appended, the next free bits
+ * then. 3. The session card S48 names builds this on the Mac; Windows (D3D12 and
+ * Vulkan) and Fedora (Vulkan) owed, as "Where each runs" says.
+ *
  * Pass 1 (wrong, missing, more than the need). 1. Version 1 said ASTC was
  * absent on "a Mac2 GPU": an Apple GPU answers yes to MTLGPUFamilyMac2 as
  * well (measured, pass 5), so the absence is a GPU in Mac2 and in no Apple
@@ -38,18 +148,18 @@
  * (CR_RESULT_GPU_INVALID_FORMAT), in crgpushared.c beside the colour
  * attachment checks already there.
  *
- * Pass 2 (what breaks an existing caller). 1. Rend's
+ * Pass 2 (what breaks an existing caller). 1. A caller's
  * format-to-scalar-type function takes every value from CRGPU_FORMAT_AYUV
  * up for a video format: ASTC's 1000 and on fall into it. Not Carrottus's
  * to change; named under "The version and the breaks", and fixed in
- * Rabbittus' block-formats draft (card A54). 2.
+ * that caller's block-formats draft (card A54). 2.
  * Checked: Carrottus's own code range-tests formats only in
  * crgpu___internal_format_block_bytes() (BC's two ranges, replaced by the
  * table) and Metal's table bound (an index past it is no entry): neither
  * mistakes 1000 for something else. 3. Checked: the misuse harness calls
  * both copies with destroyed and null handles (cr_misuse_tests.c, 2512 and
  * 4396); regenerated, it expects their results. No CR_RESULT is marked
- * unused-result, so callers that ignore the copies' results (Rend,
+ * unused-result, so callers that ignore the copies' results (a caller's renderer,
  * crgpusamples' HelloTexture, CrGPUHeaps) compile unchanged. 4. Searched
  * every test and sample: none creates a BC image, so the BC bit breaks no
  * test.
@@ -104,10 +214,10 @@
  * sub-region at a block-aligned offset), with a padded buffer_row_length
  * one way; D3D12's 256-byte pitch from crgpu_image_get_buffer_copy_size()
  * one way and a tight pitch the other on Vulkan and Metal. What the GPU
- * samples stays Rend's test. 2. Added: the pipeline refusals of pass 1.
+ * samples stays a caller's test (card A54). 2. Added: the pipeline refusals of pass 1.
  *
  * Pass 7 (who else uses it, records, the card). 1. No "who else" section.
- * Changed: added (Rend; a game engine's cooked textures; CAD
+ * Changed: added (a renderer above; a game engine's cooked textures; CAD
  * viewports' textured materials later; Android, card S47, where ASTC is
  * the common format; crgpusamples). 2. The records the build updates
  * weren't named. Changed: "Records when built". 3. The card (S48) carries
@@ -159,7 +269,11 @@
  * (arrays and cubes included) used only to be sampled and copied, its
  * level 0 a whole number of blocks. The two copies between a buffer and
  * an image return a result and check their region against the block, and
- * every backend lays a block format's rows out as rows of blocks.
+ * every backend lays a block format's rows out as rows of blocks. A
+ * second query, crgpu_image_get_buffer_copy_row_pitch_alignment(), says
+ * what a copy's row pitch is a multiple of (256 bytes on D3D12), as the
+ * offset query already says for its offset; the copies check both, the
+ * buffer's range and the usages too (passes 9 and 10).
  *
  * ---------------------------------------------------------------------------
  * What was compared
@@ -209,7 +323,9 @@
  *    compressed texture's level 0 is a whole number of blocks; a copy's
  *    bytesPerRow counts bytes of a row of blocks and rowsPerImage rows of
  *    blocks, its origin and size whole blocks of the level's physical
- *    size. Its usages for a compressed format: TEXTURE_BINDING and the
+ *    size; in a command encoder's copy bytesPerRow is a multiple of 256
+ *    (wgpu's COPY_BYTES_PER_ROW_ALIGNMENT), in queue.writeTexture not
+ *    (pass 9). Its usages for a compressed format: TEXTURE_BINDING and the
  *    copies, never RENDER_ATTACHMENT or STORAGE_BINDING.
  *  - Industry practice: wgpu (TextureFormat::Astc { block, channel },
  *    Features::TEXTURE_COMPRESSION_ASTC and _BC, block_dimensions() and
@@ -252,7 +368,7 @@
  * Who else uses it
  * ---------------------------------------------------------------------------
  *
- *  - Rend (Rabbittus' block-formats draft, card A54): uploads block-format
+ *  - A renderer's textures (card A54's draft): uploads block-format
  *    textures with their levels, reading the two bits from the device and
  *    the block from crgpu_format_get_texel_block().
  *  - A game engine's cooked textures: BC7 packs on Windows and Linux, ASTC
@@ -281,6 +397,10 @@
  *    chose BC7 and ASTC); appended with a bit of their own when one does.
  *  - ASTC's decode mode (VK_EXT_astc_decode_mode): an optimisation one API
  *    has.
+ *  - D3D12's OPTIONS13::UnrestrictedBufferTextureCopyPitchSupported, which
+ *    lifts the 256-byte pitch and 512-byte placement on a device that has
+ *    it (pass 9): a later change of the two alignment queries' answers
+ *    there, no API change, when a caller needs tighter staging.
  *
  * ---------------------------------------------------------------------------
  * The version and the breaks
@@ -289,7 +409,10 @@
  *  - CRGPU_FORMAT: 28 values appended (from 1000). No existing value
  *    changes. Append-only, as every enum here.
  *  - CRGPU_FEATURES: two bits appended (16, 17). No bit's meaning changes.
- *  - crgpu_format_get_texel_block(): added.
+ *    Cards S49 (anisotropy) and S50 (dual-source blending), drafted after
+ *    this one, take 18 and 19 (pass 14).
+ *  - crgpu_format_get_texel_block() and
+ *    crgpu_image_get_buffer_copy_row_pitch_alignment() (pass 9): added.
  *  - crgpu_command_list_copy_buffer_to_image() and
  *    crgpu_command_list_copy_image_to_buffer() return CR_RESULT where they
  *    returned void (Q6): a source-compatible change in C (a call whose
@@ -300,22 +423,36 @@
  *    Vulkan, where it was outside the rules), a block-format image with an
  *    attachment or storage usage, of a 1D or 3D type, or whose level 0
  *    isn't whole blocks. A behaviour break, listed. No caller in the
- *    workspace makes a BC image today (searched: Rabbittus names BC formats
+ *    workspace makes a BC image today (searched: the layer above names BC formats
  *    only to say they have no shader scalar type; the callers above it
  *    name none).
  *  - A block format as a pipeline's attachment or vertex attribute format
  *    is refused (CR_RESULT_GPU_INVALID_FORMAT) where it was passed to the
  *    API (pass 1). No caller does it.
- *  - A caller that range-tests CRGPU_FORMAT meets values from 1000: Rend's
+ *  - A caller that range-tests CRGPU_FORMAT meets values from 1000: a caller's
  *    format-to-scalar-type function takes everything from
  *    CRGPU_FORMAT_AYUV up for a video format, and ASTC would fall into it
- *    (pass 2); fixed in Rend's draft, not here.
+ *    (pass 2); fixed in that caller's draft (card A54), not here.
  *  - crgpu_image_get_buffer_copy_size(): its answers for a block format
- *    become right (rows of blocks); no caller depended on the wrong ones.
- *  - CARROTTUS_VERSION_MINOR goes up by one when it is built, unless the
- *    building session finds it already raised and untagged since (card
- *    X2). ./check.sh --update-abi lists the breaks; the misuse generator
- *    is rerun for the new call and the two changed ones.
+ *    become right (rows of blocks), and for R8G8_B8G8, G8R8_G8B8, Y210
+ *    and Y216 (a 2 x 1 block, laid out before at a wrong bytes a texel);
+ *    for a planar format it writes 0 (pass 10). No caller depended on the
+ *    wrong ones.
+ *  - The copies refuse what they passed to the API before (passes 9, 10
+ *    and 13): a row pitch not a multiple of the row pitch alignment (on
+ *    D3D12, a pitch not of 256 bytes, which was invalid there), a layer
+ *    whose start isn't a multiple of the offset alignment (likewise), a
+ *    region past the buffer's size, a buffer or image without the
+ *    transfer usage, a planar format (whose layout was a guess),
+ *    `array_layer_count` or `depth` of 0 (taken as 1 before, on every
+ *    backend), and a 2 x 1 format's region off its pairs. Searched: every
+ *    caller in the workspace passes 1 and 1, transfer usages and the
+ *    pitch crgpu_image_get_buffer_copy_size() gives; the building session
+ *    rechecks each and lists any it finds.
+ *  - No version raise: carrottus' 0.4.0 is untagged, so this lands in it
+ *    (card X2; the approval's correction). ./check.sh --update-abi lists
+ *    the breaks; the misuse generator is rerun for the two new calls and
+ *    the two changed ones.
  *
  * New handles: none. New struct types: none. Stored formats touched: none
  * (CRGPU_FORMAT's numbers are written into no file Carrottus owns; a
@@ -354,7 +491,7 @@
  *
  * Q2. ASTC HDR.
  *     (a) RECOMMENDED. Not now. No caller has an HDR texture to ship
- *         (Rend's environments are made on the GPU; card L44 is LDR), and
+ *         (the renderer above makes its environments on the GPU; card L44 is LDR), and
  *         D3D12, WebGPU and every desktop GPU but Apple's have no ASTC HDR.
  *         Appended later with its own bit
  *         (CRGPU_FEATURE_TEXTURE_COMPRESSION_ASTC_HDR: Vulkan's
@@ -385,7 +522,7 @@
  *         group of functions and types so calling what the build lacks is
  *         a compile error (carrottus/CLAUDE.md); here there is no function
  *         or type to wrap, only values a caller's backend-agnostic code
- *         (Rend's tables) names on every backend.
+ *         (a renderer's tables) names on every backend.
  *     (b) CRGPU_EXT_TEXTURE_COMPRESSION_ASTC, 0 on D3D12, with its paired
  *         CR_RESULT_GPU_EXT_..._NOT_SUPPORTED: a macro that gates nothing
  *         at compile time and a second result for what the feature's
@@ -465,8 +602,11 @@
  *    layer past the image) with nothing recorded; a region that stops at
  *    the level's edge accepted. crgpu_format_get_texel_block() for every
  *    CRGPU_FORMAT value: the block of each BC and ASTC format, 1 x 1 and
- *    the texel's bytes for an uncompressed one, CR_RESULT_GPU_INVALID_FORMAT
- *    for UNKNOWN, R1_UNORM and the planar video formats.
+ *    the texel's bytes for an uncompressed one, 2 x 1 for a packed 4:2:2
+ *    one, CR_RESULT_GPU_INVALID_FORMAT for UNKNOWN, R1_UNORM, the eight
+ *    planar formats and an unnamed value (116, 133, 1028). Each level's
+ *    layers in one copy where the layer step is a multiple of the offset
+ *    alignment, and a copy a layer where it isn't (D3D12's small levels).
  *  - Layout, not only round trips (pass 6): each level is copied in whole
  *    and read back in another shape (a row of blocks at a time into
  *    separate offsets, and a block-aligned sub-region), with a padded
@@ -474,6 +614,19 @@
  *    directions can't pass; on D3D12 the 256-byte pitch of
  *    crgpu_image_get_buffer_copy_size() one way and Vulkan's and Metal's
  *    tight pitch the other.
+ *  - The copies' other rules (passes 9, 10 and 13), on every adapter:
+ *    crgpu_image_get_buffer_copy_row_pitch_alignment() (256 on D3D12, the
+ *    block's bytes on Vulkan and Metal); a tight row of 64 bytes (a BC7
+ *    level of 4 blocks a row) refused on D3D12 and taken on Vulkan and
+ *    Metal; a three-layer copy whose layer step isn't a multiple of the
+ *    offset alignment refused on D3D12 and taken on Vulkan and Metal, and
+ *    one whose step is, taken everywhere and read back per layer; a
+ *    region one row past the buffer's end; a buffer and an image without
+ *    the transfer usage; `array_layer_count` and `depth` of 0; a 1 x 1 BC7
+ *    level read back on D3D12 (the box rounded to its block); each with
+ *    nothing recorded where refused. crgpu_format_get_texel_block() of
+ *    B4G4R4A4 (1 x 1, 2), YUY2 (2 x 1, 4), Y216 (2 x 1, 8), AYUV (1 x 1,
+ *    4), and NV12 refused.
  *  - Pipelines (pass 1): a graphics pipeline with a BC or ASTC colour
  *    attachment format, and a vertex attribute of one, refused with
  *    CR_RESULT_GPU_INVALID_FORMAT on every backend.
@@ -485,13 +638,14 @@
  *    before the API sees it: on D3D12 no ASTC value reaches the cast.
  *  - cr_noalloc_tests: a block copy recorded, and the format query,
  *    allocate nothing.
- *  - The misuse harness: regenerated for crgpu_format_get_texel_block()
- *    and the copies' results.
+ *  - The misuse harness: regenerated for crgpu_format_get_texel_block(),
+ *    crgpu_image_get_buffer_copy_row_pitch_alignment() and the copies'
+ *    results.
  *  - crgpusamples' CrGPUDynamicIndexing uploads its BC1 texture as
  *    Microsoft's sample does and its CPU decoder goes, on D3D12 and Vulkan
  *    (it doesn't build on Metal, which has no bindless).
- *  - Sampling a block (that the GPU decodes what was copied) is Rend's
- *    test (Rabbittus' block-formats draft, card A54), through rabbittustests,
+ *  - Sampling a block (that the GPU decodes what was copied) is a
+ *    caller's test (card A54's draft), on its own GPU tests,
  *    which draws.
  *  - Where each runs: the Mac (Apple M5 Pro: BC and ASTC; plain, -asan,
  *    -tsan; Metal's API validation on); Windows' Iris Xe, RTX A2000 and
@@ -602,21 +756,27 @@ uint32_t crgpu_format_get_bit_count(CRGPU_FORMAT fmt);
  * Thread: any, at any time; it reads nothing but `format`.
  *
  * @param[in]  format     Format to describe.
- * @param[out] out_width  Receives the block's width in texels: 1 for an
- *                        uncompressed format, 4 for BC, the size's first
- *                        number for ASTC.
+ * @param[out] out_width  Receives the block's width in texels: 1 for a
+ *                        single-texel format, 2 for a packed 4:2:2 one, 4
+ *                        for BC, the size's first number for ASTC.
  * @param[out] out_height Receives the block's height in texels.
  * @param[out] out_bytes  Receives a block's bytes: the texel's for an
  *                        uncompressed format, 8 (BC1, BC4) or 16 (the
  *                        other BC formats, every ASTC format).
  *
  * @retval CR_SUCCESS The three outputs were written.
+ * Every named format but those below has a block (pass 13): a texel of
+ * whole bytes is a 1 x 1 block (CRGPU_FORMAT_B4G4R4A4_UNORM 2 bytes,
+ * CRGPU_FORMAT_AYUV and _Y410 4, _Y416 8, _AI44, _IA44 and _P8 1, _A8P8
+ * 2), and a packed 4:2:2 format a 2 x 1 block, Vulkan's texel block of
+ * the matching _422 format: CRGPU_FORMAT_R8G8_B8G8_UNORM,
+ * _G8R8_G8B8_UNORM and _YUY2 of 4 bytes, _Y210 and _Y216 of 8.
+ *
  * @retval CR_RESULT_GPU_INVALID_FORMAT `format` is CRGPU_FORMAT_UNKNOWN, a
- *         value CRGPU_FORMAT doesn't name, or a format with no block of
- *         whole bytes (CRGPU_FORMAT_R1_UNORM, the planar and packed video
- *         formats from CRGPU_FORMAT_AYUV to CRGPU_FORMAT_V408 and
- *         CRGPU_FORMAT_R8G8_B8G8_UNORM / _G8R8_G8B8_UNORM, whose layouts a
- *         block of texels can't describe). Nothing is written.
+ *         value CRGPU_FORMAT doesn't name, CRGPU_FORMAT_R1_UNORM (a texel
+ *         of one bit), or a planar format (CRGPU_FORMAT_NV12, _P010,
+ *         _P016, _420_OPAQUE, _NV11, _P208, _V208, _V408), whose planes no
+ *         one block describes. Nothing is written.
  * @retval CR_RESULT_NULL_OUTPUT_PARAMETER An output is NULL. Nothing is
  *         written.
  */
@@ -674,17 +834,17 @@ CR_RESULT crgpu_format_get_texel_block(
  *           format and the device wasn't created with
  *           CRGPU_FEATURE_TEXTURE_COMPRESSION_BC, or an ASTC format and it
  *           wasn't created with CRGPU_FEATURE_TEXTURE_COMPRESSION_ASTC_LDR
- *           (on D3D12, every ASTC format). Since 0.5.0.
+ *           (on D3D12, every ASTC format). Since 0.4.0 (card X2).
  *   @retval CR_RESULT_GPU_INVALID_IMAGE_USAGE `desc->usage` has anything
  *           but CRGPU_IMAGE_USAGE_SAMPLED, _TRANSFER_SRC and _TRANSFER_DST
  *           for a block-compressed format: a block format is never
- *           rendered to or written by a shader, on any API. Since 0.5.0.
+ *           rendered to or written by a shader, on any API. Since 0.4.0 (card X2).
  *   @retval CR_RESULT_GPU_INVALID_IMAGE_TYPE `desc->type` isn't
  *           CRGPU_IMAGE_TYPE_2D for a block-compressed format (Q7 a).
- *           Since 0.5.0.
+ *           Since 0.4.0 (card X2).
  *   @retval CR_RESULT_DESC_INVALID_PARAMETERS `desc->width` or
  *           `desc->height` isn't a whole number of the format's blocks
- *           (Q5 a). Since 0.5.0.
+ *           (Q5 a). Since 0.4.0 (card X2).
  *
  * Checked once, in src/gpu/crgpushared.c, called by every backend's two
  * creates at the same place, so the same desc gets the same answer
@@ -727,6 +887,24 @@ CR_RESULT crgpu_format_get_texel_block(
  *    at those counts.
  * #depth is 1 and #image_z 0 for a block-compressed format, whose images
  * are 2D.
+ *
+ * For every format (passes 9 and 13), the rules each backend's API needs,
+ * stated once:
+ *  - #array_layer_count and #depth are at least 1 (0 was taken as 1);
+ *  - the row pitch the copy implies, ceil(row length / block width) blocks
+ *    of the block's bytes (the row length #buffer_row_length, or #width
+ *    when it is 0), is a multiple of
+ *    crgpu_image_get_buffer_copy_row_pitch_alignment(), and the pitch
+ *    crgpu_image_get_buffer_copy_size() gives always is;
+ *  - with #array_layer_count above 1, layer i starts at #buffer_offset
+ *    plus i times the layer's bytes (the row pitch times
+ *    ceil(#buffer_image_height, or #height when it is 0, / block height)
+ *    rows), and each such start is a multiple of
+ *    crgpu_image_get_buffer_copy_offset_alignment(), as #buffer_offset is
+ *    (D3D12 places each layer's footprint at its own 512-byte-aligned
+ *    offset; one copy per layer meets it whatever the layer's size);
+ *  - the bytes the region covers, from #buffer_offset to the end of its
+ *    last row of its last layer, lie within the buffer's size.
  */
 /* Frozen: a copy region, passed in arrays. It never changes; a new need gets a new type. */
 typedef struct crgpu_image_buffer_copy_desc {
@@ -780,12 +958,20 @@ typedef struct crgpu_image_buffer_copy_desc {
  * @retval CR_RESULT_GPU_INVALID_FORMAT The image's format has no texel
  *         block (crgpu_format_get_texel_block()), so no copy of it has a
  *         known layout.
+ * @retval CR_RESULT_GPU_INVALID_IMAGE_USAGE `src_image` wasn't created
+ *         with CRGPU_IMAGE_USAGE_TRANSFER_SRC (pass 10).
+ * @retval CR_RESULT_GPU_INVALID_BUFFER_USAGE `dst_buffer` wasn't created
+ *         with CRGPU_BUFFER_USAGE_TRANSFER_DST (pass 10).
  * @retval CR_RESULT_DESC_INVALID_PARAMETERS The region isn't within the
  *         image: `mip_level` past its levels, the layers past its layers
- *         or `array_layer_count` 0, a size of 0, or the region past the
- *         level's width, height or depth; or it breaks the block's rules
- *         (crgpu_image_buffer_copy_desc); or `buffer_offset` isn't a
- *         multiple of the copy offset alignment. Checked in that order.
+ *         or `array_layer_count` 0, a size of 0 (`depth` included), or the
+ *         region past the level's width, height or depth; or it breaks the
+ *         block's rules (crgpu_image_buffer_copy_desc); or `buffer_offset`
+ *         isn't a multiple of the copy offset alignment; or the row pitch
+ *         isn't a multiple of the row pitch alignment; or a later layer's
+ *         start isn't a multiple of the offset alignment; or the bytes the
+ *         region covers run past the buffer's size. Checked in that order,
+ *         each its own check.
  */
 CR_RESULT crgpu_command_list_copy_image_to_buffer(
     crgpu_command_list cmd,
@@ -811,8 +997,13 @@ CR_RESULT crgpu_command_list_copy_image_to_buffer(
  * @param[in] desc       Region, offset and subresource to copy.
  *
  * @return As crgpu_command_list_copy_image_to_buffer(), with
- *         CR_RESULT_GPU_INVALID_BUFFER for `src_buffer` and
- *         CR_RESULT_GPU_INVALID_IMAGE for `dst_image`.
+ *         CR_RESULT_GPU_INVALID_BUFFER for `src_buffer`,
+ *         CR_RESULT_GPU_INVALID_IMAGE for `dst_image`, and the usages
+ *         CRGPU_BUFFER_USAGE_TRANSFER_SRC on `src_buffer` and
+ *         CRGPU_IMAGE_USAGE_TRANSFER_DST on `dst_image`: after the
+ *         handles and `desc`, the image's format, then the usages in
+ *         parameter order (the buffer's, then the image's), then the
+ *         region as listed there.
  */
 CR_RESULT crgpu_command_list_copy_buffer_to_image(
     crgpu_command_list cmd,
@@ -833,7 +1024,9 @@ CR_RESULT crgpu_command_list_copy_buffer_to_image(
  * The row length a copy then takes, in texels, is
  * `row_pitch / block bytes * block width`.
  *
- * Does nothing if `image` is NULL.
+ * Does nothing if `image` is NULL. Writes 0 to both outputs for an image
+ * whose format has no texel block (a planar format; pass 10), which no
+ * copy takes.
  *
  * @param[in]  image          Image the copy targets.
  * @param[in]  mip_level      Mip level being copied.
@@ -853,7 +1046,50 @@ void crgpu_image_get_buffer_copy_size(
  * an ASTC image (16 on Metal, the block's bytes; 16 on Vulkan, the least
  * common multiple of the block's bytes and 4; never asked on D3D12, where
  * no ASTC image exists). Its contract is unchanged: it already gives a
- * block format's alignment from the block's bytes.
+ * block format's alignment from the block's bytes. Its refusal's comment
+ * changes (pass 10): CR_RESULT_GPU_INVALID_FORMAT when "the image's format
+ * has no texel block (crgpu_format_get_texel_block())", where it pointed
+ * at crgpu_format_get_bit_count(), which gives 0 for every ASTC format.
+ * It now also states the layer rule: with several layers in one copy,
+ * each layer's start is a multiple of it (crgpu_image_buffer_copy_desc).
+ */
+
+/**
+ * @brief [ADDED] Gives the multiple a copy's buffer row pitch must be,
+ * between a buffer and `image` (pass 9).
+ *
+ * A copy's row pitch, in bytes, is ceil(row length / block width) times
+ * the block's bytes (crgpu_image_buffer_copy_desc), and must be a
+ * multiple of the value returned: 256 on D3D12
+ * (D3D12_TEXTURE_DATA_PITCH_ALIGNMENT); the block's bytes on Vulkan and
+ * Metal, which any whole number of blocks meets, so a tight row is always
+ * taken there. The row pitch crgpu_image_get_buffer_copy_size() gives is
+ * always a multiple of it.
+ *
+ * Why: the copies refuse a pitch D3D12 can't take (Q6: bad input never
+ * reaches the API), and a caller that packs its own rows (several regions
+ * in one staging buffer, or rows narrower than the level) needs the rule
+ * as a number, as it has the offset's. WebGPU's encoder copies and wgpu
+ * (COPY_BYTES_PER_ROW_ALIGNMENT) state the same 256. ABI: a call added.
+ * Tests: crgpu_objects_test (256 on D3D12, the block's bytes elsewhere; a
+ * tight row of 64 bytes refused on D3D12 and taken on Vulkan and Metal).
+ *
+ * Thread: as the image's other queries.
+ *
+ * @param[in]  image         Image the copy reads or writes.
+ * @param[out] out_alignment Receives the alignment, in bytes.
+ *
+ * @retval CR_SUCCESS `out_alignment` was written.
+ * @retval CR_RESULT_GPU_INVALID_IMAGE `image` is NULL or destroyed.
+ * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_alignment` is NULL.
+ * @retval CR_RESULT_GPU_INVALID_FORMAT The image's format has no texel
+ *         block, so no copy of it has a known layout.
+ */
+CR_RESULT crgpu_image_get_buffer_copy_row_pitch_alignment(
+    crgpu_image image,
+    uint64_t *out_alignment);
+
+/*
  *
  * [CHANGED] crgpu_command_list_blit_image(): its comment gains "Neither
  * image may be in a block-compressed format: no API blits into one, and
@@ -874,8 +1110,9 @@ void crgpu_image_get_buffer_copy_size(
  * crcore.h
  * ---------------------------------------------------------------------------
  *
- * [CHANGED] CARROTTUS_VERSION_MINOR 4 to 5 (the copies' signatures and the
- * creates' new refusals), as "The version and the breaks" says.
+ * Unchanged: CARROTTUS_VERSION_MINOR stays 4 while 0.4.0 is untagged
+ * (card X2, the approval's correction; version 8 said 4 to 5, superseded).
+ * The copies' signatures and the new refusals are listed against abi.txt.
  *
  * No result is added: the feature's refusal is
  * CR_RESULT_GPU_FEATURE_NOT_SUPPORTED (212), already the refusal for a
@@ -892,24 +1129,33 @@ void crgpu_image_get_buffer_copy_size(
  *   0 for ASTC. crgpu___internal_format_block_bytes() is replaced by the
  *   table.
  * - src/gpu/crgpushared.c: the creates' block checks (above) and the
- *   copies' region checks, once, called by every backend.
+ *   copies' checks (usages, region, block, offset, row pitch, layers, the
+ *   buffer's range), once, called by every backend with its two
+ *   alignments; the backends' `0 means 1` for layers and depth goes.
  * - Metal (crgpumetalformat.m, crgpumetalcontext.m,
  *   crgpumetalrenderpass.m): the BC formats (BC1_RGBA and _sRGB, BC2, BC3,
  *   BC4_RUnorm and _RSnorm, BC5_RGUnorm and _RGSnorm, BC6H_RGBUfloat and
  *   _RGBFloat, BC7_RGBAUnorm and _sRGB; no TYPELESS) and the 28 ASTC
  *   formats in its table, the ASTC values in a second array indexed from
  *   1000; the two bits read where the adapter's facts are; bytes per row
- *   and per image from the block.
+ *   and per image from the block; the row pitch alignment the block's
+ *   bytes.
  * - Vulkan (crgpuvulkancontext.c, crgpuvulkanrenderpass.c): the 28 ASTC
  *   formats mapped; the two features read with the others and enabled
  *   only for a device created with each bit; the copy size from the block.
  *   bufferRowLength and bufferImageHeight pass through in texels, as
- *   Vulkan takes them.
+ *   Vulkan takes them; the row pitch alignment the block's bytes.
  * - D3D12 (crgpud3d12context.cpp, crgpud3d12renderpass.cpp, crgpud3d12.hpp):
- *   the BC bit on every adapter, the ASTC bit on none; the footprint's
- *   RowPitch from the block (rows of blocks), its Width and Height rounded
- *   up to whole blocks; the cast refuses a value at or past 1000 with
- *   DXGI_FORMAT_UNKNOWN, a guard behind the create's check.
+ *   the BC bit on every adapter, the ASTC bit on none; in
+ *   crgpu_d3d12_make_footprint() the RowPitch from the block (rows of
+ *   blocks, where it took the bit count's bytes a texel), its Width and
+ *   Height rounded up to whole blocks, and each layer's Offset stepped by
+ *   the row pitch times the rows of blocks (it stepped by
+ *   buffer_image_height in texels); the readback's source box's right and
+ *   bottom rounded up to whole blocks where the region reaches the level's
+ *   edge, as the footprint is (pass 13); the row pitch alignment 256; the
+ *   cast refuses a value at or past 1000 with DXGI_FORMAT_UNKNOWN, a guard
+ *   behind the create's check.
   *
  * ---------------------------------------------------------------------------
  * Records when built (pass 7)
@@ -917,7 +1163,8 @@ void crgpu_image_get_buffer_copy_size(
  *
  * carrottus/CLAUDE.md, "Carrottus GPU conventions": a bullet on block
  * formats (the bits, the block query, 2D only, whole blocks at level 0,
- * the copies' rules and results, ASTC numbered from 1000).
+ * the copies' rules and results, the two alignment queries, ASTC numbered
+ * from 1000).
  * CRGPU_DEVICE_TODO.md: a section for S48, each machine's run and each
  * Vulkan driver's two booleans, Vulkan's ASTC written and not run until a
  * GPU that samples it is at hand. crgpumetalformat.m's comment on what its

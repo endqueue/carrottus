@@ -1933,3 +1933,75 @@ The steps every item of `MATURITY_TODO.md` ends with:
   the feature bits instead of `crgpu_get_mesh_shading_capabilities` and
   `crgpu_bindless_capabilities::supported`; the bindless names follow the
   rename.
+
+## Anisotropic filtering: a feature bit and a limit (card S49, decided 2026-11-17: a)
+
+Found 2026-11-17: `CRGPU_SAMPLER_DESC::max_anisotropy` reaches every
+backend, but no device reports whether it filters anisotropically or its
+largest level, and the Vulkan device never enables `samplerAnisotropy`, so
+a sampler above 1 on Vulkan is outside Vulkan's rules today. Card S49
+recommends a feature bit asked for at device creation and
+`max_sampler_anisotropy` in the adapter's limits, a sampler past either
+refused (no clamp). Decided 2026-11-17 with you as recommended. A draft
+first, then the caller's sampler checks after it.
+
+Its feature bit is **bit 18** (`CRGPU_FEATURE_SAMPLER_ANISOTROPY`, the
+name its draft confirms): S48 takes 16 and 17, S50 19, so the three
+drafts don't collide (S48's third critique round, 2026-11-17).
+
+## Block-compressed formats: ASTC added, BC finished (card S48, decided 2026-11-17)
+
+Decided 2026-11-17 with you: `crgpu_astc_draft.h` approved, every
+question as recommended: the 14 ASTC LDR sizes, UNORM and sRGB (Q1a);
+HDR later with its own bit (Q2a); numbered from 1000 (Q3a); no EXT macro,
+the feature bits gating (Q4a); level 0 whole blocks on every backend
+(Q5a); the buffer and image copies returning `CR_RESULT` and refusing a
+bad region (Q6a); block formats 2D only (Q7a); `crgpu_format_get_bit_count`
+0 for ASTC (Q8a). It fixes the three faults found drafting it: the copies'
+row pitch for block formats on all three backends, Metal's missing BC
+formats, Vulkan never enabling `textureCompressionBC`. No version raise
+while 0.4 is untagged (card X2). Built on the Mac in full; BC and ASTC's
+refusals on Windows and Fedora (no GPU at hand samples ASTC over Vulkan).
+Cards S49 (anisotropy) and S50 (dual-source blending) are drafted in
+the same session, for approval, not built.
+
+**Amended by the third critique round, 2026-11-17 (the draft's version
+9, approval kept):**
+- **A new call, `crgpu_image_get_buffer_copy_row_pitch_alignment(image,
+  out_alignment)`** [ADDED]: the alignment a buffer-image copy's row pitch
+  must meet for that image (256 bytes on D3D12, the texel block's bytes on
+  Vulkan and Metal); the copies refuse a pitch that misses it.
+- **The copies' checks:** the buffer's and the image's transfer usage,
+  the buffer range (existing codes); a layer's start a multiple of the
+  offset alignment (512 on D3D12); a layer count or depth of 0 refused (a
+  listed break). The offset-alignment query reads the texel block;
+  `crgpu_format_get_buffer_copy_size` writes 0 for a format with no texel
+  block.
+- **D3D12's footprint fixes** (`make_footprint`, three errors found):
+  the row pitch from the bit count, the layer step counted in texel rows,
+  and a readback box not of whole blocks.
+- **Texel blocks for packed formats:** single-texel formats 1 x 1;
+  4:2:2 packed 2 x 1 (`R8G8_B8G8`, `G8R8_G8B8` and `YUY2` 4 bytes, `Y210`
+  and `Y216` 8 bytes); refused for `UNKNOWN`, `R1_UNORM`, the eight planar
+  formats and any unnamed value.
+- Noted, not changed: `MTLGPUFamilyMac2` is deprecated in the macOS 27
+  SDK. A general per-format capabilities query is card S51 (open).
+- The build regenerates the misuse harness for the two new calls.
+
+## Dual-source blending (card S50, decided 2026-11-17: a)
+
+Opened 2026-11-17: a feature bit asked for at device creation and the
+four `SRC1` blend factors appended, a pipeline naming one refused without
+the bit. Needed for a caller's coloured transmittance in one draw. A
+draft first, confirming the shader compiler emits a fragment's second
+output on each backend. Decided 2026-11-17 with you as recommended.
+
+Its feature bit is **bit 19** (`CRGPU_FEATURE_DUAL_SOURCE_BLEND`, the
+name its draft confirms; S48 has 16 and 17, S49 18). The draft must state
+the limit every backend shares: **one colour attachment** when a
+pipeline's blend names a `SRC1` factor (Vulkan's
+`maxFragmentDualSrcAttachments` is 1 where the feature exists; D3D12 and
+Metal blend dual-source into render target 0 only), a pipeline with more
+refused; and how the shader's second output is declared (Slang's, read on
+Metal, D3D12 and Vulkan). Asked for by A55's third critique round.
+
