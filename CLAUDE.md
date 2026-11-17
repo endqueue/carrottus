@@ -1455,9 +1455,14 @@ evening on the Mac (Known gaps below, `CRGPU_DEVICE_TODO.md`).
   `CR_RESULT_GPU_IMAGE_TOO_LARGE`, checked once
   (`crgpu___internal_check_image_size`, `src/gpu/crgpushared.c`), since
   Metal ends the process on one (exit 134, validation off as well). Built
-  on the Mac 2026-11-15 (Apple M5 Pro: 32768, 32768, 2048, 32768, 2048);
-  Vulkan's half type-checked there against the SDK's headers, D3D12's
-  written, not compiled. `crgpu_heap_get_image_placement_requirements`
+  on the Mac 2026-11-15 (Apple M5 Pro: 32768, 32768, 2048, 32768, 2048),
+  and on Windows 2026-11-16 and 17 (the ThinkPad P1 Gen 5): D3D12's and
+  Vulkan's halves compiled and ran as written, every ctest and both GPU
+  tests on every adapter under every validation mode, Debug, Release and
+  `-asan`, every refusal reached and nothing reported (D3D12 16384, 16384,
+  2048, 16384, 2048 on every adapter; Vulkan the same on the Iris Xe, and
+  32768, 32768, 16384, 32768, 2048 on the RTX A2000). Linux owed.
+  `crgpu_heap_get_image_placement_requirements`
   still aborts on Metal for such an image (`CRGPU_DEVICE_TODO.md`, S33,
   "For you").
 - Carrottus Net was written on 2026-10-07 and its header reworked, and every backend

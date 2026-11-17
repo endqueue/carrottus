@@ -1060,7 +1060,7 @@ the workspace's `prompts/`, has every finding):
   5. `./check.sh --update-abi` (the layout break listed), the misuse
      generator rerun, `./check.sh`; built on the Mac, then Windows and
      Fedora, each driver's numbers recorded here.
-- **Built on the Mac 2026-11-15** (card X25: Windows and Linux owed;
+- **Built on the Mac 2026-11-15** (card X25: Linux owed, Windows built below;
   `../prompts/crgpu_image_size_mac.md`, its Progress has the run). Each
   step of the plan: 1 built on the Mac; 2 built on the Mac; 3 Metal built
   on the Mac, Vulkan written and type-checked on the Mac (`clang
@@ -1070,9 +1070,31 @@ the workspace's `prompts/`, has every finding):
   - **The numbers, per adapter and driver:**
     - Apple M5 Pro (Apple10, macOS 27), Metal: 1D 32768, 2D 32768, 3D
       2048, cube 32768, layers 2048.
-    - Owed: the Iris Xe, the RTX A2000 and WARP over D3D12 (the five
-      constants), the Iris Xe and the A2000 over Vulkan on Windows, ANV,
-      NVK and llvmpipe on the ThinkPad's Fedora, RADV on the desktop.
+    - Windows 11 (build 26300, the ThinkPad P1 Gen 5), D3D12, the
+      constants on every adapter: the Iris Xe (driver 32.0.101.7092), the
+      RTX A2000 (32.0.15.9730) and WARP each 1D 16384, 2D 16384, 3D 2048,
+      cube 16384, layers 2048.
+    - Windows 11, Vulkan: the Iris Xe (Intel 101.7092, Vulkan 1.4.323)
+      1D 16384, 2D 16384, 3D 2048, cube 16384, layers 2048; the RTX A2000
+      (NVIDIA 597.30, Vulkan 1.4.329) 1D 32768, 2D 32768, 3D 16384, cube
+      32768, layers 2048.
+    - Owed: ANV, NVK and llvmpipe on the ThinkPad's Fedora, RADV on the
+      desktop.
+  - **Built on Windows 2026-11-16 and 17** (the ThinkPad P1 Gen 5; MSVC
+    14.51, Vulkan SDK 1.4.363.0; `../prompts/crgpu_image_size_windows.md`,
+    its Progress). Each step of the plan: 1 to 5 built on Windows. The
+    D3D12 half compiled as written, and the Vulkan half linked and ran as
+    type-checked: nothing in carrottus changed. `windows-d3d12` and
+    `-vulkan`, Debug and Release, and both `-asan` presets, no warning,
+    15 of 15 ctests in each; `crgpu_device_test` and `crgpu_objects_test`
+    on every adapter (D3D12 the Iris Xe, the A2000 and WARP under the
+    debug layer and again under GPU-based validation; Vulkan the Iris Xe
+    and the A2000 under validation with performance warnings and again
+    under synchronization validation; Release and ASan on each): every
+    refusal reached on both creates and every small image made, no
+    message, no report. `cr_misuse_tests` ten times on each backend
+    (285 calls with zeroes, 258 with a destroyed handle, no failure);
+    `cr_noalloc_tests` none of ours on either.
   - **Seen failing first:** the fields didn't compile; a 2D image 32769
     wide made through `crgpu_image_create` ended the process inside
     `newTextureWithDescriptor` (exit 134, "MTLTextureDescriptor has width
