@@ -97,6 +97,21 @@ CR_RESULT crgpu___internal_check_pipeline_outputs(
 		return CR_RESULT_GPU_EXT_TESSELLATION_NOT_SUPPORTED;
 	if (desc->color_attachment_count > CRGPU_MAX_COLOR_ATTACHMENTS)
 		return CR_RESULT_GPU_TOO_MANY_COLOR_ATTACHMENTS;
+	// No API renders to a block-compressed format or fetches vertices from
+	// one, and D3D12's pipeline creation casts these values as its image
+	// create does: refused before any backend translates one (card S48).
+	for (uint32_t i = 0; i < desc->color_attachment_count; ++i)
+		if (crgpu___internal_texel_block(desc->color_attachment_formats[i]).family != CRGPU___BLOCK_FAMILY_NONE)
+			return CR_RESULT_GPU_INVALID_FORMAT;
+	if (crgpu___internal_texel_block(desc->depth_format).family != CRGPU___BLOCK_FAMILY_NONE)
+		return CR_RESULT_GPU_INVALID_FORMAT;
+	// A mesh pipeline reads no vertex attributes. Past the array's capacity
+	// no attribute is read here: what a backend makes of such a count is its
+	// own (unchanged) business.
+	if (desc->vertex_module)
+		for (uint32_t i = 0; i < desc->vertex_attribute_count && i < CRGPU_MAX_VERTEX_ATTRIBUTES; ++i)
+			if (crgpu___internal_texel_block(desc->vertex_attributes[i].format).family != CRGPU___BLOCK_FAMILY_NONE)
+				return CR_RESULT_GPU_INVALID_FORMAT;
 	if (desc->depth_bias_clamp != 0.0f && !(features & CRGPU_FEATURE_DEPTH_BIAS_CLAMP))
 		return CR_RESULT_GPU_DEPTH_BIAS_CLAMP_NOT_SUPPORTED;
 	if (!(features & CRGPU_FEATURE_INDEPENDENT_BLEND))
@@ -1054,4 +1069,157 @@ CR_RESULT crgpu___internal_check_image_size(
 	if (desc->array_layers > limits->max_image_array_layers)
 		return CR_RESULT_GPU_IMAGE_TOO_LARGE;
 	return CR_SUCCESS;
+}
+
+CR_RESULT crgpu___internal_check_image_block(
+    CRGPU_FEATURES features,
+    const crgpu_image_desc *desc) {
+	const crgpu___texel_block block = crgpu___internal_texel_block(desc->format);
+	if (block.family == CRGPU___BLOCK_FAMILY_NONE)
+		return CR_SUCCESS;
+	const CRGPU_FEATURES needed = block.family == CRGPU___BLOCK_FAMILY_BC ? CRGPU_FEATURE_TEXTURE_COMPRESSION_BC : CRGPU_FEATURE_TEXTURE_COMPRESSION_ASTC_LDR;
+	if (!(features & needed))
+		return CR_RESULT_GPU_FEATURE_NOT_SUPPORTED;
+	// Sampled and copied only: no API renders to a block format or writes
+	// one from a shader.
+	const CRGPU_IMAGE_USAGE allowed = CRGPU_IMAGE_USAGE_SAMPLED | CRGPU_IMAGE_USAGE_TRANSFER_SRC | CRGPU_IMAGE_USAGE_TRANSFER_DST;
+	if (desc->usage & ~allowed)
+		return CR_RESULT_GPU_INVALID_IMAGE_USAGE;
+	// 2D only (arrays and cubes are 2D images): D3D12 has no 1D BC texture,
+	// and a 3D one of 2D blocks needs a feature of its own elsewhere.
+	if (desc->type != CRGPU_IMAGE_TYPE_2D)
+		return CR_RESULT_GPU_INVALID_IMAGE_TYPE;
+	// Level 0 a whole number of blocks, on every backend (WebGPU's rule, and
+	// D3D12's for BC); smaller levels are whatever the halving gives.
+	if (desc->width % block.width != 0 || desc->height % block.height != 0)
+		return CR_RESULT_DESC_INVALID_PARAMETERS;
+	return CR_SUCCESS;
+}
+
+// a * b and a + b, held at UINT64_MAX where they would wrap: a layout that
+// large lies past any buffer, which is the check that then refuses it.
+static uint64_t crgpu___saturating_mul(
+    uint64_t a,
+    uint64_t b) {
+	if (a != 0 && b > UINT64_MAX / a)
+		return UINT64_MAX;
+	return a * b;
+}
+
+static uint64_t crgpu___saturating_add(
+    uint64_t a,
+    uint64_t b) {
+	return b > UINT64_MAX - a ? UINT64_MAX : a + b;
+}
+
+// A level's size from its image's size: halved per level, never below 1.
+static uint32_t crgpu___level_size(
+    uint32_t size,
+    uint32_t mip_level) {
+	const uint32_t level = mip_level < 32 ? size >> mip_level : 0;
+	return level ? level : 1;
+}
+
+CR_RESULT crgpu___internal_check_buffer_image_copy(
+    const crgpu_image_desc *image,
+    const crgpu_buffer_desc *buffer,
+    bool to_image,
+    uint64_t offset_alignment,
+    uint64_t row_pitch_alignment,
+    const crgpu_image_buffer_copy_desc *desc,
+    crgpu___copy_layout *out_layout) {
+	const crgpu___texel_block block = crgpu___internal_texel_block(image->format);
+	if (block.bytes == 0)
+		return CR_RESULT_GPU_INVALID_FORMAT;
+	// The usages, in parameter order: the source's, then the destination's.
+	if (to_image && !(buffer->usage & CRGPU_BUFFER_USAGE_TRANSFER_SRC))
+		return CR_RESULT_GPU_INVALID_BUFFER_USAGE;
+	if (!to_image && !(image->usage & CRGPU_IMAGE_USAGE_TRANSFER_SRC))
+		return CR_RESULT_GPU_INVALID_IMAGE_USAGE;
+	if (to_image && !(image->usage & CRGPU_IMAGE_USAGE_TRANSFER_DST))
+		return CR_RESULT_GPU_INVALID_IMAGE_USAGE;
+	if (!to_image && !(buffer->usage & CRGPU_BUFFER_USAGE_TRANSFER_DST))
+		return CR_RESULT_GPU_INVALID_BUFFER_USAGE;
+
+	// The region within the image.
+	if (desc->mip_level >= image->mip_levels)
+		return CR_RESULT_DESC_INVALID_PARAMETERS;
+	if (desc->array_layer_count == 0 || (uint64_t)desc->base_array_layer + desc->array_layer_count > image->array_layers)
+		return CR_RESULT_DESC_INVALID_PARAMETERS;
+	if (desc->width == 0 || desc->height == 0 || desc->depth == 0)
+		return CR_RESULT_DESC_INVALID_PARAMETERS;
+	const uint32_t level_width  = crgpu___level_size(image->width, desc->mip_level);
+	const uint32_t level_height = crgpu___level_size(image->height, desc->mip_level);
+	const uint32_t level_depth  = image->type == CRGPU_IMAGE_TYPE_3D ? crgpu___level_size(image->depth, desc->mip_level) : 1;
+	if ((uint64_t)desc->image_x + desc->width > level_width || (uint64_t)desc->image_y + desc->height > level_height ||
+	    (uint64_t)desc->image_z + desc->depth > level_depth)
+		return CR_RESULT_DESC_INVALID_PARAMETERS;
+
+	// The block's rules: the offset whole blocks, the size whole blocks or
+	// to the level's edge, the buffer's row length and image height whole
+	// blocks.
+	if (desc->image_x % block.width != 0 || desc->image_y % block.height != 0)
+		return CR_RESULT_DESC_INVALID_PARAMETERS;
+	if (desc->width % block.width != 0 && desc->image_x + desc->width != level_width)
+		return CR_RESULT_DESC_INVALID_PARAMETERS;
+	if (desc->height % block.height != 0 && desc->image_y + desc->height != level_height)
+		return CR_RESULT_DESC_INVALID_PARAMETERS;
+	if (desc->buffer_row_length % block.width != 0 || desc->buffer_image_height % block.height != 0)
+		return CR_RESULT_DESC_INVALID_PARAMETERS;
+
+	if (desc->buffer_offset % offset_alignment != 0)
+		return CR_RESULT_DESC_INVALID_PARAMETERS;
+
+	// The buffer's layout, in rows of blocks.
+	const uint32_t row_length   = desc->buffer_row_length ? desc->buffer_row_length : desc->width;
+	const uint32_t image_height = desc->buffer_image_height ? desc->buffer_image_height : desc->height;
+	const uint64_t row_pitch    = ((uint64_t)row_length + block.width - 1) / block.width * block.bytes;
+	if (row_pitch % row_pitch_alignment != 0)
+		return CR_RESULT_DESC_INVALID_PARAMETERS;
+	const uint64_t image_rows  = ((uint64_t)image_height + block.height - 1) / block.height;
+	const uint64_t slice_bytes = crgpu___saturating_mul(row_pitch, image_rows);
+	const uint64_t layer_bytes = crgpu___saturating_mul(slice_bytes, desc->depth);
+	if (desc->array_layer_count > 1 && layer_bytes % offset_alignment != 0)
+		return CR_RESULT_DESC_INVALID_PARAMETERS;
+
+	// The bytes the region covers: to the end of its last row of blocks of
+	// its last slice of its last layer.
+	const uint32_t blocks_wide = (uint32_t)(((uint64_t)desc->width + block.width - 1) / block.width);
+	const uint32_t blocks_high = (uint32_t)(((uint64_t)desc->height + block.height - 1) / block.height);
+	uint64_t end               = desc->buffer_offset;
+	end                        = crgpu___saturating_add(end, crgpu___saturating_mul(desc->array_layer_count - 1, layer_bytes));
+	end                        = crgpu___saturating_add(end, crgpu___saturating_mul(desc->depth - 1, slice_bytes));
+	end                        = crgpu___saturating_add(end, crgpu___saturating_mul(blocks_high - 1, row_pitch));
+	end                        = crgpu___saturating_add(end, (uint64_t)blocks_wide * block.bytes);
+	if (end > buffer->size)
+		return CR_RESULT_DESC_INVALID_PARAMETERS;
+
+	out_layout->block              = block;
+	out_layout->region_blocks_wide = blocks_wide;
+	out_layout->region_blocks_high = blocks_high;
+	out_layout->row_pitch          = row_pitch;
+	out_layout->image_rows         = image_rows;
+	out_layout->slice_bytes        = slice_bytes;
+	out_layout->layer_bytes        = layer_bytes;
+	return CR_SUCCESS;
+}
+
+void crgpu___internal_tight_copy_size(
+    const crgpu_image_desc *image,
+    uint32_t mip_level,
+    uint64_t *out_row_pitch,
+    uint64_t *out_total_size) {
+	const crgpu___texel_block block = crgpu___internal_texel_block(image->format);
+	uint64_t row_pitch = 0, total = 0;
+	if (block.bytes != 0) {
+		const uint64_t width  = crgpu___level_size(image->width, mip_level);
+		const uint64_t height = crgpu___level_size(image->height, mip_level);
+		const uint64_t depth  = crgpu___level_size(image->depth, mip_level);
+		row_pitch             = (width + block.width - 1) / block.width * block.bytes;
+		total                 = row_pitch * ((height + block.height - 1) / block.height) * depth;
+	}
+	if (out_row_pitch)
+		*out_row_pitch = row_pitch;
+	if (out_total_size)
+		*out_total_size = total;
 }

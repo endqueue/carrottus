@@ -267,6 +267,30 @@ void crgpu_command_list_image_barrier_subresource(
 // Public API: crgpu_command_list_copy_buffer_to_image / crgpu_command_list_copy_image_to_buffer
 // ---------------------------------------------------------------------------
 
+// What a copy's buffer offset and row pitch must be a multiple of, for an
+// image of [block]'s format. VkBufferImageCopy::bufferOffset: a multiple of
+// the texel block's size, and of 4 for a depth/stencil format or on a queue
+// with neither graphics nor compute; the least common multiple of the two
+// meets every case, on whatever queue the copy is recorded for. A row needs
+// no more than whole blocks. Both 0 for a format with no block, which the
+// copies' checks refuse before reading them.
+static uint64_t crgpuvulkan___copy_offset_alignment(crgpu___texel_block block) {
+	if (block.bytes == 0)
+		return 0;
+	uint64_t a = block.bytes, b = 4;
+	while (b) {
+		const uint64_t r = a % b;
+		a                = b;
+		b                = r;
+	}
+	return block.bytes / a * 4;
+}
+
+static uint64_t crgpuvulkan___copy_row_pitch_alignment(crgpu___texel_block block) { return block.bytes; }
+
+// bufferRowLength and bufferImageHeight pass through in texels, as Vulkan
+// takes them for every format, block-compressed included: the copies'
+// checks have held them, the offset and the extent to the block's rules.
 static VkBufferImageCopy crgpuvulkan___make_buffer_image_copy(
     VkImageAspectFlags aspect,
     const crgpu_image_buffer_copy_desc *desc) {
@@ -277,13 +301,13 @@ static VkBufferImageCopy crgpuvulkan___make_buffer_image_copy(
 	region.imageSubresource.aspectMask     = aspect;
 	region.imageSubresource.mipLevel       = desc->mip_level;
 	region.imageSubresource.baseArrayLayer = desc->base_array_layer;
-	region.imageSubresource.layerCount     = desc->array_layer_count ? desc->array_layer_count : 1;
+	region.imageSubresource.layerCount     = desc->array_layer_count;
 	region.imageOffset.x                   = (int32_t)desc->image_x;
 	region.imageOffset.y                   = (int32_t)desc->image_y;
 	region.imageOffset.z                   = (int32_t)desc->image_z;
 	region.imageExtent.width               = desc->width;
 	region.imageExtent.height              = desc->height;
-	region.imageExtent.depth               = desc->depth ? desc->depth : 1;
+	region.imageExtent.depth               = desc->depth;
 	return region;
 }
 
@@ -309,49 +333,76 @@ void crgpu_command_list_copy_buffer(
 	vkCmdCopyBuffer(cmd->_command_buffer_vk, src_buffer->_buffer_vk, dst_buffer->_buffer_vk, 1, &region);
 }
 
-void crgpu_command_list_copy_image_to_buffer(
+CR_RESULT crgpu_command_list_copy_image_to_buffer(
     crgpu_command_list cmd,
     crgpu_image src_image,
     crgpu_buffer dst_buffer,
     const crgpu_image_buffer_copy_desc *desc) {
-	if (!cmd || !src_image || !dst_buffer || !desc)
-		return;
+	if (!cmd)
+		return CR_RESULT_GPU_INVALID_COMMAND_LIST;
 	if (CR_STALE(cmd, "crgpu_command_list_copy_image_to_buffer", "cmd"))
-		return;
+		return CR_RESULT_GPU_INVALID_COMMAND_LIST;
+	if (!src_image)
+		return CR_RESULT_GPU_INVALID_IMAGE;
 	if (CR_STALE(src_image, "crgpu_command_list_copy_image_to_buffer", "src_image"))
-		return;
+		return CR_RESULT_GPU_INVALID_IMAGE;
+	if (!dst_buffer)
+		return CR_RESULT_GPU_INVALID_BUFFER;
 	if (CR_STALE(dst_buffer, "crgpu_command_list_copy_image_to_buffer", "dst_buffer"))
-		return;
+		return CR_RESULT_GPU_INVALID_BUFFER;
+	if (!desc)
+		return CR_RESULT_NULL_DESC;
+	const crgpu___texel_block block = crgpu___internal_texel_block(src_image->_desc.format);
+	crgpu___copy_layout layout;
+	const CR_RESULT checked = crgpu___internal_check_buffer_image_copy(
+	    &src_image->_desc, &dst_buffer->_desc, false, crgpuvulkan___copy_offset_alignment(block), crgpuvulkan___copy_row_pitch_alignment(block), desc, &layout);
+	if (checked != CR_SUCCESS)
+		return checked;
 
 	VkBufferImageCopy region = crgpuvulkan___make_buffer_image_copy(cr_format_aspect(src_image->_format_vk), desc);
 
 	vkCmdCopyImageToBuffer(cmd->_command_buffer_vk, src_image->_image_vk, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst_buffer->_buffer_vk, 1, &region);
+	return CR_SUCCESS;
 }
 
-void crgpu_command_list_copy_buffer_to_image(
+CR_RESULT crgpu_command_list_copy_buffer_to_image(
     crgpu_command_list cmd,
     crgpu_buffer src_buffer,
     crgpu_image dst_image,
     const crgpu_image_buffer_copy_desc *desc) {
-	if (!cmd || !src_buffer || !dst_image || !desc)
-		return;
+	if (!cmd)
+		return CR_RESULT_GPU_INVALID_COMMAND_LIST;
 	if (CR_STALE(cmd, "crgpu_command_list_copy_buffer_to_image", "cmd"))
-		return;
+		return CR_RESULT_GPU_INVALID_COMMAND_LIST;
+	if (!src_buffer)
+		return CR_RESULT_GPU_INVALID_BUFFER;
 	if (CR_STALE(src_buffer, "crgpu_command_list_copy_buffer_to_image", "src_buffer"))
-		return;
+		return CR_RESULT_GPU_INVALID_BUFFER;
+	if (!dst_image)
+		return CR_RESULT_GPU_INVALID_IMAGE;
 	if (CR_STALE(dst_image, "crgpu_command_list_copy_buffer_to_image", "dst_image"))
-		return;
+		return CR_RESULT_GPU_INVALID_IMAGE;
+	if (!desc)
+		return CR_RESULT_NULL_DESC;
+	const crgpu___texel_block block = crgpu___internal_texel_block(dst_image->_desc.format);
+	crgpu___copy_layout layout;
+	const CR_RESULT checked = crgpu___internal_check_buffer_image_copy(
+	    &dst_image->_desc, &src_buffer->_desc, true, crgpuvulkan___copy_offset_alignment(block), crgpuvulkan___copy_row_pitch_alignment(block), desc, &layout);
+	if (checked != CR_SUCCESS)
+		return checked;
 
 	VkBufferImageCopy region = crgpuvulkan___make_buffer_image_copy(cr_format_aspect(dst_image->_format_vk), desc);
 
 	vkCmdCopyBufferToImage(cmd->_command_buffer_vk, src_buffer->_buffer_vk, dst_image->_image_vk, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+	return CR_SUCCESS;
 }
 
 // ---------------------------------------------------------------------------
 // Public API: crgpu_image_get_buffer_copy_size
 // Vulkan has no row-pitch alignment requirement for buffer<->image copies
-// (bufferRowLength/bufferImageHeight of 0 means tightly packed), so this
-// always reports the tightly-packed size for the given mip level.
+// beyond whole texel blocks (bufferRowLength/bufferImageHeight of 0 means
+// tightly packed), so this reports the tightly packed size of the level, in
+// rows of blocks.
 // ---------------------------------------------------------------------------
 
 void crgpu_image_get_buffer_copy_size(
@@ -363,23 +414,7 @@ void crgpu_image_get_buffer_copy_size(
 		return;
 	if (CR_STALE(image, "crgpu_image_get_buffer_copy_size", "image"))
 		return;
-
-	uint32_t mip_width  = image->_desc.width >> mip_level;
-	uint32_t mip_height = image->_desc.height >> mip_level;
-	uint32_t mip_depth  = image->_desc.depth >> mip_level;
-	if (!mip_width)
-		mip_width = 1;
-	if (!mip_height)
-		mip_height = 1;
-	if (!mip_depth)
-		mip_depth = 1;
-
-	uint64_t row_pitch = (uint64_t)mip_width * (crgpu_format_get_bit_count(image->_desc.format) / 8);
-
-	if (out_row_pitch)
-		*out_row_pitch = row_pitch;
-	if (out_total_size)
-		*out_total_size = row_pitch * mip_height * mip_depth;
+	crgpu___internal_tight_copy_size(&image->_desc, mip_level, out_row_pitch, out_total_size);
 }
 
 CR_RESULT crgpu_image_get_buffer_copy_offset_alignment(
@@ -391,20 +426,26 @@ CR_RESULT crgpu_image_get_buffer_copy_offset_alignment(
 		return CR_RESULT_GPU_INVALID_IMAGE;
 	if (!out_alignment)
 		return CR_RESULT_NULL_OUTPUT_PARAMETER;
-	const uint64_t block = crgpu___internal_format_block_bytes(image->_desc.format);
-	if (block == 0)
+	const crgpu___texel_block block = crgpu___internal_texel_block(image->_desc.format);
+	if (block.bytes == 0)
 		return CR_RESULT_GPU_INVALID_FORMAT;
-	// VkBufferImageCopy::bufferOffset: a multiple of the texel block size,
-	// and of 4 for a depth/stencil format or on a queue with neither
-	// graphics nor compute. The least common multiple of the two meets every
-	// case, on whatever queue the copy is recorded for.
-	uint64_t a = block, b = 4;
-	while (b) {
-		const uint64_t r = a % b;
-		a                = b;
-		b                = r;
-	}
-	*out_alignment = block / a * 4;
+	*out_alignment = crgpuvulkan___copy_offset_alignment(block);
+	return CR_SUCCESS;
+}
+
+CR_RESULT crgpu_image_get_buffer_copy_row_pitch_alignment(
+    crgpu_image image,
+    uint64_t *out_alignment) {
+	if (!image)
+		return CR_RESULT_GPU_INVALID_IMAGE;
+	if (CR_STALE(image, "crgpu_image_get_buffer_copy_row_pitch_alignment", "image"))
+		return CR_RESULT_GPU_INVALID_IMAGE;
+	if (!out_alignment)
+		return CR_RESULT_NULL_OUTPUT_PARAMETER;
+	const crgpu___texel_block block = crgpu___internal_texel_block(image->_desc.format);
+	if (block.bytes == 0)
+		return CR_RESULT_GPU_INVALID_FORMAT;
+	*out_alignment = crgpuvulkan___copy_row_pitch_alignment(block);
 	return CR_SUCCESS;
 }
 

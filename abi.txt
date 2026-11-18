@@ -208,6 +208,34 @@ const CRGPU_FORMAT_420_OPAQUE = 106
 const CRGPU_FORMAT_A8P8 = 114
 const CRGPU_FORMAT_A8_UNORM = 65
 const CRGPU_FORMAT_AI44 = 111
+const CRGPU_FORMAT_ASTC_10X10_UNORM = 1022
+const CRGPU_FORMAT_ASTC_10X10_UNORM_SRGB = 1023
+const CRGPU_FORMAT_ASTC_10X5_UNORM = 1016
+const CRGPU_FORMAT_ASTC_10X5_UNORM_SRGB = 1017
+const CRGPU_FORMAT_ASTC_10X6_UNORM = 1018
+const CRGPU_FORMAT_ASTC_10X6_UNORM_SRGB = 1019
+const CRGPU_FORMAT_ASTC_10X8_UNORM = 1020
+const CRGPU_FORMAT_ASTC_10X8_UNORM_SRGB = 1021
+const CRGPU_FORMAT_ASTC_12X10_UNORM = 1024
+const CRGPU_FORMAT_ASTC_12X10_UNORM_SRGB = 1025
+const CRGPU_FORMAT_ASTC_12X12_UNORM = 1026
+const CRGPU_FORMAT_ASTC_12X12_UNORM_SRGB = 1027
+const CRGPU_FORMAT_ASTC_4X4_UNORM = 1000
+const CRGPU_FORMAT_ASTC_4X4_UNORM_SRGB = 1001
+const CRGPU_FORMAT_ASTC_5X4_UNORM = 1002
+const CRGPU_FORMAT_ASTC_5X4_UNORM_SRGB = 1003
+const CRGPU_FORMAT_ASTC_5X5_UNORM = 1004
+const CRGPU_FORMAT_ASTC_5X5_UNORM_SRGB = 1005
+const CRGPU_FORMAT_ASTC_6X5_UNORM = 1006
+const CRGPU_FORMAT_ASTC_6X5_UNORM_SRGB = 1007
+const CRGPU_FORMAT_ASTC_6X6_UNORM = 1008
+const CRGPU_FORMAT_ASTC_6X6_UNORM_SRGB = 1009
+const CRGPU_FORMAT_ASTC_8X5_UNORM = 1010
+const CRGPU_FORMAT_ASTC_8X5_UNORM_SRGB = 1011
+const CRGPU_FORMAT_ASTC_8X6_UNORM = 1012
+const CRGPU_FORMAT_ASTC_8X6_UNORM_SRGB = 1013
+const CRGPU_FORMAT_ASTC_8X8_UNORM = 1014
+const CRGPU_FORMAT_ASTC_8X8_UNORM_SRGB = 1015
 const CRGPU_FORMAT_AYUV = 100
 const CRGPU_FORMAT_B4G4R4A4_UNORM = 115
 const CRGPU_FORMAT_B5G5R5A1_UNORM = 86
@@ -869,8 +897,8 @@ fn crgpu_command_list_clear_color_attachment void (crgpu_command_list, crgpu_ima
 fn crgpu_command_list_clear_depth_attachment void (crgpu_command_list, crgpu_image_view, bool, bool, float, uint32_t, uint32_t, uint32_t)
 fn crgpu_command_list_copy_acceleration_structure CR_RESULT (crgpu_command_list, crgpu_acceleration_structure, crgpu_acceleration_structure, CRGPU_ACCELERATION_STRUCTURE_COPY_MODE)
 fn crgpu_command_list_copy_buffer void (crgpu_command_list, crgpu_buffer, crgpu_buffer, uint64_t, uint64_t, uint64_t)
-fn crgpu_command_list_copy_buffer_to_image void (crgpu_command_list, crgpu_buffer, crgpu_image, const crgpu_image_buffer_copy_desc *)
-fn crgpu_command_list_copy_image_to_buffer void (crgpu_command_list, crgpu_image, crgpu_buffer, const crgpu_image_buffer_copy_desc *)
+fn crgpu_command_list_copy_buffer_to_image CR_RESULT (crgpu_command_list, crgpu_buffer, crgpu_image, const crgpu_image_buffer_copy_desc *)
+fn crgpu_command_list_copy_image_to_buffer CR_RESULT (crgpu_command_list, crgpu_image, crgpu_buffer, const crgpu_image_buffer_copy_desc *)
 fn crgpu_command_list_create CR_RESULT (crgpu_command_allocator, crgpu_command_list *)
 fn crgpu_command_list_destroy void (crgpu_command_list)
 fn crgpu_command_list_dispatch void (crgpu_command_list, uint32_t, uint32_t, uint32_t)
@@ -929,6 +957,7 @@ fn crgpu_fence_signal CR_RESULT (crgpu_device, crgpu_fence, uint64_t)
 fn crgpu_fence_wait CR_RESULT (crgpu_device, crgpu_fence *, const uint64_t *, uint32_t, bool, uint64_t)
 fn crgpu_format_from_string CRGPU_FORMAT (const char *)
 fn crgpu_format_get_bit_count uint32_t (CRGPU_FORMAT)
+fn crgpu_format_get_texel_block CR_RESULT (CRGPU_FORMAT, uint32_t *, uint32_t *, uint32_t *)
 fn crgpu_graphics_pipeline_create CR_RESULT (crgpu_device, const crgpu_graphics_pipeline_desc *, crgpu_graphics_pipeline *)
 fn crgpu_graphics_pipeline_destroy void (crgpu_graphics_pipeline)
 fn crgpu_heap_create CR_RESULT (crgpu_device, const crgpu_heap_desc *, crgpu_heap *)
@@ -940,6 +969,7 @@ fn crgpu_image_create CR_RESULT (crgpu_device, const crgpu_image_desc *, crgpu_i
 fn crgpu_image_create_placed CR_RESULT (crgpu_heap, uint64_t, const crgpu_image_desc *, crgpu_image *)
 fn crgpu_image_destroy void (crgpu_image)
 fn crgpu_image_get_buffer_copy_offset_alignment CR_RESULT (crgpu_image, uint64_t *)
+fn crgpu_image_get_buffer_copy_row_pitch_alignment CR_RESULT (crgpu_image, uint64_t *)
 fn crgpu_image_get_buffer_copy_size void (crgpu_image, uint32_t, uint64_t *, uint64_t *)
 fn crgpu_image_get_desc CR_RESULT (crgpu_image, crgpu_image_desc *)
 fn crgpu_image_view_create CR_RESULT (crgpu_image, const crgpu_image_view_desc *, crgpu_image_view *)
@@ -1127,6 +1157,8 @@ macro CRGPU_FEATURE_PASS_TIMESTAMPS (UINT64_C(1) << 5)
 macro CRGPU_FEATURE_PRESENT (UINT64_C(1) << 11)
 macro CRGPU_FEATURE_RAY_QUERY (UINT64_C(1) << 13)
 macro CRGPU_FEATURE_TESSELLATION (UINT64_C(1) << 15)
+macro CRGPU_FEATURE_TEXTURE_COMPRESSION_ASTC_LDR (UINT64_C(1) << 17)
+macro CRGPU_FEATURE_TEXTURE_COMPRESSION_BC (UINT64_C(1) << 16)
 macro CRGPU_HEAP_SIZE_GRANULARITY 65536u
 macro CRGPU_MAX_COLOR_ATTACHMENTS 8
 macro CRGPU_MAX_DESCRIPTOR_BINDINGS_PER_SET 16

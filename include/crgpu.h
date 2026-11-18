@@ -9,7 +9,10 @@
  *
  * Every object is an opaque handle the caller creates, owns and destroys.
  * Functions that can fail return a CR_RESULT (see crcore.h); the
- * `crgpu_command_list_*` functions record into a command list and return nothing.
+ * `crgpu_command_list_*` functions record into a command list and most
+ * return nothing; the few whose arguments a check can refuse (the copies
+ * between buffers and images, the acceleration structures' builds and
+ * copies) return a CR_RESULT and record nothing on a refusal.
  *
  * @par Threads
  * The library rule holds (@ref cr_threads "Threads", crcore.h): every
@@ -47,7 +50,8 @@ extern "C" {
 /**
  * @brief Pixel and vertex-attribute data format.
  *
- * Numbered like DXGI_FORMAT.
+ * Numbered like DXGI_FORMAT, where DXGI has the format; a format DXGI lacks
+ * is numbered from 1000 (ASTC), past any value DXGI uses. Only appended to.
  */
 typedef uint32_t CRGPU_FORMAT;
 enum {
@@ -172,20 +176,106 @@ enum {
 	CRGPU_FORMAT_V208 = 131, /**< DXGI_FORMAT_V208. */
 	CRGPU_FORMAT_V408 = 132, /**< DXGI_FORMAT_V408. */
 
+	/*
+	 * ASTC LDR: every 2D block size, each UNORM and sRGB, in Vulkan's order.
+	 * A block is 16 bytes whatever its size. Sampled on a device created
+	 * with CRGPU_FEATURE_TEXTURE_COMPRESSION_ASTC_LDR; never on D3D12, which
+	 * has no ASTC. Metal: MTLPixelFormatASTC_<w>x<h>_LDR and _sRGB. Vulkan:
+	 * VK_FORMAT_ASTC_<w>x<h>_UNORM_BLOCK and _SRGB_BLOCK. Since 0.4.0.
+	 */
+	CRGPU_FORMAT_ASTC_4X4_UNORM        = 1000, /**< ASTC LDR, 4x4 texels a block, linear. */
+	CRGPU_FORMAT_ASTC_4X4_UNORM_SRGB   = 1001, /**< ASTC LDR, 4x4, sRGB-encoded colour. */
+	CRGPU_FORMAT_ASTC_5X4_UNORM        = 1002, /**< ASTC LDR, 5x4 (5 wide, 4 tall), linear. */
+	CRGPU_FORMAT_ASTC_5X4_UNORM_SRGB   = 1003, /**< ASTC LDR, 5x4, sRGB. */
+	CRGPU_FORMAT_ASTC_5X5_UNORM        = 1004, /**< ASTC LDR, 5x5, linear. */
+	CRGPU_FORMAT_ASTC_5X5_UNORM_SRGB   = 1005, /**< ASTC LDR, 5x5, sRGB. */
+	CRGPU_FORMAT_ASTC_6X5_UNORM        = 1006, /**< ASTC LDR, 6x5, linear. */
+	CRGPU_FORMAT_ASTC_6X5_UNORM_SRGB   = 1007, /**< ASTC LDR, 6x5, sRGB. */
+	CRGPU_FORMAT_ASTC_6X6_UNORM        = 1008, /**< ASTC LDR, 6x6, linear. */
+	CRGPU_FORMAT_ASTC_6X6_UNORM_SRGB   = 1009, /**< ASTC LDR, 6x6, sRGB. */
+	CRGPU_FORMAT_ASTC_8X5_UNORM        = 1010, /**< ASTC LDR, 8x5, linear. */
+	CRGPU_FORMAT_ASTC_8X5_UNORM_SRGB   = 1011, /**< ASTC LDR, 8x5, sRGB. */
+	CRGPU_FORMAT_ASTC_8X6_UNORM        = 1012, /**< ASTC LDR, 8x6, linear. */
+	CRGPU_FORMAT_ASTC_8X6_UNORM_SRGB   = 1013, /**< ASTC LDR, 8x6, sRGB. */
+	CRGPU_FORMAT_ASTC_8X8_UNORM        = 1014, /**< ASTC LDR, 8x8, linear. */
+	CRGPU_FORMAT_ASTC_8X8_UNORM_SRGB   = 1015, /**< ASTC LDR, 8x8, sRGB. */
+	CRGPU_FORMAT_ASTC_10X5_UNORM       = 1016, /**< ASTC LDR, 10x5, linear. */
+	CRGPU_FORMAT_ASTC_10X5_UNORM_SRGB  = 1017, /**< ASTC LDR, 10x5, sRGB. */
+	CRGPU_FORMAT_ASTC_10X6_UNORM       = 1018, /**< ASTC LDR, 10x6, linear. */
+	CRGPU_FORMAT_ASTC_10X6_UNORM_SRGB  = 1019, /**< ASTC LDR, 10x6, sRGB. */
+	CRGPU_FORMAT_ASTC_10X8_UNORM       = 1020, /**< ASTC LDR, 10x8, linear. */
+	CRGPU_FORMAT_ASTC_10X8_UNORM_SRGB  = 1021, /**< ASTC LDR, 10x8, sRGB. */
+	CRGPU_FORMAT_ASTC_10X10_UNORM      = 1022, /**< ASTC LDR, 10x10, linear. */
+	CRGPU_FORMAT_ASTC_10X10_UNORM_SRGB = 1023, /**< ASTC LDR, 10x10, sRGB. */
+	CRGPU_FORMAT_ASTC_12X10_UNORM      = 1024, /**< ASTC LDR, 12x10, linear. */
+	CRGPU_FORMAT_ASTC_12X10_UNORM_SRGB = 1025, /**< ASTC LDR, 12x10, sRGB. */
+	CRGPU_FORMAT_ASTC_12X12_UNORM      = 1026, /**< ASTC LDR, 12x12, linear. */
+	CRGPU_FORMAT_ASTC_12X12_UNORM_SRGB = 1027, /**< ASTC LDR, 12x12, sRGB. */
+
 	CRGPU_FORMAT_FORCE_UINT = -1 /**< 0xffffffff */
 };
 
 /**
  * @brief Returns the size of one pixel of a format, in bits.
  *
- * Divide the result by 8 for the size in bytes.
+ * Divide the result by 8 for the size in bytes. A block-compressed BC
+ * format gives its average over the block's 16 texels (4 or 8); an ASTC
+ * format gives 0, having no whole number of bits to a texel in general (a
+ * 5x4 block is 6.4). crgpu_format_get_texel_block() describes a block, and
+ * is what a copy's layout is worked out from.
  *
  * @param[in] fmt Format to query.
  *
- * @return Bits per pixel, or 0 if `fmt` is not a format with a known pixel
- *         size.
+ * @return Bits per pixel, or 0 if `fmt` is not a format with a known whole
+ *         pixel size.
  */
 uint32_t crgpu_format_get_bit_count(CRGPU_FORMAT fmt);
+
+/**
+ * @brief Says how a format's data is laid out in blocks of texels: the
+ * smallest unit an image of it is copied in.
+ *
+ * A block-compressed format's block is its compression block (BC: 4 x 4
+ * texels in 8 or 16 bytes; ASTC: its size, in 16 bytes). An uncompressed
+ * format's block is one texel, of its bytes. A row of an image's level in a
+ * copy is a row of blocks: ceil(width / block width) blocks of `bytes`
+ * each; a level has ceil(height / block height) such rows. Vulkan's "texel
+ * block": its size and extent.
+ *
+ * Checks `format` first, then each output in order; nothing is written on a
+ * refusal.
+ *
+ * Thread: any, at any time; it reads nothing but `format`. Since 0.4.0.
+ *
+ * @param[in]  format     Format to describe.
+ * @param[out] out_width  Receives the block's width in texels: 1 for a
+ *                        single-texel format, 2 for a packed 4:2:2 one, 4
+ *                        for BC, the size's first number for ASTC.
+ * @param[out] out_height Receives the block's height in texels.
+ * @param[out] out_bytes  Receives a block's bytes: the texel's for an
+ *                        uncompressed format, 8 (BC1, BC4) or 16 (the
+ *                        other BC formats, every ASTC format).
+ *
+ * @retval CR_SUCCESS The three outputs were written. Every named format but
+ *         those below has a block: a texel of whole bytes is a 1 x 1 block
+ *         (CRGPU_FORMAT_B4G4R4A4_UNORM 2 bytes, CRGPU_FORMAT_AYUV and _Y410
+ *         4, _Y416 8, _AI44, _IA44 and _P8 1, _A8P8 2), and a packed 4:2:2
+ *         format a 2 x 1 block, Vulkan's texel block of the matching _422
+ *         format: CRGPU_FORMAT_R8G8_B8G8_UNORM, _G8R8_G8B8_UNORM and _YUY2
+ *         of 4 bytes, _Y210 and _Y216 of 8.
+ * @retval CR_RESULT_GPU_INVALID_FORMAT `format` is CRGPU_FORMAT_UNKNOWN, a
+ *         value CRGPU_FORMAT doesn't name, CRGPU_FORMAT_R1_UNORM (a texel of
+ *         one bit), or a planar format (CRGPU_FORMAT_NV12, _P010, _P016,
+ *         _420_OPAQUE, _NV11, _P208, _V208, _V408), whose planes no one block
+ *         describes. Nothing is written.
+ * @retval CR_RESULT_NULL_OUTPUT_PARAMETER An output is NULL. Nothing is
+ *         written.
+ */
+CR_RESULT crgpu_format_get_texel_block(
+    CRGPU_FORMAT format,
+    uint32_t *out_width,
+    uint32_t *out_height,
+    uint32_t *out_bytes);
 
 /**
  * @brief Looks up a format by its name.
@@ -550,6 +640,23 @@ typedef uint64_t CRGPU_FEATURES;
  * pipeline naming one, on a device created without it is refused with
  * CR_RESULT_GPU_EXT_TESSELLATION_NOT_SUPPORTED. */
 #define CRGPU_FEATURE_TESSELLATION (UINT64_C(1) << 15)
+/** The adapter samples the BC formats (CRGPU_FORMAT_BC1_* to
+ * CRGPU_FORMAT_BC7_*): an image of one, on a device created without it, is
+ * refused with CR_RESULT_GPU_FEATURE_NOT_SUPPORTED. Vulkan:
+ * `VkPhysicalDeviceFeatures::textureCompressionBC`, enabled with it. D3D12:
+ * every adapter (BC is required at feature level 11_0 and up). Metal:
+ * `MTLDevice.supportsBCTextureCompression` (every Apple Silicon Mac, iPads
+ * from the M1; no iPhone). Since 0.4.0. */
+#define CRGPU_FEATURE_TEXTURE_COMPRESSION_BC (UINT64_C(1) << 16)
+/** The adapter samples the ASTC LDR formats (CRGPU_FORMAT_ASTC_*): an image
+ * of one, on a device created without it, is refused with
+ * CR_RESULT_GPU_FEATURE_NOT_SUPPORTED. Vulkan:
+ * `VkPhysicalDeviceFeatures::textureCompressionASTC_LDR`, enabled with it.
+ * D3D12: never (D3D12 has no ASTC). Metal: an adapter in
+ * `MTLGPUFamilyApple2` or later (every Apple GPU; never a GPU in
+ * MTLGPUFamilyMac2 alone, an Intel or AMD Mac's). "_LDR" because ASTC HDR
+ * is a separate capability on every API that has it. Since 0.4.0. */
+#define CRGPU_FEATURE_TEXTURE_COMPRESSION_ASTC_LDR (UINT64_C(1) << 17)
 
 /** @brief The kinds of queue, as bits, for CRGPU_QUEUE_POOL. */
 typedef uint32_t CRGPU_QUEUE_KINDS;
@@ -2434,15 +2541,36 @@ typedef struct crgpu_image_desc {
  *         `array_layers` or `mip_levels` is 0; or, checked after the usage
  *         and type checks below, `desc->cube_capable` is set and
  *         `desc->width` is not `desc->height`, or `desc->array_layers` is not
- *         a multiple of six.
+ *         a multiple of six; or, last of the block-format checks (since
+ *         0.4.0), `desc->width` or `desc->height` isn't a whole number of a
+ *         block-compressed (BC or ASTC) format's blocks
+ *         (crgpu_format_get_texel_block()), on every backend; smaller levels
+ *         are whatever the halving gives.
  * @retval CR_RESULT_GPU_INVALID_IMAGE_USAGE `desc->usage` is
  *         CRGPU_IMAGE_USAGE_NONE, or combines
  *         CRGPU_IMAGE_USAGE_TRANSIENT_ATTACHMENT with usages it does not
- *         allow.
+ *         allow; or, for a block-compressed format (since 0.4.0), has
+ *         anything but CRGPU_IMAGE_USAGE_SAMPLED, _TRANSFER_SRC and
+ *         _TRANSFER_DST: a block format is never rendered to or written by a
+ *         shader, on any API.
  * @retval CR_RESULT_GPU_INVALID_IMAGE_TYPE `desc->cube_capable` is set and
- *         `desc->type` is not CRGPU_IMAGE_TYPE_2D.
+ *         `desc->type` is not CRGPU_IMAGE_TYPE_2D; or `desc->type` isn't
+ *         CRGPU_IMAGE_TYPE_2D for a block-compressed format (arrays and
+ *         cubes are 2D images; since 0.4.0).
  * @retval CR_RESULT_GPU_INVALID_FORMAT `desc->format` is
- *         CRGPU_FORMAT_UNKNOWN.
+ *         CRGPU_FORMAT_UNKNOWN; or, on Metal and after the block-format
+ *         checks, a format Metal has no texture of (every TYPELESS one, BC's
+ *         included).
+ * @retval CR_RESULT_GPU_FEATURE_NOT_SUPPORTED `desc->format` is a BC format
+ *         and the device wasn't created with
+ *         CRGPU_FEATURE_TEXTURE_COMPRESSION_BC, or an ASTC format and it
+ *         wasn't created with CRGPU_FEATURE_TEXTURE_COMPRESSION_ASTC_LDR (on
+ *         D3D12, every ASTC format). Since 0.4.0.
+ *
+ * The block-format checks (since 0.4.0) come after the format's
+ * CRGPU_FORMAT_UNKNOWN check, for a BC or ASTC format only, in this order:
+ * the feature, the usage, the type, whole blocks; each before the graphics
+ * API sees the format.
  * @retval CR_RESULT_GPU_IMAGE_TOO_LARGE A dimension or the layer count is
  *         past the device's adapter's limit for the image's type
  *         (CRGPU_ADAPTER_PROPERTIES): for CRGPU_IMAGE_TYPE_1D, `width`
@@ -5320,6 +5448,13 @@ typedef struct crgpu_graphics_pipeline_desc {
  * @retval CR_RESULT_GPU_TOO_MANY_COLOR_ATTACHMENTS
  *         `desc->color_attachment_count` is above
  *         CRGPU_MAX_COLOR_ATTACHMENTS.
+ * @retval CR_RESULT_GPU_INVALID_FORMAT A block-compressed (BC or ASTC)
+ *         format in the first `desc->color_attachment_count`
+ *         `desc->color_attachment_formats`, as `desc->depth_format`, or, with
+ *         `desc->vertex_module` set, as the format of one of the first
+ *         `desc->vertex_attribute_count` `desc->vertex_attributes`: no API
+ *         renders to or fetches vertices from one. Checked in that order,
+ *         before any backend translates a format. Since 0.4.0.
  * @retval CR_RESULT_GPU_DEPTH_BIAS_CLAMP_NOT_SUPPORTED
  *         `desc->depth_bias_clamp` is not 0 and the device wasn't created
  *         with CRGPU_FEATURE_DEPTH_BIAS_CLAMP.
@@ -6947,21 +7082,58 @@ void crgpu_command_list_dispatch(
  * copy between an image and a buffer.
  *
  * Maps to Vulkan's VkBufferImageCopy / D3D12's PlacedFootprint region.
+ *
+ * Every texel count is in texels, as VkBufferImageCopy has them, and the
+ * buffer is laid out in the format's texel blocks
+ * (crgpu_format_get_texel_block(); one texel for an uncompressed format).
+ * For a format whose block is larger than one texel (block-compressed, or a
+ * packed 4:2:2 one):
+ *  - `image_x` and `image_y` are multiples of the block's width and height;
+ *  - `width` is a multiple of the block's width, or reaches the level's right
+ *    edge (`image_x` + `width` is the level's width); `height` the same with
+ *    the block's height and the bottom edge. So the last level of a chain, 1
+ *    x 1 texels, is copied as its one block with a `width` and `height` of 1;
+ *  - `buffer_row_length`, when not 0, is a multiple of the block's width, and
+ *    `buffer_image_height`, when not 0, of its height.
+ *
+ * In the buffer, a row is a row of blocks, ceil(width / block width) blocks
+ * of the block's bytes (the row length `buffer_row_length`, or `width` when it
+ * is 0), and an image is ceil(height / block height) such rows (`buffer_image_height`,
+ * or `height` when it is 0), from `buffer_offset`. `depth` is 1 and `image_z` 0
+ * for a block-compressed format, whose images are 2D.
+ *
+ * For every format, the rules each backend's API needs, stated once and
+ * checked by both copies:
+ *  - `array_layer_count` and `depth` are at least 1;
+ *  - the row pitch the copy implies is a multiple of
+ *    crgpu_image_get_buffer_copy_row_pitch_alignment(), and the pitch
+ *    crgpu_image_get_buffer_copy_size() gives always is;
+ *  - with `array_layer_count` above 1, layer i starts at `buffer_offset` plus
+ *    i times the layer's bytes (the row pitch times the image's rows of
+ *    blocks times `depth`), and each such start is a multiple of
+ *    crgpu_image_get_buffer_copy_offset_alignment(), as `buffer_offset` is
+ *    (D3D12 places each layer's footprint at its own 512-byte-aligned
+ *    offset; one copy per layer meets it whatever the layer's size);
+ *  - the bytes the region covers, from `buffer_offset` to the end of its last
+ *    row of its last layer, lie within the buffer's size.
  */
 /* Frozen: a copy region, passed in arrays. It never changes; a new need gets a new type. */
 typedef struct crgpu_image_buffer_copy_desc {
-	/** Byte offset into the buffer where this region starts (or is read from). */
+	/** Byte offset into the buffer where this region starts (or is read
+	 * from): a multiple of crgpu_image_get_buffer_copy_offset_alignment(). */
 	uint64_t buffer_offset;
 
 	/**
-	 * Row length in texels, used to interpret the buffer's layout.
-	 * Pass 0 for tightly packed rows (== region width).
+	 * Row length in texels, used to interpret the buffer's layout. Pass 0
+	 * for tightly packed rows (== region width, rounded up to whole blocks
+	 * for a block format).
 	 */
 	uint32_t buffer_row_length;
 
 	/**
 	 * Image height in texels, used to interpret the buffer's 2D/3D layout.
-	 * Pass 0 for tightly packed rows (== region height).
+	 * Pass 0 for tightly packed rows (== region height, rounded up to whole
+	 * blocks for a block format).
 	 */
 	uint32_t buffer_image_height;
 
@@ -7021,8 +7193,12 @@ void crgpu_command_list_copy_buffer(
 /**
  * @brief Records a copy from an image subresource region into a buffer.
  *
- * The image must be in CRGPU_IMAGE_LAYOUT_TRANSFER_SRC. Use
- * crgpu_image_get_buffer_copy_size() to size the destination buffer first.
+ * Checks its arguments before it records anything, in parameter order; a
+ * refused call records nothing. A destroyed handle is refused as a null one.
+ * `desc` is read during the call only. The image must be in
+ * CRGPU_IMAGE_LAYOUT_TRANSFER_SRC (not checked: the layout is the caller's
+ * to track). Use crgpu_image_get_buffer_copy_size() to size the destination
+ * buffer first.
  *
  * Maps to: vkCmdCopyImageToBuffer (Vulkan), CopyTextureRegion (D3D12),
  * copyFromTexture:toBuffer: (Metal).
@@ -7031,8 +7207,33 @@ void crgpu_command_list_copy_buffer(
  * @param[in] src_image  Image to read texel data from.
  * @param[in] dst_buffer Buffer that receives the copied bytes.
  * @param[in] desc       Region, offset and subresource to copy.
+ *
+ * @retval CR_SUCCESS The copy was recorded.
+ * @retval CR_RESULT_GPU_INVALID_COMMAND_LIST `cmd` is NULL.
+ * @retval CR_RESULT_GPU_INVALID_IMAGE `src_image` is NULL.
+ * @retval CR_RESULT_GPU_INVALID_BUFFER `dst_buffer` is NULL.
+ * @retval CR_RESULT_NULL_DESC `desc` is NULL.
+ * @retval CR_RESULT_GPU_INVALID_FORMAT The image's format has no texel
+ *         block (crgpu_format_get_texel_block()), so no copy of it has a
+ *         known layout.
+ * @retval CR_RESULT_GPU_INVALID_IMAGE_USAGE `src_image` wasn't created with
+ *         CRGPU_IMAGE_USAGE_TRANSFER_SRC.
+ * @retval CR_RESULT_GPU_INVALID_BUFFER_USAGE `dst_buffer` wasn't created
+ *         with CRGPU_BUFFER_USAGE_TRANSFER_DST.
+ * @retval CR_RESULT_DESC_INVALID_PARAMETERS The region isn't within the
+ *         image: `mip_level` past its levels, the layers past its layers or
+ *         `array_layer_count` 0, a size of 0 (`depth` included), or the
+ *         region past the level's width, height or depth; or it breaks the
+ *         block's rules (crgpu_image_buffer_copy_desc); or `buffer_offset`
+ *         isn't a multiple of the copy offset alignment; or the row pitch
+ *         isn't a multiple of the row pitch alignment; or a later layer's
+ *         start isn't a multiple of the offset alignment; or the bytes the
+ *         region covers run past the buffer's size. Checked in that order,
+ *         each its own check.
+ *
+ * Since 0.4.0 it returns a result (it returned nothing before).
  */
-void crgpu_command_list_copy_image_to_buffer(
+CR_RESULT crgpu_command_list_copy_image_to_buffer(
     crgpu_command_list cmd,
     crgpu_image src_image,
     crgpu_buffer dst_buffer,
@@ -7042,9 +7243,10 @@ void crgpu_command_list_copy_image_to_buffer(
  * @brief Records a copy of buffer bytes into an image subresource region.
  * Used for texture uploads.
  *
- * The image must be in CRGPU_IMAGE_LAYOUT_TRANSFER_DST. Use
- * crgpu_image_get_buffer_copy_size() for the expected source row pitch and
- * total size.
+ * As crgpu_command_list_copy_image_to_buffer(): checks first, records
+ * nothing on a refusal. The image must be in
+ * CRGPU_IMAGE_LAYOUT_TRANSFER_DST. Use crgpu_image_get_buffer_copy_size()
+ * for the expected source row pitch and total size.
  *
  * Maps to: vkCmdCopyBufferToImage (Vulkan), CopyTextureRegion (D3D12),
  * copyFromBuffer:toTexture: (Metal).
@@ -7053,8 +7255,17 @@ void crgpu_command_list_copy_image_to_buffer(
  * @param[in] src_buffer Buffer to read bytes from.
  * @param[in] dst_image  Image to write texel data into.
  * @param[in] desc       Region, offset and subresource to copy.
+ *
+ * @return As crgpu_command_list_copy_image_to_buffer(), with
+ *         CR_RESULT_GPU_INVALID_BUFFER for `src_buffer`,
+ *         CR_RESULT_GPU_INVALID_IMAGE for `dst_image`, and the usages
+ *         CRGPU_BUFFER_USAGE_TRANSFER_SRC on `src_buffer` and
+ *         CRGPU_IMAGE_USAGE_TRANSFER_DST on `dst_image`: after the handles
+ *         and `desc`, the image's format, then the usages in parameter order
+ *         (the buffer's, then the image's), then the region as listed there.
+ *         Since 0.4.0 it returns a result (it returned nothing before).
  */
-void crgpu_command_list_copy_buffer_to_image(
+CR_RESULT crgpu_command_list_copy_buffer_to_image(
     crgpu_command_list cmd,
     crgpu_buffer src_buffer,
     crgpu_image dst_image,
@@ -7064,16 +7275,25 @@ void crgpu_command_list_copy_buffer_to_image(
  * @brief Computes the buffer row pitch and total size needed to receive (or
  * supply) a copy of an image mip level.
  *
- * Some backends (D3D12) require a specific row-pitch alignment for buffer
- * footprints; the values returned are already aligned, so the caller can
- * allocate a correctly sized staging buffer without hardcoding backend rules.
+ * A row is a row of blocks (crgpu_format_get_texel_block()), so the row
+ * pitch is at least ceil(level width / block width) times the block's
+ * bytes, and the total covers ceil(level height / block height) rows a
+ * layer of depth 1. D3D12's row pitch is that rounded up to 256 bytes;
+ * Vulkan's and Metal's is that, tight. Either is a multiple of
+ * crgpu_image_get_buffer_copy_row_pitch_alignment(), so the caller can
+ * allocate a correctly sized staging buffer without hardcoding backend
+ * rules. The row length a copy then takes, in texels, is
+ * `row_pitch / block bytes * block width`.
  *
- * Does nothing if `image` is NULL.
+ * Does nothing if `image` is NULL. Writes 0 to both outputs for an image
+ * whose format has no texel block (a planar format), which no copy takes.
  *
  * @param[in]  image          Image the copy targets.
  * @param[in]  mip_level      Mip level being copied.
- * @param[out] out_row_pitch  Receives the aligned row pitch, in bytes.
- * @param[out] out_total_size Receives the required buffer size, in bytes.
+ * @param[out] out_row_pitch  Receives the aligned row pitch, in bytes: one
+ *                            row of blocks.
+ * @param[out] out_total_size Receives the required buffer size, in bytes,
+ *                            for one layer of the level.
  */
 void crgpu_image_get_buffer_copy_size(
     crgpu_image image,
@@ -7090,8 +7310,13 @@ void crgpu_image_get_buffer_copy_size(
  * copies in one buffer knows where each may start. The value is the
  * requirement and no more: an offset of 0 always meets it.
  *
+ * With several layers in one copy, each layer's start is a multiple of it
+ * too (crgpu_image_buffer_copy_desc).
+ *
  * It depends on the image's format and the graphics API, and is not always a
- * power of two (a 12-byte texel can give 12).
+ * power of two (a 12-byte texel can give 12): the texel block's bytes on
+ * Metal, the least common multiple of the block's bytes and 4 on Vulkan,
+ * 512 on D3D12.
  *
  * @param[in]  image         Image the copy reads or writes.
  * @param[out] out_alignment Receives the alignment, in bytes.
@@ -7099,11 +7324,37 @@ void crgpu_image_get_buffer_copy_size(
  * @retval CR_SUCCESS `out_alignment` was written.
  * @retval CR_RESULT_GPU_INVALID_IMAGE `image` is NULL.
  * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_alignment` is NULL.
- * @retval CR_RESULT_GPU_INVALID_FORMAT The image's format has no whole
- *         number of bytes to a texel or block (see
- *         crgpu_format_get_bit_count()), so no copy of it has a known layout.
+ * @retval CR_RESULT_GPU_INVALID_FORMAT The image's format has no texel
+ *         block (crgpu_format_get_texel_block()), so no copy of it has a
+ *         known layout.
  */
 CR_RESULT crgpu_image_get_buffer_copy_offset_alignment(
+    crgpu_image image,
+    uint64_t *out_alignment);
+
+/**
+ * @brief Gives the multiple a copy's buffer row pitch must be, between a
+ * buffer and `image`.
+ *
+ * A copy's row pitch, in bytes, is ceil(row length / block width) times the
+ * block's bytes (crgpu_image_buffer_copy_desc), and must be a multiple of
+ * the value returned: 256 on D3D12 (D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
+ * the block's bytes on Vulkan and Metal, which any whole number of blocks
+ * meets, so a tight row is always taken there. The row pitch
+ * crgpu_image_get_buffer_copy_size() gives is always a multiple of it.
+ *
+ * Thread: as the image's other queries. Since 0.4.0.
+ *
+ * @param[in]  image         Image the copy reads or writes.
+ * @param[out] out_alignment Receives the alignment, in bytes.
+ *
+ * @retval CR_SUCCESS `out_alignment` was written.
+ * @retval CR_RESULT_GPU_INVALID_IMAGE `image` is NULL or destroyed.
+ * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_alignment` is NULL.
+ * @retval CR_RESULT_GPU_INVALID_FORMAT The image's format has no texel
+ *         block, so no copy of it has a known layout.
+ */
+CR_RESULT crgpu_image_get_buffer_copy_row_pitch_alignment(
     crgpu_image image,
     uint64_t *out_alignment);
 
@@ -7159,7 +7410,9 @@ typedef struct crgpu_image_blit_desc {
  * N+1 (half size) of the same image, one level pair at a time.
  *
  * `src_image` must be in CRGPU_IMAGE_LAYOUT_TRANSFER_SRC and `dst_image` in
- * CRGPU_IMAGE_LAYOUT_TRANSFER_DST. They may be the same image.
+ * CRGPU_IMAGE_LAYOUT_TRANSFER_DST. They may be the same image. Neither image
+ * may be in a block-compressed format: no API blits into one, and Vulkan's
+ * blit from one depends on format features Carrottus GPU doesn't report.
  *
  * Maps to: vkCmdBlitImage (Vulkan). Neither D3D12 nor Metal exposes a direct
  * blit command with filtering equivalent to Vulkan's.

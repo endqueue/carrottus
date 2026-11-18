@@ -62,7 +62,14 @@ inline D3D12_RESOURCE_FLAGS crgpu_d3d12_get_image_resource_flags(
 		result |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 	return result;
 }
+// CRGPU_FORMAT is DXGI_FORMAT's number below 1000. A value from 1000 on is
+// one of Carrottus's own (ASTC), which DXGI lacks: DXGI_FORMAT_UNKNOWN, so
+// no path hands DXGI a number it may one day mean something else by. The
+// creates' feature check refuses every ASTC image before this is reached;
+// this is the guard behind it.
 inline DXGI_FORMAT crgpu_d3d12_get_dxgi_format(CRGPU_FORMAT fmt) {
+	if (fmt >= CRGPU_FORMAT_ASTC_4X4_UNORM)
+		return DXGI_FORMAT_UNKNOWN;
 	return static_cast<DXGI_FORMAT>(fmt);
 }
 
@@ -507,8 +514,10 @@ CR_RESULT crgpu_d3d12_check_buffer_desc(
 CD3DX12_RESOURCE_DESC crgpu_d3d12_create_resource_desc_from_buffer(
     const crgpu_buffer_desc *desc);
 // crgpu_image_create's desc checks, in its order, after its argument
-// checks.
-CR_RESULT crgpu_d3d12_check_image_desc(const crgpu_image_desc *desc);
+// checks; the block-format ones against the device's [features].
+CR_RESULT crgpu_d3d12_check_image_desc(
+    CRGPU_FEATURES features,
+    const crgpu_image_desc *desc);
 CR_RESULT crgpu_d3d12_create_resource_desc_from_image(
     const crgpu_image_desc *desc,
     D3D12_RESOURCE_DESC *out_d3d_resource_desc);

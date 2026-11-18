@@ -34,6 +34,17 @@
  * vkCreateWin32SurfaceKHR. Linux has no surface without a display here, and
  * skips the frames.
  *
+ * And the block-compressed formats (card S48): every format's texel block;
+ * on the first device, made without either block-format bit, a BC and an
+ * ASTC image refused, and a block format refused as a pipeline's attachment
+ * or vertex attribute; on a device made with the bits the adapter has,
+ * every BC (but TYPELESS) and ASTC format it samples made as a 2D image, a
+ * 2D array and a cube with full chains, every level of every layer written
+ * from known bytes and read back in another shape (a row of blocks at a
+ * time, and a sub-region), compared byte for byte; what a block image may
+ * be; and the copies' argument checks, each refused with nothing recorded
+ * (test_block_formats).
+ *
  * And, on every adapter, every ray query call (CRGPU_EXT_RAY_QUERY) refused
  * on the first device, made without CRGPU_FEATURE_RAY_QUERY; on an adapter
  * with it, a device made with it: bottom levels of a triangle and of an
@@ -943,7 +954,7 @@ static void record_uploads(crgpu_command_list cmd, void *context) {
 	copy.width             = 2;
 	copy.height            = 2;
 	copy.depth             = 1;
-	crgpu_command_list_copy_buffer_to_image(cmd, f->texel_upload, f->texture, &copy);
+	CHECK(crgpu_command_list_copy_buffer_to_image(cmd, f->texel_upload, f->texture, &copy) == CR_SUCCESS);
 	crgpu_command_list_image_barrier(cmd, f->texture, CRGPU_IMAGE_LAYOUT_TRANSFER_DST, CRGPU_IMAGE_LAYOUT_SHADER_READ_ONLY);
 	crgpu_command_list_end_debug_label(cmd);
 }
@@ -1098,8 +1109,8 @@ static void record_frame(crgpu_command_list cmd, void *context) {
 	copy.width             = DRAW_SIZE;
 	copy.height            = DRAW_SIZE;
 	copy.depth             = 1;
-	crgpu_command_list_copy_image_to_buffer(cmd, f->target, f->readback_target, &copy);
-	crgpu_command_list_copy_image_to_buffer(cmd, f->copy, f->readback_copy, &copy);
+	CHECK(crgpu_command_list_copy_image_to_buffer(cmd, f->target, f->readback_target, &copy) == CR_SUCCESS);
+	CHECK(crgpu_command_list_copy_image_to_buffer(cmd, f->copy, f->readback_copy, &copy) == CR_SUCCESS);
 	crgpu_command_list_end_debug_label(cmd);
 }
 
@@ -1636,7 +1647,7 @@ static void record_first_use(crgpu_command_list cmd, void *context) {
 	copy.width             = FIRST_USE_SIZE;
 	copy.height            = FIRST_USE_SIZE;
 	copy.depth             = 1;
-	crgpu_command_list_copy_image_to_buffer(cmd, r->image, r->readback, &copy);
+	CHECK(crgpu_command_list_copy_image_to_buffer(cmd, r->image, r->readback, &copy) == CR_SUCCESS);
 }
 
 static void test_attachment_first_use(crgpu_device device, crgpu_command_queue queue, crgpu_command_allocator allocator,
@@ -1757,7 +1768,7 @@ static void record_set_bindings(crgpu_command_list cmd, void *context) {
 	copy.width             = 1;
 	copy.height            = 1;
 	copy.depth             = 1;
-	crgpu_command_list_copy_buffer_to_image(cmd, r->texel_upload, r->texture, &copy);
+	CHECK(crgpu_command_list_copy_buffer_to_image(cmd, r->texel_upload, r->texture, &copy) == CR_SUCCESS);
 	crgpu_command_list_image_barrier(cmd, r->texture, CRGPU_IMAGE_LAYOUT_TRANSFER_DST, CRGPU_IMAGE_LAYOUT_SHADER_READ_ONLY);
 	crgpu_command_list_image_barrier_view(cmd, r->target_view, CRGPU_IMAGE_LAYOUT_UNDEFINED, CRGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
@@ -1787,7 +1798,7 @@ static void record_set_bindings(crgpu_command_list cmd, void *context) {
 	copy.width             = SET_BINDINGS_SIZE;
 	copy.height            = SET_BINDINGS_SIZE;
 	copy.depth             = 1;
-	crgpu_command_list_copy_image_to_buffer(cmd, r->target, r->readback, &copy);
+	CHECK(crgpu_command_list_copy_image_to_buffer(cmd, r->target, r->readback, &copy) == CR_SUCCESS);
 }
 
 // A graphics pipeline of [fragment] over the vertex module with the set's
@@ -2057,6 +2068,1105 @@ static void test_drawing(crgpu_adapter adapter, CRGPU_FEATURES supported) {
 	crgpu_command_list_destroy(cmd);
 	crgpu_command_allocator_destroy(allocator);
 	crgpu_device_destroy(device);
+}
+
+// ---- Block formats (card S48) ---------------------------------------------
+
+// The texel block the test expects of [format], worked out here rather than
+// read from the library: BC's and ASTC's from their specifications, the
+// packed 4:2:2 formats' as Vulkan's matching _422 formats have them (2 x 1),
+// and every other named format a texel of crgpu_format_get_bit_count()'s
+// whole bytes. False for a format with no block: UNKNOWN, R1_UNORM, the
+// planar formats and any value CRGPU_FORMAT doesn't name.
+static bool expected_texel_block(
+    uint32_t format,
+    uint32_t *out_width,
+    uint32_t *out_height,
+    uint32_t *out_bytes) {
+	static const uint8_t astc[14][2] = {{4, 4}, {5, 4},  {5, 5},  {6, 5},  {6, 6},   {8, 5},   {8, 6},
+	                                    {8, 8}, {10, 5}, {10, 6}, {10, 8}, {10, 10}, {12, 10}, {12, 12}};
+	*out_width                       = 1;
+	*out_height                      = 1;
+	*out_bytes                       = 0;
+	if (format >= CRGPU_FORMAT_ASTC_4X4_UNORM && format <= CRGPU_FORMAT_ASTC_12X12_UNORM_SRGB) {
+		const uint32_t size = (format - CRGPU_FORMAT_ASTC_4X4_UNORM) / 2;
+		*out_width          = astc[size][0];
+		*out_height         = astc[size][1];
+		*out_bytes          = 16;
+		return true;
+	}
+	switch (format) {
+	case CRGPU_FORMAT_BC1_TYPELESS:
+	case CRGPU_FORMAT_BC1_UNORM:
+	case CRGPU_FORMAT_BC1_UNORM_SRGB:
+	case CRGPU_FORMAT_BC4_TYPELESS:
+	case CRGPU_FORMAT_BC4_UNORM:
+	case CRGPU_FORMAT_BC4_SNORM:
+		*out_width  = 4;
+		*out_height = 4;
+		*out_bytes  = 8;
+		return true;
+	case CRGPU_FORMAT_BC2_TYPELESS:
+	case CRGPU_FORMAT_BC2_UNORM:
+	case CRGPU_FORMAT_BC2_UNORM_SRGB:
+	case CRGPU_FORMAT_BC3_TYPELESS:
+	case CRGPU_FORMAT_BC3_UNORM:
+	case CRGPU_FORMAT_BC3_UNORM_SRGB:
+	case CRGPU_FORMAT_BC5_TYPELESS:
+	case CRGPU_FORMAT_BC5_UNORM:
+	case CRGPU_FORMAT_BC5_SNORM:
+	case CRGPU_FORMAT_BC6H_TYPELESS:
+	case CRGPU_FORMAT_BC6H_UF16:
+	case CRGPU_FORMAT_BC6H_SF16:
+	case CRGPU_FORMAT_BC7_TYPELESS:
+	case CRGPU_FORMAT_BC7_UNORM:
+	case CRGPU_FORMAT_BC7_UNORM_SRGB:
+		*out_width  = 4;
+		*out_height = 4;
+		*out_bytes  = 16;
+		return true;
+	case CRGPU_FORMAT_R8G8_B8G8_UNORM:
+	case CRGPU_FORMAT_G8R8_G8B8_UNORM:
+	case CRGPU_FORMAT_YUY2:
+		*out_width = 2;
+		*out_bytes = 4;
+		return true;
+	case CRGPU_FORMAT_Y210:
+	case CRGPU_FORMAT_Y216:
+		*out_width = 2;
+		*out_bytes = 8;
+		return true;
+	case CRGPU_FORMAT_UNKNOWN:
+	case CRGPU_FORMAT_R1_UNORM:
+	case CRGPU_FORMAT_NV12:
+	case CRGPU_FORMAT_P010:
+	case CRGPU_FORMAT_P016:
+	case CRGPU_FORMAT_420_OPAQUE:
+	case CRGPU_FORMAT_NV11:
+	case CRGPU_FORMAT_P208:
+	case CRGPU_FORMAT_V208:
+	case CRGPU_FORMAT_V408:
+		return false;
+	default:
+		break;
+	}
+	if (format > CRGPU_FORMAT_V408)
+		return false;
+	const uint32_t bits = crgpu_format_get_bit_count(format);
+	if (bits == 0 || bits % 8 != 0)
+		return false;
+	*out_bytes = bits / 8;
+	return true;
+}
+
+// One value of crgpu_format_get_texel_block(): its block as expected, or
+// CR_RESULT_GPU_INVALID_FORMAT with nothing written. False on a mismatch.
+static bool texel_block_is_expected(uint32_t format) {
+	uint32_t want_w = 0, want_h = 0, want_bytes = 0;
+	const bool has = expected_texel_block(format, &want_w, &want_h, &want_bytes);
+	uint32_t w = 0xA5A5u, h = 0xA5A5u, bytes = 0xA5A5u;
+	const CR_RESULT result = crgpu_format_get_texel_block((CRGPU_FORMAT)format, &w, &h, &bytes);
+	if (has)
+		return result == CR_SUCCESS && w == want_w && h == want_h && bytes == want_bytes;
+	return result == CR_RESULT_GPU_INVALID_FORMAT && w == 0xA5A5u && h == 0xA5A5u && bytes == 0xA5A5u;
+}
+
+static void test_texel_blocks(void) {
+	uint32_t wrong = 0;
+	for (uint32_t format = 0; format <= 1100; ++format) {
+		if (!texel_block_is_expected(format)) {
+			if (wrong < 8)
+				fprintf(stderr, "crgpu_objects_test: crgpu_format_get_texel_block(%u) isn't as expected\n", format);
+			++wrong;
+		}
+	}
+	CHECK(wrong == 0);
+	CHECK(texel_block_is_expected(0x7FFFFFFFu));
+	CHECK(texel_block_is_expected(UINT32_MAX));
+
+	// The draft's named cases, spelled out.
+	uint32_t w = 0, h = 0, bytes = 0;
+	CHECK(crgpu_format_get_texel_block(CRGPU_FORMAT_B4G4R4A4_UNORM, &w, &h, &bytes) == CR_SUCCESS && w == 1 && h == 1 && bytes == 2);
+	CHECK(crgpu_format_get_texel_block(CRGPU_FORMAT_YUY2, &w, &h, &bytes) == CR_SUCCESS && w == 2 && h == 1 && bytes == 4);
+	CHECK(crgpu_format_get_texel_block(CRGPU_FORMAT_Y216, &w, &h, &bytes) == CR_SUCCESS && w == 2 && h == 1 && bytes == 8);
+	CHECK(crgpu_format_get_texel_block(CRGPU_FORMAT_AYUV, &w, &h, &bytes) == CR_SUCCESS && w == 1 && h == 1 && bytes == 4);
+	CHECK(crgpu_format_get_texel_block(CRGPU_FORMAT_BC1_UNORM, &w, &h, &bytes) == CR_SUCCESS && w == 4 && h == 4 && bytes == 8);
+	CHECK(crgpu_format_get_texel_block(CRGPU_FORMAT_BC7_UNORM_SRGB, &w, &h, &bytes) == CR_SUCCESS && w == 4 && h == 4 && bytes == 16);
+	CHECK(crgpu_format_get_texel_block(CRGPU_FORMAT_ASTC_5X4_UNORM, &w, &h, &bytes) == CR_SUCCESS && w == 5 && h == 4 && bytes == 16);
+	CHECK(crgpu_format_get_texel_block(CRGPU_FORMAT_ASTC_12X10_UNORM_SRGB, &w, &h, &bytes) == CR_SUCCESS && w == 12 && h == 10 && bytes == 16);
+	CHECK(crgpu_format_get_texel_block(CRGPU_FORMAT_R8G8B8A8_UNORM, &w, &h, &bytes) == CR_SUCCESS && w == 1 && h == 1 && bytes == 4);
+	CHECK(crgpu_format_get_texel_block(CRGPU_FORMAT_NV12, &w, &h, &bytes) == CR_RESULT_GPU_INVALID_FORMAT);
+	CHECK(crgpu_format_get_texel_block((CRGPU_FORMAT)116, &w, &h, &bytes) == CR_RESULT_GPU_INVALID_FORMAT);
+	CHECK(crgpu_format_get_texel_block((CRGPU_FORMAT)133, &w, &h, &bytes) == CR_RESULT_GPU_INVALID_FORMAT);
+	CHECK(crgpu_format_get_texel_block((CRGPU_FORMAT)1028, &w, &h, &bytes) == CR_RESULT_GPU_INVALID_FORMAT);
+
+	// The format first, then each output in order; nothing written on a
+	// refusal.
+	w = h = bytes = 7;
+	CHECK(crgpu_format_get_texel_block(CRGPU_FORMAT_UNKNOWN, NULL, NULL, NULL) == CR_RESULT_GPU_INVALID_FORMAT);
+	CHECK(crgpu_format_get_texel_block(CRGPU_FORMAT_BC7_UNORM, NULL, &h, &bytes) == CR_RESULT_NULL_OUTPUT_PARAMETER);
+	CHECK(crgpu_format_get_texel_block(CRGPU_FORMAT_BC7_UNORM, &w, NULL, &bytes) == CR_RESULT_NULL_OUTPUT_PARAMETER);
+	CHECK(crgpu_format_get_texel_block(CRGPU_FORMAT_BC7_UNORM, &w, &h, NULL) == CR_RESULT_NULL_OUTPUT_PARAMETER);
+	CHECK(w == 7 && h == 7 && bytes == 7);
+
+	// Q8: ASTC has no whole number of bits a texel; BC keeps its averages.
+	CHECK(crgpu_format_get_bit_count(CRGPU_FORMAT_ASTC_4X4_UNORM) == 0);
+	CHECK(crgpu_format_get_bit_count(CRGPU_FORMAT_ASTC_12X12_UNORM_SRGB) == 0);
+	CHECK(crgpu_format_get_bit_count(CRGPU_FORMAT_BC1_UNORM) == 4);
+	CHECK(crgpu_format_get_bit_count(CRGPU_FORMAT_BC7_UNORM) == 8);
+
+	// The 28 names.
+	CHECK(crgpu_format_from_string("ASTC_4X4_UNORM") == CRGPU_FORMAT_ASTC_4X4_UNORM);
+	CHECK(crgpu_format_from_string("ASTC_4X4_UNORM_SRGB") == CRGPU_FORMAT_ASTC_4X4_UNORM_SRGB);
+	CHECK(crgpu_format_from_string("ASTC_10X5_UNORM") == CRGPU_FORMAT_ASTC_10X5_UNORM);
+	CHECK(crgpu_format_from_string("ASTC_12X12_UNORM_SRGB") == CRGPU_FORMAT_ASTC_12X12_UNORM_SRGB);
+}
+
+// The BC formats an image is made of: every one but the TYPELESS ones.
+static const CRGPU_FORMAT block_bc_formats[] = {
+    CRGPU_FORMAT_BC1_UNORM,      CRGPU_FORMAT_BC1_UNORM_SRGB, CRGPU_FORMAT_BC2_UNORM, CRGPU_FORMAT_BC2_UNORM_SRGB, CRGPU_FORMAT_BC3_UNORM,
+    CRGPU_FORMAT_BC3_UNORM_SRGB, CRGPU_FORMAT_BC4_UNORM,      CRGPU_FORMAT_BC4_SNORM, CRGPU_FORMAT_BC5_UNORM,      CRGPU_FORMAT_BC5_SNORM,
+    CRGPU_FORMAT_BC6H_UF16,      CRGPU_FORMAT_BC6H_SF16,      CRGPU_FORMAT_BC7_UNORM, CRGPU_FORMAT_BC7_UNORM_SRGB,
+};
+
+static crgpu_image_desc block_image_desc(
+    CRGPU_FORMAT format,
+    uint32_t width,
+    uint32_t height,
+    uint32_t layers,
+    uint32_t mips,
+    bool cube) {
+	crgpu_image_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type    = CR_STRUCT_TYPE_GPU_IMAGE_DESC;
+	desc.usage        = CRGPU_IMAGE_USAGE_SAMPLED | CRGPU_IMAGE_USAGE_TRANSFER_SRC | CRGPU_IMAGE_USAGE_TRANSFER_DST;
+	desc.type         = CRGPU_IMAGE_TYPE_2D;
+	desc.format       = format;
+	desc.width        = width;
+	desc.height       = height;
+	desc.depth        = 1;
+	desc.array_layers = layers;
+	desc.mip_levels   = mips;
+	desc.cube_capable = cube;
+	desc.debug_name   = "crgpu_objects_test block";
+	return desc;
+}
+
+// [desc] given to crgpu_image_create(), and where [heap] is given to
+// crgpu_heap_get_image_placement_requirements() and
+// crgpu_image_create_placed(): each returns [expected], and a refusal hands
+// nothing out.
+static void expect_image_result(
+    crgpu_device device,
+    crgpu_heap heap,
+    const crgpu_image_desc *desc,
+    CR_RESULT expected,
+    const char *what) {
+	crgpu_image image         = NULL;
+	const CR_RESULT committed = crgpu_image_create(device, desc, &image);
+	if (committed != expected)
+		fprintf(stderr, "crgpu_objects_test: %s: crgpu_image_create returned %s, not %s\n", what, cr_result_str(committed), cr_result_str(expected));
+	CHECK(committed == expected);
+	CHECK((committed == CR_SUCCESS) == (image != NULL));
+	crgpu_image_destroy(image);
+	if (!heap)
+		return;
+	// The requirements are asked of the graphics API with no size check
+	// (Metal ends the process for an image past its limits): not asked for
+	// one the creates refuse as too large.
+	if (expected != CR_RESULT_GPU_IMAGE_TOO_LARGE) {
+		crgpu_placement_requirements needs;
+		memset(&needs, 0, sizeof(needs));
+		needs.base.type       = CR_STRUCT_TYPE_GPU_PLACEMENT_REQUIREMENTS;
+		const CR_RESULT asked = crgpu_heap_get_image_placement_requirements(heap, desc, &needs);
+		if (asked != expected)
+			fprintf(
+			    stderr, "crgpu_objects_test: %s: crgpu_heap_get_image_placement_requirements returned %s, not %s\n", what, cr_result_str(asked),
+			    cr_result_str(expected));
+		CHECK(asked == expected);
+	}
+	image                  = NULL;
+	const CR_RESULT placed = crgpu_image_create_placed(heap, 0, desc, &image);
+	if (placed != expected)
+		fprintf(stderr, "crgpu_objects_test: %s: crgpu_image_create_placed returned %s, not %s\n", what, cr_result_str(placed), cr_result_str(expected));
+	CHECK(placed == expected);
+	CHECK((placed == CR_SUCCESS) == (image != NULL));
+	crgpu_image_destroy(image);
+}
+
+// On a device made without either block-format bit: a BC and an ASTC image
+// refused with CR_RESULT_GPU_FEATURE_NOT_SUPPORTED, every adapter (the bits
+// are asked for, not given), before the usage is read.
+static void test_block_images_without_bits(crgpu_device device) {
+	CHECK((crgpu_device_get_features(device) & (CRGPU_FEATURE_TEXTURE_COMPRESSION_BC | CRGPU_FEATURE_TEXTURE_COMPRESSION_ASTC_LDR)) == 0);
+	crgpu_heap heap       = make_heap(device, CRGPU_HEAP_RESOURCE_CLASS_IMAGES, "crgpu_objects_test block images");
+	crgpu_image_desc desc = block_image_desc(CRGPU_FORMAT_BC7_UNORM, 16, 16, 1, 1, false);
+	expect_image_result(device, heap, &desc, CR_RESULT_GPU_FEATURE_NOT_SUPPORTED, "BC7 without the BC bit");
+	desc = block_image_desc(CRGPU_FORMAT_BC1_TYPELESS, 16, 16, 1, 1, false);
+	expect_image_result(device, heap, &desc, CR_RESULT_GPU_FEATURE_NOT_SUPPORTED, "BC1 TYPELESS without the BC bit");
+	desc = block_image_desc(CRGPU_FORMAT_ASTC_4X4_UNORM, 16, 16, 1, 1, false);
+	expect_image_result(device, heap, &desc, CR_RESULT_GPU_FEATURE_NOT_SUPPORTED, "ASTC 4x4 without the ASTC bit");
+	desc = block_image_desc(CRGPU_FORMAT_ASTC_12X12_UNORM_SRGB, 12, 12, 1, 1, false);
+	expect_image_result(device, heap, &desc, CR_RESULT_GPU_FEATURE_NOT_SUPPORTED, "ASTC 12x12 without the ASTC bit");
+	// The feature before the usage, type and size.
+	desc       = block_image_desc(CRGPU_FORMAT_BC7_UNORM, 6, 8, 1, 1, false);
+	desc.usage = CRGPU_IMAGE_USAGE_COLOR_ATTACHMENT;
+	desc.type  = CRGPU_IMAGE_TYPE_3D;
+	expect_image_result(device, heap, &desc, CR_RESULT_GPU_FEATURE_NOT_SUPPORTED, "BC7 attachment without the BC bit");
+	crgpu_heap_destroy(heap);
+}
+
+// On a device made with [bit]: what a block-format image of [format] may
+// be, each refusal in the header's order, before the size limits.
+static void test_block_image_rules(
+    crgpu_device device,
+    const CRGPU_ADAPTER_PROPERTIES *limits,
+    CRGPU_FORMAT format,
+    CRGPU_FORMAT misfit_format,
+    uint32_t misfit_w,
+    uint32_t misfit_h,
+    const char *name) {
+	char what[128];
+	crgpu_heap heap = make_heap(device, CRGPU_HEAP_RESOURCE_CLASS_IMAGES, "crgpu_objects_test block rules");
+	uint32_t bw = 0, bh = 0, bytes = 0;
+	CHECK(crgpu_format_get_texel_block(format, &bw, &bh, &bytes) == CR_SUCCESS);
+
+	crgpu_image_desc desc = block_image_desc(format, bw * 2, bh * 2, 1, 2, false);
+	snprintf(what, sizeof(what), "%s, sampled and copied", name);
+	expect_image_result(device, heap, &desc, CR_SUCCESS, what);
+
+	const CRGPU_IMAGE_USAGE refused[3] = {CRGPU_IMAGE_USAGE_COLOR_ATTACHMENT, CRGPU_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT, CRGPU_IMAGE_USAGE_STORAGE};
+	for (uint32_t i = 0; i < 3; ++i) {
+		desc       = block_image_desc(format, bw * 2, bh * 2, 1, 1, false);
+		desc.usage = CRGPU_IMAGE_USAGE_SAMPLED | refused[i];
+		snprintf(what, sizeof(what), "%s with usage %u", name, (unsigned)refused[i]);
+		expect_image_result(device, heap, &desc, CR_RESULT_GPU_INVALID_IMAGE_USAGE, what);
+	}
+	// The usage before the type.
+	desc       = block_image_desc(format, bw * 2, bh * 2, 1, 1, false);
+	desc.usage = CRGPU_IMAGE_USAGE_STORAGE;
+	desc.type  = CRGPU_IMAGE_TYPE_3D;
+	snprintf(what, sizeof(what), "%s, 3D storage", name);
+	expect_image_result(device, heap, &desc, CR_RESULT_GPU_INVALID_IMAGE_USAGE, what);
+
+	desc      = block_image_desc(format, bw * 4, 1, 1, 1, false);
+	desc.type = CRGPU_IMAGE_TYPE_1D;
+	snprintf(what, sizeof(what), "%s, 1D", name);
+	expect_image_result(device, heap, &desc, CR_RESULT_GPU_INVALID_IMAGE_TYPE, what);
+	desc       = block_image_desc(format, bw * 2, bh * 2, 1, 1, false);
+	desc.type  = CRGPU_IMAGE_TYPE_3D;
+	desc.depth = 4;
+	snprintf(what, sizeof(what), "%s, 3D", name);
+	expect_image_result(device, heap, &desc, CR_RESULT_GPU_INVALID_IMAGE_TYPE, what);
+
+	// Level 0 whole blocks (Q5): the draft's 6 x 8 BC7 and 4 x 4 ASTC 5x5.
+	desc = block_image_desc(misfit_format, misfit_w, misfit_h, 1, 1, false);
+	snprintf(what, sizeof(what), "%s, %u x %u", name, misfit_w, misfit_h);
+	expect_image_result(device, heap, &desc, CR_RESULT_DESC_INVALID_PARAMETERS, what);
+	// Whole blocks before the size limits: a width past the limit and not
+	// whole blocks is the second, one past it and whole the first.
+	desc = block_image_desc(format, limits->max_image_size_2d + 1, bh, 1, 1, false);
+	snprintf(what, sizeof(what), "%s, one texel past the 2D limit", name);
+	expect_image_result(device, heap, &desc, CR_RESULT_DESC_INVALID_PARAMETERS, what);
+	desc = block_image_desc(format, (limits->max_image_size_2d / bw + 1) * bw, bh, 1, 1, false);
+	snprintf(what, sizeof(what), "%s, a block past the 2D limit", name);
+	expect_image_result(device, heap, &desc, CR_RESULT_GPU_IMAGE_TOO_LARGE, what);
+
+	// An array and a cube, square in whole blocks.
+	const uint32_t side = bw * bh * 2;
+	desc                = block_image_desc(format, side, side, 6, 3, true);
+	snprintf(what, sizeof(what), "%s cube", name);
+	expect_image_result(device, heap, &desc, CR_SUCCESS, what);
+	desc = block_image_desc(format, bw * 3, bh * 5, 3, 1, false);
+	snprintf(what, sizeof(what), "%s array", name);
+	expect_image_result(device, heap, &desc, CR_SUCCESS, what);
+	crgpu_heap_destroy(heap);
+}
+
+// A block format as a pipeline's colour or depth attachment or a vertex
+// attribute: refused with CR_RESULT_GPU_INVALID_FORMAT on every backend,
+// before any backend translates it.
+static void test_block_format_pipelines(crgpu_device device) {
+	crgpu_shader_module vert = make_module(device, &crgpu_test_objects_draw_vert, "block pipeline vertex");
+	crgpu_shader_module frag = make_module(device, &crgpu_test_objects_draw_frag, "block pipeline fragment");
+	if (vert && frag) {
+		crgpu_graphics_pipeline_desc pd;
+		memset(&pd, 0, sizeof(pd));
+		pd.base.type                     = CR_STRUCT_TYPE_GPU_GRAPHICS_PIPELINE_DESC;
+		pd.vertex_module                 = vert;
+		pd.fragment_module               = frag;
+		pd.color_attachment_count        = 1;
+		pd.color_attachment_formats[0]   = CRGPU_FORMAT_BC7_UNORM;
+		crgpu_graphics_pipeline pipeline = NULL;
+		CHECK(crgpu_graphics_pipeline_create(device, &pd, &pipeline) == CR_RESULT_GPU_INVALID_FORMAT);
+		pd.color_attachment_formats[0] = CRGPU_FORMAT_ASTC_4X4_UNORM;
+		CHECK(crgpu_graphics_pipeline_create(device, &pd, &pipeline) == CR_RESULT_GPU_INVALID_FORMAT);
+		// The second attachment too.
+		pd.color_attachment_count      = 2;
+		pd.color_attachment_formats[0] = CRGPU_FORMAT_R8G8B8A8_UNORM;
+		pd.color_attachment_formats[1] = CRGPU_FORMAT_BC1_UNORM;
+		CHECK(crgpu_graphics_pipeline_create(device, &pd, &pipeline) == CR_RESULT_GPU_INVALID_FORMAT);
+		pd.color_attachment_count = 1;
+		pd.depth_format           = CRGPU_FORMAT_BC4_UNORM;
+		CHECK(crgpu_graphics_pipeline_create(device, &pd, &pipeline) == CR_RESULT_GPU_INVALID_FORMAT);
+		pd.depth_format                  = CRGPU_FORMAT_UNKNOWN;
+		pd.vertex_attributes[0].format   = CRGPU_FORMAT_R32G32_FLOAT;
+		pd.vertex_attributes[1].location = 1;
+		pd.vertex_attributes[1].format   = CRGPU_FORMAT_BC1_UNORM;
+		pd.vertex_attribute_count        = 2;
+		pd.vertex_bindings[0].stride     = 16;
+		pd.vertex_binding_count          = 1;
+		CHECK(crgpu_graphics_pipeline_create(device, &pd, &pipeline) == CR_RESULT_GPU_INVALID_FORMAT);
+		pd.vertex_attributes[1].format = CRGPU_FORMAT_ASTC_6X6_UNORM_SRGB;
+		CHECK(crgpu_graphics_pipeline_create(device, &pd, &pipeline) == CR_RESULT_GPU_INVALID_FORMAT);
+		// Beside the colour attachment checks: too many attachments is still
+		// the first.
+		pd.color_attachment_count = CRGPU_MAX_COLOR_ATTACHMENTS + 1;
+		CHECK(crgpu_graphics_pipeline_create(device, &pd, &pipeline) == CR_RESULT_GPU_TOO_MANY_COLOR_ATTACHMENTS);
+		CHECK(pipeline == NULL);
+	}
+	crgpu_shader_module_destroy(frag);
+	crgpu_shader_module_destroy(vert);
+}
+
+typedef struct block_run {
+	crgpu_device device;
+	crgpu_command_queue queue;
+	crgpu_command_allocator allocator;
+	crgpu_command_list cmd;
+	// What the round trips did, for the summary.
+	uint32_t images;
+	uint32_t copies;
+	uint64_t blocks_compared;
+} block_run;
+
+static void block_begin(block_run *r) {
+	CHECK(crgpu_command_allocator_reset(r->allocator) == CR_SUCCESS);
+	crgpu_command_list_begin(r->cmd);
+}
+
+static void block_submit(block_run *r) {
+	crgpu_command_list_end(r->cmd);
+	CHECK(crgpu_command_queue_submit_lists(r->queue, &r->cmd, 1) == CR_SUCCESS);
+	crgpu_command_queue_wait_idle(r->queue);
+}
+
+static uint64_t block_align(
+    uint64_t value,
+    uint64_t alignment) {
+	return (value + alignment - 1) / alignment * alignment;
+}
+
+// Byte [k] of the block at row [by], column [bx] of [level] and [layer] of
+// an image of [format]: a function of all five, so a block moved anywhere
+// else, or a row laid out at the wrong pitch, reads back wrong.
+static uint8_t block_byte(
+    CRGPU_FORMAT format,
+    uint32_t level,
+    uint32_t layer,
+    uint32_t by,
+    uint32_t bx,
+    uint32_t k) {
+	uint32_t h = (uint32_t)format * 2654435761u;
+	h ^= (level + 1) * 0x9E3779B9u;
+	h = (h << 7) | (h >> 25);
+	h ^= (layer + 1) * 0x85EBCA6Bu;
+	h = (h << 11) | (h >> 21);
+	h ^= (by + 1) * 0xC2B2AE35u;
+	h ^= (bx + 1) * 0x27D4EB2Fu;
+	h ^= (k + 1) * 0x165667B1u;
+	h ^= h >> 15;
+	h *= 0x2C1B3C6Du;
+	h ^= h >> 12;
+	return (uint8_t)h;
+}
+
+// One copy between a buffer and an image, as planned: what it is, and what
+// it puts where in the buffer (in blocks), so the bytes can be written
+// before an upload and compared after a read.
+typedef struct block_copy_plan {
+	bool upload;
+	crgpu_image_buffer_copy_desc copy;
+	uint32_t block_x, block_y;
+	uint32_t blocks_wide, blocks_high;
+	uint64_t row_pitch, layer_step;
+} block_copy_plan;
+
+#define BLOCK_MAX_PLANS 512
+
+typedef struct block_image_case {
+	CRGPU_FORMAT format;
+	uint32_t bw, bh, bytes;
+	uint32_t width, height, layers, mips;
+	uint64_t offset_alignment, row_pitch_alignment;
+	block_copy_plan plans[BLOCK_MAX_PLANS];
+	uint32_t plan_count;
+	uint64_t upload_size, readback_size;
+} block_image_case;
+
+static uint32_t block_level_size(
+    uint32_t size,
+    uint32_t level) {
+	const uint32_t s = size >> level;
+	return s ? s : 1;
+}
+
+// Plans the copies of one region of [level], in blocks from (bx, by), bxn
+// wide and byn high, of [layer_count] layers from [first_layer]: rows
+// [row_pitch] apart and layers [image_rows] rows of blocks apart in the
+// buffer. All the layers in one copy where the layer step is a multiple of
+// the offset alignment, a copy a layer where it isn't; each copy at the
+// next offset the alignment allows.
+static void plan_region(
+    block_image_case *c,
+    bool upload,
+    uint32_t level,
+    uint32_t first_layer,
+    uint32_t layer_count,
+    uint32_t bx,
+    uint32_t by,
+    uint32_t bxn,
+    uint32_t byn,
+    uint64_t row_pitch,
+    uint32_t image_rows) {
+	const uint32_t lw         = block_level_size(c->width, level);
+	const uint32_t lh         = block_level_size(c->height, level);
+	const uint64_t layer_step = row_pitch * image_rows;
+	const bool one_copy       = layer_count == 1 || layer_step % c->offset_alignment == 0;
+	uint64_t *cursor          = upload ? &c->upload_size : &c->readback_size;
+	for (uint32_t i = 0; i < (one_copy ? 1u : layer_count); ++i) {
+		CHECK(c->plan_count < BLOCK_MAX_PLANS);
+		if (c->plan_count >= BLOCK_MAX_PLANS)
+			return;
+		block_copy_plan *p = &c->plans[c->plan_count++];
+		memset(p, 0, sizeof(*p));
+		p->upload                   = upload;
+		p->block_x                  = bx;
+		p->block_y                  = by;
+		p->blocks_wide              = bxn;
+		p->blocks_high              = byn;
+		p->row_pitch                = row_pitch;
+		p->layer_step               = layer_step;
+		p->copy.buffer_offset       = block_align(*cursor, c->offset_alignment);
+		p->copy.buffer_row_length   = row_pitch == (uint64_t)bxn * c->bytes ? 0 : (uint32_t)(row_pitch / c->bytes * c->bw);
+		p->copy.buffer_image_height = image_rows == byn ? 0 : image_rows * c->bh;
+		p->copy.mip_level           = level;
+		p->copy.base_array_layer    = first_layer + (one_copy ? 0 : i);
+		p->copy.array_layer_count   = one_copy ? layer_count : 1;
+		p->copy.image_x             = bx * c->bw;
+		p->copy.image_y             = by * c->bh;
+		p->copy.width               = bxn * c->bw < lw - p->copy.image_x ? bxn * c->bw : lw - p->copy.image_x;
+		p->copy.height              = byn * c->bh < lh - p->copy.image_y ? byn * c->bh : lh - p->copy.image_y;
+		p->copy.depth               = 1;
+		*cursor                     = p->copy.buffer_offset + layer_step * p->copy.array_layer_count;
+	}
+}
+
+// Every level of every layer copied in whole with padded rows and layers,
+// then read back a row of blocks at a time (tight, or at the row pitch
+// alignment) and as the sub-region from its second block on each axis.
+static void plan_block_image(block_image_case *c) {
+	c->plan_count    = 0;
+	c->upload_size   = 0;
+	c->readback_size = 0;
+	for (uint32_t level = 0; level < c->mips; ++level) {
+		const uint32_t bxn = (block_level_size(c->width, level) + c->bw - 1) / c->bw;
+		const uint32_t byn = (block_level_size(c->height, level) + c->bh - 1) / c->bh;
+		plan_region(c, true, level, 0, c->layers, 0, 0, bxn, byn, block_align((uint64_t)(bxn + 2) * c->bytes, c->row_pitch_alignment), byn + 1);
+	}
+	for (uint32_t level = 0; level < c->mips; ++level) {
+		const uint32_t bxn = (block_level_size(c->width, level) + c->bw - 1) / c->bw;
+		const uint32_t byn = (block_level_size(c->height, level) + c->bh - 1) / c->bh;
+		const uint64_t row = block_align((uint64_t)bxn * c->bytes, c->row_pitch_alignment);
+		for (uint32_t layer = 0; layer < c->layers; ++layer)
+			for (uint32_t by = 0; by < byn; ++by)
+				plan_region(c, false, level, layer, 1, 0, by, bxn, 1, row, 1);
+		if (bxn >= 2 && byn >= 2)
+			plan_region(c, false, level, 0, c->layers, 1, 1, bxn - 1, byn - 1, block_align((uint64_t)(bxn - 1) * c->bytes, c->row_pitch_alignment), byn - 1);
+	}
+}
+
+// Writes an upload's blocks into [mapped], or compares a read's; returns
+// how many blocks differ.
+static uint32_t block_plan_bytes(
+    const block_image_case *c,
+    const block_copy_plan *p,
+    uint8_t *mapped) {
+	uint32_t wrong = 0;
+	for (uint32_t i = 0; i < p->copy.array_layer_count; ++i)
+		for (uint32_t r = 0; r < p->blocks_high; ++r)
+			for (uint32_t col = 0; col < p->blocks_wide; ++col) {
+				uint8_t *block = mapped + p->copy.buffer_offset + i * p->layer_step + r * p->row_pitch + (uint64_t)col * c->bytes;
+				bool same      = true;
+				for (uint32_t k = 0; k < c->bytes; ++k) {
+					const uint8_t want = block_byte(c->format, p->copy.mip_level, p->copy.base_array_layer + i, p->block_y + r, p->block_x + col, k);
+					if (p->upload)
+						block[k] = want;
+					else if (block[k] != want)
+						same = false;
+				}
+				if (!same)
+					++wrong;
+			}
+	return wrong;
+}
+
+// One image of [format] made with the full chain, every level of every layer
+// written and read back in another shape (block_image_case), compared byte
+// for byte. False when the image couldn't be made, for the caller to count.
+static bool block_round_trip(
+    block_run *r,
+    block_image_case *c,
+    CRGPU_FORMAT format,
+    uint32_t width,
+    uint32_t height,
+    uint32_t layers,
+    bool cube,
+    const char *kind) {
+	memset(c, 0, sizeof(*c));
+	c->format = format;
+	CHECK(crgpu_format_get_texel_block(format, &c->bw, &c->bh, &c->bytes) == CR_SUCCESS);
+	c->width  = width;
+	c->height = height;
+	c->layers = layers;
+	for (uint32_t s = width > height ? width : height; s; s >>= 1)
+		++c->mips;
+	crgpu_image_desc desc = block_image_desc(format, width, height, layers, c->mips, cube);
+	crgpu_image image     = NULL;
+	const CR_RESULT made  = crgpu_image_create(r->device, &desc, &image);
+	if (made != CR_SUCCESS) {
+		fprintf(stderr, "crgpu_objects_test: block format %u, %s: crgpu_image_create returned %s\n", (unsigned)format, kind, cr_result_str(made));
+		CHECK(made == CR_SUCCESS);
+		return false;
+	}
+	CHECK(crgpu_image_get_buffer_copy_offset_alignment(image, &c->offset_alignment) == CR_SUCCESS);
+	CHECK(crgpu_image_get_buffer_copy_row_pitch_alignment(image, &c->row_pitch_alignment) == CR_SUCCESS);
+#if CRGPU_COMPILE_D3D12_API
+	CHECK(c->offset_alignment == 512);
+	CHECK(c->row_pitch_alignment == 256);
+#else
+	CHECK(c->offset_alignment == c->bytes);
+	CHECK(c->row_pitch_alignment == c->bytes);
+#endif
+	// The copy size: a row of blocks, tight on Vulkan and Metal, 256-byte
+	// aligned on D3D12.
+	for (uint32_t level = 0; level < c->mips; ++level) {
+		const uint64_t bxn = (block_level_size(width, level) + c->bw - 1) / c->bw;
+		const uint64_t byn = (block_level_size(height, level) + c->bh - 1) / c->bh;
+		uint64_t pitch = 0, total = 0;
+		crgpu_image_get_buffer_copy_size(image, level, &pitch, &total);
+		CHECK(pitch % c->row_pitch_alignment == 0);
+#if CRGPU_COMPILE_D3D12_API
+		CHECK(pitch >= bxn * c->bytes);
+		CHECK(total >= pitch * (byn - 1) + bxn * c->bytes);
+#else
+		CHECK(pitch == bxn * c->bytes);
+		CHECK(total == pitch * byn);
+#endif
+	}
+
+	plan_block_image(c);
+	crgpu_buffer upload   = make_buffer(r->device, CRGPU_MEMORY_KIND_UPLOAD, CRGPU_BUFFER_USAGE_TRANSFER_SRC, c->upload_size, NULL);
+	crgpu_buffer readback = make_buffer(r->device, CRGPU_MEMORY_KIND_READBACK, CRGPU_BUFFER_USAGE_TRANSFER_DST, c->readback_size, NULL);
+	bool ok               = upload && readback;
+	if (ok) {
+		void *mapped = NULL;
+		CHECK(crgpu_buffer_map(upload, 0, c->upload_size, &mapped) == CR_SUCCESS);
+		if (mapped) {
+			memset(mapped, 0xEE, (size_t)c->upload_size);
+			for (uint32_t i = 0; i < c->plan_count; ++i)
+				if (c->plans[i].upload)
+					block_plan_bytes(c, &c->plans[i], (uint8_t *)mapped);
+			CHECK(crgpu_buffer_flush(upload, 0, c->upload_size) == CR_SUCCESS);
+			crgpu_buffer_unmap(upload);
+		}
+		block_begin(r);
+		crgpu_command_list_image_barrier(r->cmd, image, CRGPU_IMAGE_LAYOUT_UNDEFINED, CRGPU_IMAGE_LAYOUT_TRANSFER_DST);
+		for (uint32_t i = 0; i < c->plan_count; ++i)
+			if (c->plans[i].upload)
+				CHECK(crgpu_command_list_copy_buffer_to_image(r->cmd, upload, image, &c->plans[i].copy) == CR_SUCCESS);
+		crgpu_command_list_image_barrier(r->cmd, image, CRGPU_IMAGE_LAYOUT_TRANSFER_DST, CRGPU_IMAGE_LAYOUT_TRANSFER_SRC);
+		for (uint32_t i = 0; i < c->plan_count; ++i)
+			if (!c->plans[i].upload)
+				CHECK(crgpu_command_list_copy_image_to_buffer(r->cmd, image, readback, &c->plans[i].copy) == CR_SUCCESS);
+		block_submit(r);
+
+		mapped = NULL;
+		CHECK(crgpu_buffer_map(readback, 0, c->readback_size, &mapped) == CR_SUCCESS);
+		if (mapped) {
+			CHECK(crgpu_buffer_invalidate(readback, 0, c->readback_size) == CR_SUCCESS);
+			uint32_t wrong = 0;
+			for (uint32_t i = 0; i < c->plan_count; ++i) {
+				if (c->plans[i].upload)
+					continue;
+				const uint32_t w = block_plan_bytes(c, &c->plans[i], (uint8_t *)mapped);
+				r->blocks_compared += (uint64_t)c->plans[i].copy.array_layer_count * c->plans[i].blocks_wide * c->plans[i].blocks_high;
+				if (w && !wrong)
+					fprintf(
+					    stderr, "crgpu_objects_test: block format %u, %s: level %u layer %u, blocks (%u, %u) on: %u wrong\n", (unsigned)format, kind,
+					    c->plans[i].copy.mip_level, c->plans[i].copy.base_array_layer, c->plans[i].block_x, c->plans[i].block_y, w);
+				wrong += w;
+			}
+			CHECK(wrong == 0);
+			crgpu_buffer_unmap(readback);
+		}
+		++r->images;
+		r->copies += c->plan_count;
+	}
+	crgpu_buffer_destroy(readback);
+	crgpu_buffer_destroy(upload);
+	crgpu_image_destroy(image);
+	return ok;
+}
+
+// Each kind of image of [format]: a 2D image of 3 x 2 blocks, a 2D array of
+// three such layers, and a cube square in whole blocks, each with its full
+// chain, so its smallest levels (2 x 2 and 1 x 1 texels) are one block.
+static void test_block_format_round_trips(
+    block_run *r,
+    CRGPU_FORMAT format) {
+	block_image_case *c = (block_image_case *)malloc(sizeof(block_image_case));
+	if (!c)
+		return;
+	uint32_t bw = 0, bh = 0, bytes = 0;
+	CHECK(crgpu_format_get_texel_block(format, &bw, &bh, &bytes) == CR_SUCCESS);
+	if (bw && bh) {
+		uint32_t a = bw, b = bh;
+		while (b) {
+			const uint32_t t = a % b;
+			a                = b;
+			b                = t;
+		}
+		const uint32_t side = bw / a * bh * 2;
+		block_round_trip(r, c, format, bw * 3, bh * 2, 1, false, "2D");
+		block_round_trip(r, c, format, bw * 3, bh * 2, 3, false, "2D array");
+		block_round_trip(r, c, format, side, side, 6, true, "cube");
+	}
+	free(c);
+}
+
+// The copies' argument checks on an image of [format]: each refusal in the
+// header's order with nothing recorded (an image written beforehand reads
+// back unchanged, and a buffer the refused reads would have written keeps
+// its bytes), and the copies D3D12 alone refuses taken elsewhere.
+static void test_block_copy_rules(
+    block_run *r,
+    CRGPU_FORMAT format) {
+	uint32_t bw = 0, bh = 0, bytes = 0;
+	CHECK(crgpu_format_get_texel_block(format, &bw, &bh, &bytes) == CR_SUCCESS);
+	const uint32_t W = bw * 4, H = bh * 4;
+	crgpu_image_desc desc = block_image_desc(format, W, H, 3, 3, false);
+	crgpu_image image = NULL, no_dst = NULL, no_src = NULL;
+	CHECK(crgpu_image_create(r->device, &desc, &image) == CR_SUCCESS);
+	desc.usage = CRGPU_IMAGE_USAGE_SAMPLED | CRGPU_IMAGE_USAGE_TRANSFER_SRC;
+	CHECK(crgpu_image_create(r->device, &desc, &no_dst) == CR_SUCCESS);
+	desc.usage = CRGPU_IMAGE_USAGE_SAMPLED | CRGPU_IMAGE_USAGE_TRANSFER_DST;
+	CHECK(crgpu_image_create(r->device, &desc, &no_src) == CR_SUCCESS);
+	if (!image || !no_dst || !no_src) {
+		crgpu_image_destroy(no_src);
+		crgpu_image_destroy(no_dst);
+		crgpu_image_destroy(image);
+		return;
+	}
+
+	uint64_t oa = 0, ra = 0;
+	CHECK(crgpu_image_get_buffer_copy_row_pitch_alignment(NULL, &ra) == CR_RESULT_GPU_INVALID_IMAGE);
+	CHECK(crgpu_image_get_buffer_copy_row_pitch_alignment(image, NULL) == CR_RESULT_NULL_OUTPUT_PARAMETER);
+	CHECK(crgpu_image_get_buffer_copy_row_pitch_alignment(image, &ra) == CR_SUCCESS);
+	CHECK(crgpu_image_get_buffer_copy_offset_alignment(image, &oa) == CR_SUCCESS);
+#if CRGPU_COMPILE_D3D12_API
+	CHECK(ra == 256);
+	CHECK(oa == 512);
+#elif CRGPU_COMPILE_VULKAN_API
+	// The least common multiple of the block's bytes and 4.
+	CHECK(ra == bytes);
+	CHECK(oa == (bytes % 4 == 0 ? bytes : bytes % 2 == 0 ? bytes * 2 : bytes * 4));
+#else
+	CHECK(ra == bytes);
+	CHECK(oa == bytes);
+#endif
+
+	// Level 0, every layer, whole: rows at the alignment's pitch.
+	const uint64_t tight0 = (uint64_t)4 * bytes;
+	const uint64_t pitch0 = block_align(tight0, ra);
+	crgpu_image_buffer_copy_desc whole;
+	memset(&whole, 0, sizeof(whole));
+	whole.buffer_row_length = pitch0 == tight0 ? 0 : (uint32_t)(pitch0 / bytes * bw);
+	whole.array_layer_count = 1;
+	whole.width             = W;
+	whole.height            = H;
+	whole.depth             = 1;
+	const uint64_t layer0   = pitch0 * 4;
+	const uint64_t step0    = block_align(layer0, oa);
+	const uint64_t size     = step0 * 3;
+
+	// The image's data, and a poison that a refused upload would write.
+	uint8_t *data       = (uint8_t *)malloc((size_t)size);
+	crgpu_buffer upload = NULL, poison = NULL, sentinel = NULL, readback = NULL, check = NULL, taken = NULL;
+	crgpu_buffer short_upload = NULL, short_readback = NULL, uniform = NULL;
+	if (data) {
+		memset(data, 0, (size_t)size);
+		for (uint32_t layer = 0; layer < 3; ++layer)
+			for (uint32_t by = 0; by < 4; ++by)
+				for (uint32_t bx = 0; bx < 4; ++bx)
+					for (uint32_t k = 0; k < bytes; ++k)
+						data[layer * step0 + by * pitch0 + bx * bytes + k] = block_byte(format, 0, layer, by, bx, k);
+		upload = make_buffer(r->device, CRGPU_MEMORY_KIND_UPLOAD, CRGPU_BUFFER_USAGE_TRANSFER_SRC, size, data);
+		memset(data, 0x5A, (size_t)size);
+		poison = make_buffer(r->device, CRGPU_MEMORY_KIND_UPLOAD, CRGPU_BUFFER_USAGE_TRANSFER_SRC, size, data);
+		memset(data, 0xC3, (size_t)size);
+		sentinel = make_buffer(r->device, CRGPU_MEMORY_KIND_UPLOAD, CRGPU_BUFFER_USAGE_TRANSFER_SRC, size, data);
+	}
+	readback       = make_buffer(r->device, CRGPU_MEMORY_KIND_READBACK, CRGPU_BUFFER_USAGE_TRANSFER_DST, size, NULL);
+	check          = make_buffer(r->device, CRGPU_MEMORY_KIND_READBACK, CRGPU_BUFFER_USAGE_TRANSFER_DST, size, NULL);
+	taken          = make_buffer(r->device, CRGPU_MEMORY_KIND_READBACK, CRGPU_BUFFER_USAGE_TRANSFER_DST, size, NULL);
+	short_upload   = make_buffer(r->device, CRGPU_MEMORY_KIND_UPLOAD, CRGPU_BUFFER_USAGE_TRANSFER_SRC, pitch0 * 3, NULL);
+	short_readback = make_buffer(r->device, CRGPU_MEMORY_KIND_READBACK, CRGPU_BUFFER_USAGE_TRANSFER_DST, pitch0 * 3, NULL);
+	uniform        = make_buffer(r->device, CRGPU_MEMORY_KIND_UPLOAD, CRGPU_BUFFER_USAGE_UNIFORM, size, NULL);
+	if (!upload || !poison || !sentinel || !readback || !check || !taken || !short_upload || !short_readback || !uniform)
+		goto done;
+
+	{
+		crgpu_image_buffer_copy_desc all = whole;
+		all.array_layer_count            = 3;
+		const bool layers_in_one         = layer0 % oa == 0;
+
+		// The image written: in one copy where the layers' step allows it.
+		block_begin(r);
+		crgpu_command_list_image_barrier(r->cmd, image, CRGPU_IMAGE_LAYOUT_UNDEFINED, CRGPU_IMAGE_LAYOUT_TRANSFER_DST);
+		for (uint32_t layer = 0; layer < (layers_in_one ? 1u : 3u); ++layer) {
+			crgpu_image_buffer_copy_desc one = layers_in_one ? all : whole;
+			one.buffer_offset                = layer * step0;
+			one.base_array_layer             = layer;
+			CHECK(crgpu_command_list_copy_buffer_to_image(r->cmd, upload, image, &one) == CR_SUCCESS);
+		}
+
+		// The handles and desc, each in parameter order.
+		crgpu_image_buffer_copy_desc c = whole;
+		CHECK(crgpu_command_list_copy_buffer_to_image(NULL, NULL, NULL, NULL) == CR_RESULT_GPU_INVALID_COMMAND_LIST);
+		CHECK(crgpu_command_list_copy_buffer_to_image(r->cmd, NULL, NULL, NULL) == CR_RESULT_GPU_INVALID_BUFFER);
+		CHECK(crgpu_command_list_copy_buffer_to_image(r->cmd, poison, NULL, NULL) == CR_RESULT_GPU_INVALID_IMAGE);
+		CHECK(crgpu_command_list_copy_buffer_to_image(r->cmd, poison, image, NULL) == CR_RESULT_NULL_DESC);
+		// The usages: the buffer's, then the image's.
+		CHECK(crgpu_command_list_copy_buffer_to_image(r->cmd, readback, no_dst, &c) == CR_RESULT_GPU_INVALID_BUFFER_USAGE);
+		CHECK(crgpu_command_list_copy_buffer_to_image(r->cmd, uniform, image, &c) == CR_RESULT_GPU_INVALID_BUFFER_USAGE);
+		CHECK(crgpu_command_list_copy_buffer_to_image(r->cmd, poison, no_dst, &c) == CR_RESULT_GPU_INVALID_IMAGE_USAGE);
+
+		// The region, each rule once.
+		const struct {
+			const char *what;
+			int field;
+			uint64_t value;
+			bool needs_block;
+		} region[] = {
+		    {"mip_level past the levels", 0, 3, false},
+		    {"base_array_layer past the layers", 1, 3, false},
+		    {"layers past the layers", 2, 0, false},
+		    {"array_layer_count 0", 3, 0, false},
+		    {"width 0", 4, 0, false},
+		    {"height 0", 5, 0, false},
+		    {"depth 0", 6, 0, false},
+		    {"past the level's right edge", 7, 0, false},
+		    {"image_z past the depth", 8, 0, false},
+		    {"depth 2", 9, 0, false},
+		    {"image_x not whole blocks", 10, 0, true},
+		    {"image_y not whole blocks", 11, 0, true},
+		    {"width neither whole blocks nor to the edge", 12, 0, true},
+		    {"height neither whole blocks nor to the edge", 13, 0, true},
+		    {"buffer_row_length not whole blocks", 14, 0, true},
+		    {"buffer_image_height not whole blocks", 15, 0, true},
+		    {"buffer_offset misaligned", 16, 0, false},
+		    {"a pitch past 64 bits", 17, 0, false},
+		    {"a region past the buffer", 18, 0, false},
+		};
+		for (uint32_t i = 0; i < sizeof(region) / sizeof(region[0]); ++i) {
+			if (region[i].needs_block && (bw == 1 || bh == 1))
+				continue;
+			if (region[i].field == 16 && oa == 1)
+				continue;
+			c                   = whole;
+			crgpu_buffer source = poison;
+			switch (region[i].field) {
+			case 0:
+				c.mip_level = 3;
+				break;
+			case 1:
+				c.base_array_layer = 3;
+				break;
+			case 2:
+				c.base_array_layer  = 2;
+				c.array_layer_count = 2;
+				break;
+			case 3:
+				c.array_layer_count = 0;
+				break;
+			case 4:
+				c.width = 0;
+				break;
+			case 5:
+				c.height = 0;
+				break;
+			case 6:
+				c.depth = 0;
+				break;
+			case 7:
+				c.image_x = bw;
+				break;
+			case 8:
+				c.image_z = 1;
+				break;
+			case 9:
+				c.depth = 2;
+				break;
+			case 10:
+				c.image_x = bw / 2;
+				c.width   = bw;
+				break;
+			case 11:
+				c.image_y = bh / 2;
+				c.height  = bh;
+				break;
+			case 12:
+				c.width = bw + 1;
+				break;
+			case 13:
+				c.height = bh + 1;
+				break;
+			case 14:
+				c.buffer_row_length = W + 1;
+				break;
+			case 15:
+				c.buffer_image_height = H + 1;
+				break;
+			case 16:
+				c.buffer_offset = oa / 2;
+				break;
+			case 17:
+				c.buffer_row_length   = UINT32_MAX / bw * bw;
+				c.buffer_image_height = UINT32_MAX / bh * bh;
+				c.array_layer_count   = 3;
+				break;
+			case 18:
+				source = short_upload;
+				break;
+			}
+			const CR_RESULT got = crgpu_command_list_copy_buffer_to_image(r->cmd, source, image, &c);
+			if (got != CR_RESULT_DESC_INVALID_PARAMETERS)
+				fprintf(stderr, "crgpu_objects_test: block copy, %s: %s\n", region[i].what, cr_result_str(got));
+			CHECK(got == CR_RESULT_DESC_INVALID_PARAMETERS);
+		}
+
+		crgpu_command_list_image_barrier(r->cmd, image, CRGPU_IMAGE_LAYOUT_TRANSFER_DST, CRGPU_IMAGE_LAYOUT_TRANSFER_SRC);
+		// The sentinel into the buffer refused reads would write.
+		crgpu_command_list_copy_buffer(r->cmd, sentinel, readback, 0, 0, size);
+
+		// The reads: handles, the usages (the image's, then the buffer's),
+		// and a few regions.
+		c = whole;
+		CHECK(crgpu_command_list_copy_image_to_buffer(NULL, NULL, NULL, NULL) == CR_RESULT_GPU_INVALID_COMMAND_LIST);
+		CHECK(crgpu_command_list_copy_image_to_buffer(r->cmd, NULL, NULL, NULL) == CR_RESULT_GPU_INVALID_IMAGE);
+		CHECK(crgpu_command_list_copy_image_to_buffer(r->cmd, image, NULL, NULL) == CR_RESULT_GPU_INVALID_BUFFER);
+		CHECK(crgpu_command_list_copy_image_to_buffer(r->cmd, image, readback, NULL) == CR_RESULT_NULL_DESC);
+		CHECK(crgpu_command_list_copy_image_to_buffer(r->cmd, no_src, poison, &c) == CR_RESULT_GPU_INVALID_IMAGE_USAGE);
+		CHECK(crgpu_command_list_copy_image_to_buffer(r->cmd, image, poison, &c) == CR_RESULT_GPU_INVALID_BUFFER_USAGE);
+		c.mip_level = 3;
+		CHECK(crgpu_command_list_copy_image_to_buffer(r->cmd, image, readback, &c) == CR_RESULT_DESC_INVALID_PARAMETERS);
+		c                   = whole;
+		c.array_layer_count = 0;
+		CHECK(crgpu_command_list_copy_image_to_buffer(r->cmd, image, readback, &c) == CR_RESULT_DESC_INVALID_PARAMETERS);
+		c       = whole;
+		c.depth = 0;
+		CHECK(crgpu_command_list_copy_image_to_buffer(r->cmd, image, readback, &c) == CR_RESULT_DESC_INVALID_PARAMETERS);
+		if (bw > 1) {
+			c         = whole;
+			c.image_x = bw / 2;
+			c.width   = bw;
+			CHECK(crgpu_command_list_copy_image_to_buffer(r->cmd, image, readback, &c) == CR_RESULT_DESC_INVALID_PARAMETERS);
+		}
+		if (oa > 1) {
+			c               = whole;
+			c.buffer_offset = oa / 2;
+			CHECK(crgpu_command_list_copy_image_to_buffer(r->cmd, image, readback, &c) == CR_RESULT_DESC_INVALID_PARAMETERS);
+		}
+		c = whole;
+		CHECK(crgpu_command_list_copy_image_to_buffer(r->cmd, image, short_readback, &c) == CR_RESULT_DESC_INVALID_PARAMETERS);
+
+		// What D3D12 alone refuses (its 256-byte row pitch and 512-byte
+		// layer placement), taken on Vulkan and Metal: a tight row of 4
+		// blocks (64 bytes for BC7), and three layers of a 1-block level a
+		// row's pitch apart.
+		c                     = whole;
+		c.buffer_row_length   = 0;
+		const CR_RESULT tight = crgpu_command_list_copy_image_to_buffer(r->cmd, image, taken, &c);
+		CHECK(tight == (tight0 % ra == 0 ? CR_SUCCESS : CR_RESULT_DESC_INVALID_PARAMETERS));
+#if CRGPU_COMPILE_D3D12_API
+		CHECK(tight == CR_RESULT_DESC_INVALID_PARAMETERS);
+#else
+		CHECK(tight == CR_SUCCESS);
+#endif
+		const uint64_t pitch2 = block_align(bytes, ra);
+		memset(&c, 0, sizeof(c));
+		c.buffer_row_length   = pitch2 == bytes ? 0 : (uint32_t)(pitch2 / bytes * bw);
+		c.mip_level           = 2;
+		c.array_layer_count   = 3;
+		c.width               = bw;
+		c.height              = bh;
+		c.depth               = 1;
+		const CR_RESULT three = crgpu_command_list_copy_image_to_buffer(r->cmd, image, taken, &c);
+		CHECK(three == (pitch2 % oa == 0 ? CR_SUCCESS : CR_RESULT_DESC_INVALID_PARAMETERS));
+#if CRGPU_COMPILE_D3D12_API
+		CHECK(three == CR_RESULT_DESC_INVALID_PARAMETERS);
+#else
+		CHECK(three == CR_SUCCESS);
+#endif
+		// Three rows of blocks into a buffer of three rows: taken; the
+		// fourth row is one row past it (refused above).
+		c        = whole;
+		c.height = bh * 3;
+		CHECK(crgpu_command_list_copy_image_to_buffer(r->cmd, image, short_readback, &c) == CR_SUCCESS);
+
+		// The image as written, read back.
+		for (uint32_t layer = 0; layer < (layers_in_one ? 1u : 3u); ++layer) {
+			crgpu_image_buffer_copy_desc one = layers_in_one ? all : whole;
+			one.buffer_offset                = layer * step0;
+			one.base_array_layer             = layer;
+			CHECK(crgpu_command_list_copy_image_to_buffer(r->cmd, image, check, &one) == CR_SUCCESS);
+		}
+		block_submit(r);
+
+		void *mapped = NULL;
+		CHECK(crgpu_buffer_map(readback, 0, size, &mapped) == CR_SUCCESS);
+		if (mapped) {
+			CHECK(crgpu_buffer_invalidate(readback, 0, size) == CR_SUCCESS);
+			uint64_t changed = 0;
+			for (uint64_t i = 0; i < size; ++i)
+				changed += ((const uint8_t *)mapped)[i] != 0xC3;
+			CHECK(changed == 0);
+			crgpu_buffer_unmap(readback);
+		}
+		mapped = NULL;
+		CHECK(crgpu_buffer_map(check, 0, size, &mapped) == CR_SUCCESS);
+		if (mapped) {
+			CHECK(crgpu_buffer_invalidate(check, 0, size) == CR_SUCCESS);
+			uint32_t wrong = 0;
+			for (uint32_t layer = 0; layer < 3; ++layer)
+				for (uint32_t by = 0; by < 4; ++by)
+					for (uint32_t bx = 0; bx < 4; ++bx)
+						for (uint32_t k = 0; k < bytes; ++k)
+							wrong += ((const uint8_t *)mapped)[layer * step0 + by * pitch0 + bx * bytes + k] != block_byte(format, 0, layer, by, bx, k);
+			CHECK(wrong == 0);
+			crgpu_buffer_unmap(check);
+		}
+	}
+
+	// The copy size and both alignments of an image whose format has no
+	// texel block, where the backend makes one (a planar format).
+	{
+		crgpu_image_desc planar = block_image_desc(CRGPU_FORMAT_NV12, 16, 16, 1, 1, false);
+		planar.usage            = CRGPU_IMAGE_USAGE_SAMPLED | CRGPU_IMAGE_USAGE_TRANSFER_SRC | CRGPU_IMAGE_USAGE_TRANSFER_DST;
+		crgpu_image nv12        = NULL;
+		if (crgpu_image_create(r->device, &planar, &nv12) == CR_SUCCESS) {
+			uint64_t pitch = 1, total = 1, alignment = 1;
+			crgpu_image_get_buffer_copy_size(nv12, 0, &pitch, &total);
+			CHECK(pitch == 0 && total == 0);
+			CHECK(crgpu_image_get_buffer_copy_row_pitch_alignment(nv12, &alignment) == CR_RESULT_GPU_INVALID_FORMAT);
+			CHECK(crgpu_image_get_buffer_copy_offset_alignment(nv12, &alignment) == CR_RESULT_GPU_INVALID_FORMAT);
+			CHECK(alignment == 1);
+			crgpu_image_buffer_copy_desc c = whole;
+			c.width = c.height = 16;
+			block_begin(r);
+			CHECK(crgpu_command_list_copy_buffer_to_image(r->cmd, upload, nv12, &c) == CR_RESULT_GPU_INVALID_FORMAT);
+			// The format before the usages.
+			CHECK(crgpu_command_list_copy_buffer_to_image(r->cmd, readback, nv12, &c) == CR_RESULT_GPU_INVALID_FORMAT);
+			CHECK(crgpu_command_list_copy_image_to_buffer(r->cmd, nv12, readback, &c) == CR_RESULT_GPU_INVALID_FORMAT);
+			block_submit(r);
+			crgpu_image_destroy(nv12);
+		} else {
+			printf("crgpu_objects_test: no NV12 image on this backend: the copies' format refusal not reached\n");
+		}
+	}
+
+done:
+	crgpu_buffer_destroy(uniform);
+	crgpu_buffer_destroy(short_readback);
+	crgpu_buffer_destroy(short_upload);
+	crgpu_buffer_destroy(taken);
+	crgpu_buffer_destroy(check);
+	crgpu_buffer_destroy(readback);
+	crgpu_buffer_destroy(sentinel);
+	crgpu_buffer_destroy(poison);
+	crgpu_buffer_destroy(upload);
+	free(data);
+	crgpu_image_destroy(no_src);
+	crgpu_image_destroy(no_dst);
+	crgpu_image_destroy(image);
+}
+
+// The block formats on a device made with every block-format bit the
+// adapter has: each image kind of every format it samples written and read
+// back, what a block image may be, and the copies' rules on one of them (or
+// on an RGBA8 image, for the rules every format has, where it has neither).
+static void test_block_formats(
+    crgpu_adapter adapter,
+    CRGPU_FEATURES supported,
+    const CRGPU_ADAPTER_PROPERTIES *properties) {
+	crgpu_device_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type          = CR_STRUCT_TYPE_GPU_DEVICE_DESC;
+	desc.required_features  = supported & (CRGPU_FEATURE_TEXTURE_COMPRESSION_BC | CRGPU_FEATURE_TEXTURE_COMPRESSION_ASTC_LDR);
+	desc.direct_queue_count = 1;
+	desc.max_descriptors    = 16;
+	desc.max_samplers       = 4;
+	desc.debug_name         = "crgpu_objects_test block formats";
+	block_run r;
+	memset(&r, 0, sizeof(r));
+	CHECK(crgpu_device_create(adapter, &desc, &r.device) == CR_SUCCESS);
+	if (!r.device)
+		return;
+	CHECK(crgpu_device_get_features(r.device) == desc.required_features);
+	CHECK(crgpu_command_queue_get(r.device, CRGPU_COMMAND_LIST_TYPE_DIRECT, 0, &r.queue) == CR_SUCCESS);
+	crgpu_command_allocator_desc allocator_desc;
+	memset(&allocator_desc, 0, sizeof(allocator_desc));
+	allocator_desc.base.type = CR_STRUCT_TYPE_GPU_COMMAND_ALLOCATOR_DESC;
+	allocator_desc.type      = CRGPU_COMMAND_LIST_TYPE_DIRECT;
+	CHECK(crgpu_command_allocator_create(r.device, &allocator_desc, &r.allocator) == CR_SUCCESS);
+	if (r.allocator)
+		CHECK(crgpu_command_list_create(r.allocator, &r.cmd) == CR_SUCCESS);
+	if (r.queue && r.cmd) {
+		const bool bc   = (desc.required_features & CRGPU_FEATURE_TEXTURE_COMPRESSION_BC) != 0;
+		const bool astc = (desc.required_features & CRGPU_FEATURE_TEXTURE_COMPRESSION_ASTC_LDR) != 0;
+		printf("crgpu_objects_test: block formats: BC %s, ASTC LDR %s\n", bc ? "yes" : "no", astc ? "yes" : "no");
+		if (bc) {
+			test_block_image_rules(r.device, properties, CRGPU_FORMAT_BC7_UNORM, CRGPU_FORMAT_BC7_UNORM, 6, 8, "BC7");
+			for (uint32_t i = 0; i < sizeof(block_bc_formats) / sizeof(block_bc_formats[0]); ++i)
+				test_block_format_round_trips(&r, block_bc_formats[i]);
+#if CRGPU_COMPILE_METAL_API
+			// Metal has no typeless texture: refused after the block checks.
+			crgpu_image_desc typeless = block_image_desc(CRGPU_FORMAT_BC7_TYPELESS, 8, 8, 1, 1, false);
+			expect_image_result(r.device, NULL, &typeless, CR_RESULT_GPU_INVALID_FORMAT, "BC7 TYPELESS on Metal");
+#endif
+		}
+		if (astc) {
+			test_block_image_rules(r.device, properties, CRGPU_FORMAT_ASTC_4X4_UNORM, CRGPU_FORMAT_ASTC_5X5_UNORM, 4, 4, "ASTC 4x4");
+			test_block_image_rules(r.device, properties, CRGPU_FORMAT_ASTC_10X6_UNORM_SRGB, CRGPU_FORMAT_ASTC_10X6_UNORM_SRGB, 12, 6, "ASTC 10x6");
+			for (uint32_t f = CRGPU_FORMAT_ASTC_4X4_UNORM; f <= CRGPU_FORMAT_ASTC_12X12_UNORM_SRGB; ++f)
+				test_block_format_round_trips(&r, (CRGPU_FORMAT)f);
+		}
+		if (bc)
+			test_block_copy_rules(&r, CRGPU_FORMAT_BC7_UNORM);
+		if (astc)
+			test_block_copy_rules(&r, CRGPU_FORMAT_ASTC_5X4_UNORM);
+		// An uncompressed format's copies take the same rules, its block one
+		// texel.
+		test_block_copy_rules(&r, CRGPU_FORMAT_R8G8B8A8_UNORM);
+		printf(
+		    "crgpu_objects_test: block formats: %u images written and read back in %u copies, %llu blocks compared\n", r.images, r.copies,
+		    (unsigned long long)r.blocks_compared);
+		CHECK(r.images == (bc ? 3u * 14u : 0u) + (astc ? 3u * 28u : 0u));
+	}
+	crgpu_command_list_destroy(r.cmd);
+	crgpu_command_allocator_destroy(r.allocator);
+	crgpu_device_destroy(r.device);
 }
 
 // ---- Ray queries (CRGPU_EXT_RAY_QUERY) --------------------------------------
@@ -3230,7 +4340,7 @@ static void rq_test_shadow(rq_run *r, const float triangle_at[3]) {
 		copy.width             = RQ_SHADOW_W;
 		copy.height            = RQ_SHADOW_H;
 		copy.depth             = 1;
-		crgpu_command_list_copy_image_to_buffer(r->cmd, image, readback, &copy);
+		CHECK(crgpu_command_list_copy_image_to_buffer(r->cmd, image, readback, &copy) == CR_SUCCESS);
 		rq_submit(r);
 
 		void *mapped = NULL;
@@ -4041,6 +5151,7 @@ int main(int argc, char **argv) {
 		}
 	}
 	test_format_from_string();
+	test_texel_blocks();
 
 	crtest_allocator tracker;
 	CR_ALLOCATOR allocator = crtest_allocator_make(&tracker);
@@ -4098,6 +5209,8 @@ int main(int argc, char **argv) {
 		test_buffer_and_view(device);
 		test_heap_desc(device);
 		test_image_size_limits(device, &properties);
+		test_block_images_without_bits(device);
+		test_block_format_pipelines(device);
 		test_descriptor_pool_reset(device);
 		test_present_scaling_without_present(device);
 #if CRGPU_EXT_RAY_QUERY
@@ -4108,6 +5221,7 @@ int main(int argc, char **argv) {
 
 	test_quarantine(adapter, &tracker);
 	test_drawing(adapter, properties.supported_features);
+	test_block_formats(adapter, properties.supported_features, &properties);
 #if CRGPU_EXT_RAY_QUERY
 	test_ray_queries(adapter, properties.supported_features);
 #endif

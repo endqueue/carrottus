@@ -552,6 +552,18 @@ CR_RESULT crgpuvulkan_create_image_views_internal(
 		img->_device = pSwapChain->_device;
 		img->_image_vk = pSwapChain->_swapchain_images_vk[i];
 		img->_format_vk = pSwapChain->_format_vk;
+		// What the image is, as D3D12's and Metal's back buffers say: the
+		// copies' checks read it (format, levels, layers, usage), and
+		// crgpu_image_get_desc reports it.
+		img->_desc.base          = cr_struct_base(CR_STRUCT_TYPE_GPU_IMAGE_DESC);
+		img->_desc.format        = pSwapChain->_desc.format;
+		img->_desc.width         = pSwapChain->_desc.width;
+		img->_desc.height        = pSwapChain->_desc.height;
+		img->_desc.depth         = 1;
+		img->_desc.mip_levels    = 1;
+		img->_desc.array_layers  = 1;
+		img->_desc.type          = CRGPU_IMAGE_TYPE_2D;
+		img->_desc.usage         = CRGPU_IMAGE_USAGE_COLOR_ATTACHMENT | pSwapChain->_desc.usage;
 		view->_desc.parent_image = (crgpu_image) img;
 		result = vkCreateImageView(pSwapChain->_device._logical_device_vk, &createInfo, NULL,
 		                           &pSwapChain->_swapchain_image_views_vk[i]._image_view_vk);

@@ -203,6 +203,12 @@ static bool crgpu_d3d12___read_adapter_facts(crgpu_adapter_d3d12 *adapter) {
 	if (SUCCEEDED(probe->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS2, &options2, sizeof(options2))) &&
 	    options2.DepthBoundsTestSupported)
 		features |= CRGPU_FEATURE_DEPTH_BOUNDS_TEST;
+	// BC1 to BC7 are required at every feature level this backend lists
+	// (12_0 and up, and 11_0 before them). D3D12 has no ASTC: DXGI_FORMAT
+	// names none, so CRGPU_FEATURE_TEXTURE_COMPRESSION_ASTC_LDR is never set
+	// and every ASTC image is refused by the create's feature check, before
+	// the format reaches crgpu_d3d12_get_dxgi_format.
+	features |= CRGPU_FEATURE_TEXTURE_COMPRESSION_BC;
 	// Ray queries are DXR 1.1's inline tracing: raytracing tier 1.1. The
 	// limits are D3D12's constants, which it has no query for.
 	D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5 = {};

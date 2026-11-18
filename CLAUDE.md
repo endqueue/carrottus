@@ -411,6 +411,42 @@ GameInput and evdev builds were not run.
   Khronos and DirectX headers, and the Vulkan heap, buffer and image files
   run against a mock Vulkan; the Metal files parsed with clang against a
   stub Metal header only. Nothing has run on a GPU.
+- **Block-compressed formats are sampled and copied, asked for at device
+  creation, and copied in rows of blocks** (card S48, 0.4.0,
+  `crgpu_astc_draft.h`, approved 2026-11-17, built on the Mac the same
+  day; Vulkan and D3D12 written, not compiled; `CRGPU_DEVICE_TODO.md`, S48).
+  - ASTC LDR is 28 values numbered from 1000, past anything DXGI numbers
+    (CRGPU_FORMAT is DXGI's number below that). D3D12's cast gives
+    `DXGI_FORMAT_UNKNOWN` from 1000 on, a guard behind the feature check.
+  - Two feature bits, `CRGPU_FEATURE_TEXTURE_COMPRESSION_BC` (16) and
+    `_ASTC_LDR` (17), each a family: Vulkan's two booleans, enabled only
+    with the bit; D3D12 BC always and ASTC never; Metal
+    `supportsBCTextureCompression` and `MTLGPUFamilyApple2`. A BC or ASTC
+    image on a device created without its bit is refused
+    (`CR_RESULT_GPU_FEATURE_NOT_SUPPORTED`), then any usage but sampled and
+    the two transfers, any type but 2D (arrays and cubes are 2D), and a
+    level 0 not whole blocks, in that order, in every backend's desc check
+    (`crgpu___internal_check_image_block`). Q5's whole-blocks rule is a
+    choice for one answer everywhere: Vulkan and Metal allow any size.
+  - Every format's layout in a copy is its texel block
+    (`crgpu_format_get_texel_block()`, one table in `crgpuformat.c`): one
+    texel for an uncompressed format, 2 x 1 for the packed 4:2:2 ones, the
+    compression block for BC and ASTC; refused for `UNKNOWN`, `R1_UNORM` and
+    the planar formats, which no copy takes. `crgpu_format_get_bit_count()`
+    is 0 for ASTC; nothing in the backends sizes a copy from it any more.
+  - Both copies between a buffer and an image return a result and check
+    everything before recording (`crgpu___internal_check_buffer_image_copy`):
+    the format, the usages, the region against the level and layers (a
+    layer count or depth of 0 refused), the block's rules, the offset
+    against `crgpu_image_get_buffer_copy_offset_alignment()` (512 on D3D12),
+    the row pitch against `crgpu_image_get_buffer_copy_row_pitch_alignment()`
+    (256 on D3D12, the block's bytes elsewhere), each later layer's start,
+    and the buffer's range. The checks hand the backend the layout in rows
+    of blocks, which Metal's bytes per row, D3D12's footprint and the copy
+    size are made from.
+  - A block format as a pipeline's colour or depth attachment, or a vertex
+    attribute, is `CR_RESULT_GPU_INVALID_FORMAT`, beside the colour
+    attachment checks. Blits never take one (the caller's rule, unchecked).
 - **Native escape hatches are interop-only.** `crgpu_vulkan_natives.h` /
   `_d3d12_natives.h` / `_metal_natives.h` unwrap a handle back to its raw native type
   (`VkInstance`, `ID3D12Device14`, ...) for third-party libraries Carrottus doesn't wrap

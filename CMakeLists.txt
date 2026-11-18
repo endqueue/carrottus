@@ -628,6 +628,12 @@ if(NOT TARGET carrottus)
             target_sources(crgpu_device_test PRIVATE tests/crgpu_test_metal_family.m)
             target_link_libraries(crgpu_device_test PRIVATE "-framework Metal" "-framework Foundation")
         endif()
+        if(GRAPHICS_BACKEND STREQUAL "Vulkan")
+            # The block-format bits (card S48), checked against the adapter's
+            # own VkPhysicalDeviceFeatures through crgpu_vulkan_natives.h.
+            target_include_directories(crgpu_device_test PRIVATE ${Vulkan_INCLUDE_DIRS})
+            target_link_libraries(crgpu_device_test PRIVATE Vulkan::Vulkan)
+        endif()
         add_test(NAME crgpu_device_test COMMAND crgpu_device_test)
         set_tests_properties(crgpu_device_test PROPERTIES SKIP_RETURN_CODE 77)
 

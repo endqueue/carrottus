@@ -191,8 +191,10 @@ CR_RESULT crgpumetal___check_buffer_desc(
 // The storage and CPU cache modes a buffer of [memory_kind] is made with.
 MTLResourceOptions crgpumetal___buffer_resource_options(CRGPU_MEMORY_KIND memory_kind);
 // crgpu_image_create's desc checks, in its order, after its argument
-// checks.
-CR_RESULT crgpumetal___check_image_desc(const crgpu_image_desc *desc);
+// checks; the block-format ones against the device's [features].
+CR_RESULT crgpumetal___check_image_desc(
+    CRGPU_FEATURES features,
+    const crgpu_image_desc *desc);
 // A texture descriptor for an image of [desc], which the caller releases.
 // [desc] has passed crgpumetal___check_image_desc.
 MTLTextureDescriptor *crgpumetal___new_texture_descriptor(const crgpu_image_desc *desc);

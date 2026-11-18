@@ -64,7 +64,9 @@ static MTLTextureType crgpumetal___internal_image_texture_type(
 	return (array_layers > 1) ? MTLTextureType2DArray : MTLTextureType2D;
 }
 
-CR_RESULT crgpumetal___check_image_desc(const crgpu_image_desc *desc) {
+CR_RESULT crgpumetal___check_image_desc(
+    CRGPU_FEATURES features,
+    const crgpu_image_desc *desc) {
 	if (!desc->width || !desc->height || !desc->depth || !desc->array_layers || !desc->mip_levels)
 		return CR_RESULT_DESC_INVALID_PARAMETERS;
 	if (desc->usage == CRGPU_IMAGE_USAGE_NONE)
@@ -89,7 +91,13 @@ CR_RESULT crgpumetal___check_image_desc(const crgpu_image_desc *desc) {
 		if (desc->width != desc->height || desc->array_layers % 6 != 0)
 			return CR_RESULT_DESC_INVALID_PARAMETERS;
 	}
-	// The format table (crgpumetalformat.m) says why a format has none.
+	if (desc->format == CRGPU_FORMAT_UNKNOWN)
+		return CR_RESULT_GPU_INVALID_FORMAT;
+	const CR_RESULT block_result = crgpu___internal_check_image_block(features, desc);
+	if (block_result != CR_SUCCESS)
+		return block_result;
+	// The format table (crgpumetalformat.m) says why a format has none: a
+	// BC TYPELESS one is refused here, after the block checks.
 	if (crgpumetal___format_info(desc->format)->pixel == MTLPixelFormatInvalid)
 		return CR_RESULT_GPU_INVALID_FORMAT;
 	return CR_SUCCESS;
@@ -132,10 +140,10 @@ CR_RESULT crgpu_image_create(
 		return base_sr;
 	if (!out_image)
 		return CR_RESULT_NULL_OUTPUT_PARAMETER;
-	const CR_RESULT desc_result = crgpumetal___check_image_desc(desc);
+	crgpu_device_metal *device_metal = (crgpu_device_metal *)device;
+	const CR_RESULT desc_result      = crgpumetal___check_image_desc(device_metal->_features, desc);
 	if (desc_result != CR_SUCCESS)
 		return desc_result;
-	crgpu_device_metal *device_metal = (crgpu_device_metal *)device;
 	const CR_RESULT size_result       = crgpu___internal_check_image_size(&device_metal->_adapter->_facts.properties, desc);
 	if (size_result != CR_SUCCESS)
 		return size_result;

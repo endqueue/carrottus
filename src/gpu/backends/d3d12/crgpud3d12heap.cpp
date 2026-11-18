@@ -58,7 +58,7 @@ static CR_RESULT crgpu_d3d12_check_buffer_placement(
 static CR_RESULT crgpu_d3d12_check_image_placement(
     crgpu_heap heap,
     const crgpu_image_desc *desc) {
-	const CR_RESULT sr = crgpu_d3d12_check_image_desc(desc);
+	const CR_RESULT sr = crgpu_d3d12_check_image_desc(heap->_device->_features, desc);
 	if (sr != CR_SUCCESS)
 		return sr;
 	if (desc->usage & (CRGPU_IMAGE_USAGE_TRANSIENT_ATTACHMENT | CRGPU_IMAGE_USAGE_PRESENTABLE))

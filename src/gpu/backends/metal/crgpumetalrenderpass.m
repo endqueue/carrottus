@@ -154,84 +154,111 @@ void crgpu_command_list_copy_buffer(
 	                    size:size];
 }
 
-void crgpu_command_list_copy_image_to_buffer(
+// The blit encoder's sourceOffset/destinationOffset: a multiple of the
+// pixel size, or of the block size for a compressed format. Its bytes per
+// row need no more than whole blocks. Both 0 for a format with no block,
+// which the copies' checks refuse before reading them.
+static uint64_t crgpumetal___copy_offset_alignment(crgpu___texel_block block) { return block.bytes; }
+
+static uint64_t crgpumetal___copy_row_pitch_alignment(crgpu___texel_block block) { return block.bytes; }
+
+CR_RESULT crgpu_command_list_copy_image_to_buffer(
     crgpu_command_list cmd,
     crgpu_image src_image,
     crgpu_buffer dst_buffer,
     const crgpu_image_buffer_copy_desc *desc) {
-	if (!cmd || !src_image || !dst_buffer || !desc)
-		return;
+	if (!cmd)
+		return CR_RESULT_GPU_INVALID_COMMAND_LIST;
 	if (CR_STALE(cmd, "crgpu_command_list_copy_image_to_buffer", "cmd"))
-		return;
+		return CR_RESULT_GPU_INVALID_COMMAND_LIST;
+	if (!src_image)
+		return CR_RESULT_GPU_INVALID_IMAGE;
 	if (CR_STALE(src_image, "crgpu_command_list_copy_image_to_buffer", "src_image"))
-		return;
+		return CR_RESULT_GPU_INVALID_IMAGE;
+	if (!dst_buffer)
+		return CR_RESULT_GPU_INVALID_BUFFER;
 	if (CR_STALE(dst_buffer, "crgpu_command_list_copy_image_to_buffer", "dst_buffer"))
-		return;
+		return CR_RESULT_GPU_INVALID_BUFFER;
+	if (!desc)
+		return CR_RESULT_NULL_DESC;
 
 	crgpu_command_list_metal *cmd_metal = (crgpu_command_list_metal *)cmd;
 	crgpu_image_metal *src_metal        = (crgpu_image_metal *)src_image;
 	crgpu_buffer_metal *dst_metal       = (crgpu_buffer_metal *)dst_buffer;
+	const crgpu___texel_block block     = crgpu___internal_texel_block(src_metal->_desc.format);
+	crgpu___copy_layout layout;
+	const CR_RESULT checked = crgpu___internal_check_buffer_image_copy(
+	    &src_metal->_desc, &dst_metal->_desc, false, crgpumetal___copy_offset_alignment(block), crgpumetal___copy_row_pitch_alignment(block), desc, &layout);
+	if (checked != CR_SUCCESS)
+		return checked;
 
-	uint64_t bytes_per_row = desc->buffer_row_length
-	                             ? (uint64_t) desc->buffer_row_length * (crgpu_format_get_bit_count(src_metal->_desc.format) / 8)
-	                             : (uint64_t) desc->width * (crgpu_format_get_bit_count(src_metal->_desc.format) / 8);
-	uint64_t bytes_per_image = bytes_per_row * (desc->buffer_image_height ? desc->buffer_image_height : desc->height);
-
+	// Bytes per row are a row of blocks and bytes per image a slice of them;
+	// the size is in texels, stopping at the level's edge where the region
+	// does (Metal's rule for a compressed texture).
 	id<MTLBlitCommandEncoder> encoder = crgpumetal___internal_ensure_blit_encoder(cmd_metal);
 	for (uint32_t layer = 0; layer < desc->array_layer_count; layer++) {
 		[encoder copyFromTexture:src_metal->_texture_mtl
-		                  sourceSlice:desc->base_array_layer + layer
-		                  sourceLevel:desc->mip_level
-		                 sourceOrigin:MTLOriginMake(desc->image_x, desc->image_y, desc->image_z)
-		                   sourceSize:MTLSizeMake(desc->width, desc->height, desc->depth)
-		                     toBuffer:dst_metal->_buffer_mtl
-		            destinationOffset:desc->buffer_offset + layer * bytes_per_image
-		       destinationBytesPerRow:bytes_per_row
-		     destinationBytesPerImage:bytes_per_image];
+		                 sourceSlice:desc->base_array_layer + layer
+		                 sourceLevel:desc->mip_level
+		                sourceOrigin:MTLOriginMake(desc->image_x, desc->image_y, desc->image_z)
+		                  sourceSize:MTLSizeMake(desc->width, desc->height, desc->depth)
+		                    toBuffer:dst_metal->_buffer_mtl
+		           destinationOffset:desc->buffer_offset + layer * layout.layer_bytes
+		      destinationBytesPerRow:layout.row_pitch
+		    destinationBytesPerImage:layout.slice_bytes];
 	}
+	return CR_SUCCESS;
 }
 
-void crgpu_command_list_copy_buffer_to_image(
+CR_RESULT crgpu_command_list_copy_buffer_to_image(
     crgpu_command_list cmd,
     crgpu_buffer src_buffer,
     crgpu_image dst_image,
     const crgpu_image_buffer_copy_desc *desc) {
-	if (!cmd || !src_buffer || !dst_image || !desc)
-		return;
+	if (!cmd)
+		return CR_RESULT_GPU_INVALID_COMMAND_LIST;
 	if (CR_STALE(cmd, "crgpu_command_list_copy_buffer_to_image", "cmd"))
-		return;
+		return CR_RESULT_GPU_INVALID_COMMAND_LIST;
+	if (!src_buffer)
+		return CR_RESULT_GPU_INVALID_BUFFER;
 	if (CR_STALE(src_buffer, "crgpu_command_list_copy_buffer_to_image", "src_buffer"))
-		return;
+		return CR_RESULT_GPU_INVALID_BUFFER;
+	if (!dst_image)
+		return CR_RESULT_GPU_INVALID_IMAGE;
 	if (CR_STALE(dst_image, "crgpu_command_list_copy_buffer_to_image", "dst_image"))
-		return;
+		return CR_RESULT_GPU_INVALID_IMAGE;
+	if (!desc)
+		return CR_RESULT_NULL_DESC;
 
 	crgpu_command_list_metal *cmd_metal = (crgpu_command_list_metal *)cmd;
 	crgpu_buffer_metal *src_metal       = (crgpu_buffer_metal *)src_buffer;
 	crgpu_image_metal *dst_metal        = (crgpu_image_metal *)dst_image;
-
-	uint64_t bytes_per_row = desc->buffer_row_length
-	                             ? (uint64_t) desc->buffer_row_length * (crgpu_format_get_bit_count(dst_metal->_desc.format) / 8)
-	                             : (uint64_t) desc->width * (crgpu_format_get_bit_count(dst_metal->_desc.format) / 8);
-	uint64_t bytes_per_image = bytes_per_row * (desc->buffer_image_height ? desc->buffer_image_height : desc->height);
+	const crgpu___texel_block block     = crgpu___internal_texel_block(dst_metal->_desc.format);
+	crgpu___copy_layout layout;
+	const CR_RESULT checked = crgpu___internal_check_buffer_image_copy(
+	    &dst_metal->_desc, &src_metal->_desc, true, crgpumetal___copy_offset_alignment(block), crgpumetal___copy_row_pitch_alignment(block), desc, &layout);
+	if (checked != CR_SUCCESS)
+		return checked;
 
 	id<MTLBlitCommandEncoder> encoder = crgpumetal___internal_ensure_blit_encoder(cmd_metal);
 	for (uint32_t layer = 0; layer < desc->array_layer_count; layer++) {
 		[encoder copyFromBuffer:src_metal->_buffer_mtl
-		             sourceOffset:desc->buffer_offset + layer * bytes_per_image
-		        sourceBytesPerRow:bytes_per_row
-		      sourceBytesPerImage:bytes_per_image
-		               sourceSize:MTLSizeMake(desc->width, desc->height, desc->depth)
-		                toTexture:dst_metal->_texture_mtl
-		         destinationSlice:desc->base_array_layer + layer
-		         destinationLevel:desc->mip_level
-		        destinationOrigin:MTLOriginMake(desc->image_x, desc->image_y, desc->image_z)];
+		           sourceOffset:desc->buffer_offset + layer * layout.layer_bytes
+		      sourceBytesPerRow:layout.row_pitch
+		    sourceBytesPerImage:layout.slice_bytes
+		             sourceSize:MTLSizeMake(desc->width, desc->height, desc->depth)
+		              toTexture:dst_metal->_texture_mtl
+		       destinationSlice:desc->base_array_layer + layer
+		       destinationLevel:desc->mip_level
+		      destinationOrigin:MTLOriginMake(desc->image_x, desc->image_y, desc->image_z)];
 	}
+	return CR_SUCCESS;
 }
 
 // Metal has no row-pitch alignment requirement for buffer<->texture copies
-// (unlike D3D12's 256-byte footprint alignment) - this always reports the
-// tightly-packed size for the given mip level, matching the Vulkan backend's
-// own reasoning in crgpuvulkanrenderpass.c.
+// beyond whole blocks (unlike D3D12's 256-byte footprint alignment): this
+// reports the tightly packed size of the level, in rows of blocks, as the
+// Vulkan backend does.
 void crgpu_image_get_buffer_copy_size(
     crgpu_image image,
     uint32_t mip_level,
@@ -241,22 +268,7 @@ void crgpu_image_get_buffer_copy_size(
 		return;
 	if (CR_STALE(image, "crgpu_image_get_buffer_copy_size", "image"))
 		return;
-
-	crgpu_image_metal *image_metal = (crgpu_image_metal *)image;
-
-	uint32_t mip_width  = image_metal->_desc.width >> mip_level;
-	uint32_t mip_height = image_metal->_desc.height >> mip_level;
-	uint32_t mip_depth  = image_metal->_desc.depth >> mip_level;
-	if (!mip_width) mip_width = 1;
-	if (!mip_height) mip_height = 1;
-	if (!mip_depth) mip_depth = 1;
-
-	uint64_t row_pitch = (uint64_t) mip_width * (crgpu_format_get_bit_count(image_metal->_desc.format) / 8);
-
-	if (out_row_pitch)
-		*out_row_pitch = row_pitch;
-	if (out_total_size)
-		*out_total_size = row_pitch * mip_height * mip_depth;
+	crgpu___internal_tight_copy_size(&((crgpu_image_metal *)image)->_desc, mip_level, out_row_pitch, out_total_size);
 }
 
 CR_RESULT crgpu_image_get_buffer_copy_offset_alignment(
@@ -268,13 +280,26 @@ CR_RESULT crgpu_image_get_buffer_copy_offset_alignment(
 		return CR_RESULT_GPU_INVALID_IMAGE;
 	if (!out_alignment)
 		return CR_RESULT_NULL_OUTPUT_PARAMETER;
-	crgpu_image_metal *image_metal = (crgpu_image_metal *)image;
-	const uint64_t block             = crgpu___internal_format_block_bytes(image_metal->_desc.format);
-	if (block == 0)
+	const crgpu___texel_block block = crgpu___internal_texel_block(((crgpu_image_metal *)image)->_desc.format);
+	if (block.bytes == 0)
 		return CR_RESULT_GPU_INVALID_FORMAT;
-	// The blit encoder's sourceOffset/destinationOffset: a multiple of the
-	// pixel size, or of the block size for a compressed format.
-	*out_alignment = block;
+	*out_alignment = crgpumetal___copy_offset_alignment(block);
+	return CR_SUCCESS;
+}
+
+CR_RESULT crgpu_image_get_buffer_copy_row_pitch_alignment(
+    crgpu_image image,
+    uint64_t *out_alignment) {
+	if (!image)
+		return CR_RESULT_GPU_INVALID_IMAGE;
+	if (CR_STALE(image, "crgpu_image_get_buffer_copy_row_pitch_alignment", "image"))
+		return CR_RESULT_GPU_INVALID_IMAGE;
+	if (!out_alignment)
+		return CR_RESULT_NULL_OUTPUT_PARAMETER;
+	const crgpu___texel_block block = crgpu___internal_texel_block(((crgpu_image_metal *)image)->_desc.format);
+	if (block.bytes == 0)
+		return CR_RESULT_GPU_INVALID_FORMAT;
+	*out_alignment = crgpumetal___copy_row_pitch_alignment(block);
 	return CR_SUCCESS;
 }
 

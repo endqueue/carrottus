@@ -231,7 +231,9 @@ crgpu_d3d12_get_clear_value(const CRGPU_CLEAR_VALUE *c) {
 	return result;
 }
 
-CR_RESULT crgpu_d3d12_check_image_desc(const crgpu_image_desc *desc) {
+CR_RESULT crgpu_d3d12_check_image_desc(
+    CRGPU_FEATURES features,
+    const crgpu_image_desc *desc) {
 	if (!desc->width || !desc->height || !desc->depth || !desc->array_layers || !desc->mip_levels)
 		return CR_RESULT_DESC_INVALID_PARAMETERS;
 	if (desc->usage == CRGPU_IMAGE_USAGE_NONE)
@@ -258,7 +260,7 @@ CR_RESULT crgpu_d3d12_check_image_desc(const crgpu_image_desc *desc) {
 	}
 	if (desc->format == CRGPU_FORMAT_UNKNOWN)
 		return CR_RESULT_GPU_INVALID_FORMAT;
-	return CR_SUCCESS;
+	return crgpu___internal_check_image_block(features, desc);
 }
 
 bool crgpu_d3d12_get_image_clear_value(
@@ -289,7 +291,7 @@ CR_RESULT crgpu_image_create(
 		return base_sr;
 	if (!out_image)
 		return CR_RESULT_NULL_OUTPUT_PARAMETER;
-	const CR_RESULT descResult = crgpu_d3d12_check_image_desc(desc);
+	const CR_RESULT descResult = crgpu_d3d12_check_image_desc(device->_features, desc);
 	if (descResult != CR_SUCCESS)
 		return descResult;
 	const CR_RESULT sizeResult = crgpu___internal_check_image_size(&device->_adapter->_facts.properties, desc);

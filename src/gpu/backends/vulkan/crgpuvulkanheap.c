@@ -200,7 +200,7 @@ static CR_RESULT crgpuvulkan___internal_check_buffer_placement(
 static CR_RESULT crgpuvulkan___internal_check_image_placement(
     crgpu_heap heap,
     const crgpu_image_desc *desc) {
-    const CR_RESULT sr = crgpuvulkan___check_image_desc(desc);
+    const CR_RESULT sr = crgpuvulkan___check_image_desc(heap->_device._features, desc);
     if (sr != CR_SUCCESS) return sr;
     if (desc->usage & (CRGPU_IMAGE_USAGE_TRANSIENT_ATTACHMENT | CRGPU_IMAGE_USAGE_PRESENTABLE))
         return CR_RESULT_GPU_INVALID_IMAGE_USAGE;

@@ -143,6 +143,36 @@ VkFormat convert_cr_to_vulkan_format(CRGPU_FORMAT format) {
         case CRGPU_FORMAT_BC7_UNORM: return VK_FORMAT_BC7_UNORM_BLOCK;
         case CRGPU_FORMAT_BC7_UNORM_SRGB: return VK_FORMAT_BC7_SRGB_BLOCK;
 
+        // ── ASTC LDR block compression (Carrottus's own numbers, from 1000) ──
+        case CRGPU_FORMAT_ASTC_4X4_UNORM: return VK_FORMAT_ASTC_4x4_UNORM_BLOCK;
+        case CRGPU_FORMAT_ASTC_4X4_UNORM_SRGB: return VK_FORMAT_ASTC_4x4_SRGB_BLOCK;
+        case CRGPU_FORMAT_ASTC_5X4_UNORM: return VK_FORMAT_ASTC_5x4_UNORM_BLOCK;
+        case CRGPU_FORMAT_ASTC_5X4_UNORM_SRGB: return VK_FORMAT_ASTC_5x4_SRGB_BLOCK;
+        case CRGPU_FORMAT_ASTC_5X5_UNORM: return VK_FORMAT_ASTC_5x5_UNORM_BLOCK;
+        case CRGPU_FORMAT_ASTC_5X5_UNORM_SRGB: return VK_FORMAT_ASTC_5x5_SRGB_BLOCK;
+        case CRGPU_FORMAT_ASTC_6X5_UNORM: return VK_FORMAT_ASTC_6x5_UNORM_BLOCK;
+        case CRGPU_FORMAT_ASTC_6X5_UNORM_SRGB: return VK_FORMAT_ASTC_6x5_SRGB_BLOCK;
+        case CRGPU_FORMAT_ASTC_6X6_UNORM: return VK_FORMAT_ASTC_6x6_UNORM_BLOCK;
+        case CRGPU_FORMAT_ASTC_6X6_UNORM_SRGB: return VK_FORMAT_ASTC_6x6_SRGB_BLOCK;
+        case CRGPU_FORMAT_ASTC_8X5_UNORM: return VK_FORMAT_ASTC_8x5_UNORM_BLOCK;
+        case CRGPU_FORMAT_ASTC_8X5_UNORM_SRGB: return VK_FORMAT_ASTC_8x5_SRGB_BLOCK;
+        case CRGPU_FORMAT_ASTC_8X6_UNORM: return VK_FORMAT_ASTC_8x6_UNORM_BLOCK;
+        case CRGPU_FORMAT_ASTC_8X6_UNORM_SRGB: return VK_FORMAT_ASTC_8x6_SRGB_BLOCK;
+        case CRGPU_FORMAT_ASTC_8X8_UNORM: return VK_FORMAT_ASTC_8x8_UNORM_BLOCK;
+        case CRGPU_FORMAT_ASTC_8X8_UNORM_SRGB: return VK_FORMAT_ASTC_8x8_SRGB_BLOCK;
+        case CRGPU_FORMAT_ASTC_10X5_UNORM: return VK_FORMAT_ASTC_10x5_UNORM_BLOCK;
+        case CRGPU_FORMAT_ASTC_10X5_UNORM_SRGB: return VK_FORMAT_ASTC_10x5_SRGB_BLOCK;
+        case CRGPU_FORMAT_ASTC_10X6_UNORM: return VK_FORMAT_ASTC_10x6_UNORM_BLOCK;
+        case CRGPU_FORMAT_ASTC_10X6_UNORM_SRGB: return VK_FORMAT_ASTC_10x6_SRGB_BLOCK;
+        case CRGPU_FORMAT_ASTC_10X8_UNORM: return VK_FORMAT_ASTC_10x8_UNORM_BLOCK;
+        case CRGPU_FORMAT_ASTC_10X8_UNORM_SRGB: return VK_FORMAT_ASTC_10x8_SRGB_BLOCK;
+        case CRGPU_FORMAT_ASTC_10X10_UNORM: return VK_FORMAT_ASTC_10x10_UNORM_BLOCK;
+        case CRGPU_FORMAT_ASTC_10X10_UNORM_SRGB: return VK_FORMAT_ASTC_10x10_SRGB_BLOCK;
+        case CRGPU_FORMAT_ASTC_12X10_UNORM: return VK_FORMAT_ASTC_12x10_UNORM_BLOCK;
+        case CRGPU_FORMAT_ASTC_12X10_UNORM_SRGB: return VK_FORMAT_ASTC_12x10_SRGB_BLOCK;
+        case CRGPU_FORMAT_ASTC_12X12_UNORM: return VK_FORMAT_ASTC_12x12_UNORM_BLOCK;
+        case CRGPU_FORMAT_ASTC_12X12_UNORM_SRGB: return VK_FORMAT_ASTC_12x12_SRGB_BLOCK;
+
         // ── YUV / video formats ───────────────────────────────────────────────
         case CRGPU_FORMAT_NV12: return VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;
         case CRGPU_FORMAT_P010: return VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16;
@@ -446,6 +476,11 @@ static bool crgpuvulkan___read_adapter_facts(
     if (available.depthBounds) features |= CRGPU_FEATURE_DEPTH_BOUNDS_TEST;
     if (available.geometryShader) features |= CRGPU_FEATURE_GEOMETRY_SHADER;
     if (available.tessellationShader) features |= CRGPU_FEATURE_TESSELLATION;
+    // Each promises every format of its family sampled, filtered and copied
+    // (the specification's required format support for the feature), and
+    // must be enabled for an image of one to be within Vulkan's rules.
+    if (available.textureCompressionBC) features |= CRGPU_FEATURE_TEXTURE_COMPRESSION_BC;
+    if (available.textureCompressionASTC_LDR) features |= CRGPU_FEATURE_TEXTURE_COMPRESSION_ASTC_LDR;
 
     VkPhysicalDeviceVulkan12Features vk12 = {0};
     vk12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
@@ -919,6 +954,8 @@ static VkResult crgpuvulkan___create_logical_device(
     deviceFeatures.depthBounds       = (features & CRGPU_FEATURE_DEPTH_BOUNDS_TEST) ? VK_TRUE : VK_FALSE;
     deviceFeatures.geometryShader    = (features & CRGPU_FEATURE_GEOMETRY_SHADER) ? VK_TRUE : VK_FALSE;
     deviceFeatures.tessellationShader = (features & CRGPU_FEATURE_TESSELLATION) ? VK_TRUE : VK_FALSE;
+    deviceFeatures.textureCompressionBC = (features & CRGPU_FEATURE_TEXTURE_COMPRESSION_BC) ? VK_TRUE : VK_FALSE;
+    deviceFeatures.textureCompressionASTC_LDR = (features & CRGPU_FEATURE_TEXTURE_COMPRESSION_ASTC_LDR) ? VK_TRUE : VK_FALSE;
 
     // The base set: every buffer has an address (crgpu_buffer_get_gpu_address),
     // crgpu_fence is a timeline semaphore (crgpuvulkansync.c).

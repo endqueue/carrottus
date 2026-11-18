@@ -86,7 +86,9 @@ static void crgpuvulkan___image_view_type_internal(
     *output = flags;
 }
 
-CR_RESULT crgpuvulkan___check_image_desc(const crgpu_image_desc *desc) {
+CR_RESULT crgpuvulkan___check_image_desc(
+    CRGPU_FEATURES features,
+    const crgpu_image_desc *desc) {
     if (!desc->width || !desc->height || !desc->depth || !desc->array_layers || !desc->mip_levels)
         return CR_RESULT_DESC_INVALID_PARAMETERS;
     if (desc->usage == 0) return CR_RESULT_GPU_INVALID_IMAGE_USAGE;
@@ -113,7 +115,7 @@ CR_RESULT crgpuvulkan___check_image_desc(const crgpu_image_desc *desc) {
             return CR_RESULT_DESC_INVALID_PARAMETERS;
     }
     if (desc->format == CRGPU_FORMAT_UNKNOWN) return CR_RESULT_GPU_INVALID_FORMAT;
-    return CR_SUCCESS;
+    return crgpu___internal_check_image_block(features, desc);
 }
 
 void crgpuvulkan___image_create_info(
@@ -158,7 +160,7 @@ CR_RESULT crgpu_image_create(
     if (base_sr != CR_SUCCESS) return base_sr;
     if (!out_image) return CR_RESULT_NULL_OUTPUT_PARAMETER;
 
-    const CR_RESULT descResult = crgpuvulkan___check_image_desc(desc);
+    const CR_RESULT descResult = crgpuvulkan___check_image_desc(device->_features, desc);
     if (descResult != CR_SUCCESS) return descResult;
     const CR_RESULT sizeResult = crgpu___internal_check_image_size(&device->_adapter->_facts.properties, desc);
     if (sizeResult != CR_SUCCESS) return sizeResult;

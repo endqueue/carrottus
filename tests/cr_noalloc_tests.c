@@ -15,6 +15,10 @@
  *   reset the allocator, begin, a barrier, a pass that clears an image, a
  *   barrier out, end, crgpu_command_queue_submit() signalling a fence, and a wait
  *   for the frame before. On every platform with an adapter.
+ * - Carrottus GPU's block copy (card S48), on an adapter that samples BC or
+ *   ASTC LDR: a 64 x 64 BC7 (or ASTC 4x4) image written each frame from an
+ *   upload buffer between its barriers, its texel block and row pitch
+ *   alignment asked first as a caller sizing the copy does.
  * - Carrottus GPU's submit and present loop: the same frame drawn into a swap
  *   chain's image, acquired, submitted with
  *   crgpu_command_queue_submit_lists_synced() and presented. Windows presents to
@@ -263,6 +267,130 @@ static void test_gpu_offscreen(gpu_frame f) {
 	crgpu_image_destroy(o.image);
 }
 
+/* The block copy (card S48): an image of a block format written from an
+ * upload buffer each frame, the copy laid out from the format's texel block
+ * and the image's row pitch alignment, both asked each frame. */
+#define BLOCK_SIZE 64
+
+typedef struct block_copy {
+	gpu_frame f;
+	CRGPU_FORMAT format;
+	crgpu_image image;
+	crgpu_buffer upload;
+	crgpu_fence fence;
+	uint64_t frame;
+} block_copy;
+
+static bool block_copy_frame(block_copy *b) {
+	if (b->frame > 0) {
+		uint64_t value = b->frame;
+		if (crgpu_fence_wait(b->f.device, &b->fence, &value, 1, true, UINT64_MAX) != CR_SUCCESS)
+			return false;
+	}
+	if (crgpu_command_allocator_reset(b->f.allocator) != CR_SUCCESS)
+		return false;
+	uint32_t block_w = 0, block_h = 0, block_bytes = 0;
+	uint64_t alignment = 0;
+	if (crgpu_format_get_texel_block(b->format, &block_w, &block_h, &block_bytes) != CR_SUCCESS)
+		return false;
+	if (crgpu_image_get_buffer_copy_row_pitch_alignment(b->image, &alignment) != CR_SUCCESS)
+		return false;
+	const uint64_t tight = (uint64_t)(BLOCK_SIZE / block_w) * block_bytes;
+	const uint64_t pitch = (tight + alignment - 1) / alignment * alignment;
+	crgpu_image_buffer_copy_desc copy;
+	memset(&copy, 0, sizeof(copy));
+	copy.buffer_row_length = (uint32_t)(pitch / block_bytes * block_w);
+	copy.array_layer_count = 1;
+	copy.width             = BLOCK_SIZE;
+	copy.height            = BLOCK_SIZE;
+	copy.depth             = 1;
+	crgpu_command_list_begin(b->f.cmd);
+	crgpu_command_list_image_barrier(
+	    b->f.cmd, b->image, b->frame == 0 ? CRGPU_IMAGE_LAYOUT_UNDEFINED : CRGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, CRGPU_IMAGE_LAYOUT_TRANSFER_DST);
+	const CR_RESULT copied = crgpu_command_list_copy_buffer_to_image(b->f.cmd, b->upload, b->image, &copy);
+	crgpu_command_list_image_barrier(b->f.cmd, b->image, CRGPU_IMAGE_LAYOUT_TRANSFER_DST, CRGPU_IMAGE_LAYOUT_SHADER_READ_ONLY);
+	crgpu_command_list_end(b->f.cmd);
+	++b->frame;
+	crgpu_submit_desc submit;
+	memset(&submit, 0, sizeof(submit));
+	submit.base.type          = CR_STRUCT_TYPE_GPU_SUBMIT_DESC;
+	submit.cmd_lists          = &b->f.cmd;
+	submit.cmd_list_count     = 1;
+	submit.signal_fence       = b->fence;
+	submit.signal_fence_value = b->frame;
+	return copied == CR_SUCCESS && crgpu_command_queue_submit(b->f.queue, &submit) == CR_SUCCESS;
+}
+
+static void test_gpu_block_copy(gpu_frame f) {
+	const CRGPU_FEATURES features = crgpu_device_get_features(f.device);
+	block_copy b;
+	memset(&b, 0, sizeof(b));
+	b.f      = f;
+	b.format = (features & CRGPU_FEATURE_TEXTURE_COMPRESSION_BC)         ? CRGPU_FORMAT_BC7_UNORM
+	           : (features & CRGPU_FEATURE_TEXTURE_COMPRESSION_ASTC_LDR) ? CRGPU_FORMAT_ASTC_4X4_UNORM
+	                                                                     : CRGPU_FORMAT_UNKNOWN;
+	if (b.format == CRGPU_FORMAT_UNKNOWN) {
+		printf("cr_noalloc_tests: Carrottus GPU: the adapter samples neither BC nor ASTC LDR, the block copy skipped\n");
+		return;
+	}
+	crgpu_image_desc image_desc;
+	memset(&image_desc, 0, sizeof(image_desc));
+	image_desc.base.type    = CR_STRUCT_TYPE_GPU_IMAGE_DESC;
+	image_desc.usage        = CRGPU_IMAGE_USAGE_SAMPLED | CRGPU_IMAGE_USAGE_TRANSFER_DST;
+	image_desc.type         = CRGPU_IMAGE_TYPE_2D;
+	image_desc.format       = b.format;
+	image_desc.width        = BLOCK_SIZE;
+	image_desc.height       = BLOCK_SIZE;
+	image_desc.depth        = 1;
+	image_desc.array_layers = 1;
+	image_desc.mip_levels   = 1;
+	image_desc.debug_name   = "noalloc block image";
+	CHECK(crgpu_image_create(f.device, &image_desc, &b.image) == CR_SUCCESS);
+	// Room for the widest row pitch any backend asks for: 256 bytes a row.
+	uint64_t pitch = (uint64_t)(BLOCK_SIZE / 4) * 16;
+	if (pitch % 256)
+		pitch += 256 - pitch % 256;
+	crgpu_buffer_desc buffer_desc;
+	memset(&buffer_desc, 0, sizeof(buffer_desc));
+	buffer_desc.base.type   = CR_STRUCT_TYPE_GPU_BUFFER_DESC;
+	buffer_desc.usage       = CRGPU_BUFFER_USAGE_TRANSFER_SRC;
+	buffer_desc.memory_kind = CRGPU_MEMORY_KIND_UPLOAD;
+	buffer_desc.size        = pitch * (BLOCK_SIZE / 4);
+	buffer_desc.debug_name  = "noalloc block upload";
+	CHECK(crgpu_buffer_create(f.device, &buffer_desc, &b.upload) == CR_SUCCESS);
+	CHECK(crgpu_fence_create(f.device, CRGPU_FENCE_FLAG_NONE, 0, &b.fence) == CR_SUCCESS);
+	if (b.image && b.upload && b.fence) {
+		bool ok = true;
+		for (int i = 0; i < WARM_UP && ok; ++i)
+			ok = block_copy_frame(&b);
+		CHECK(ok);
+		alloc_trace_start();
+		for (int i = 0; i < ITERATIONS && ok; ++i)
+			ok = block_copy_frame(&b);
+		alloc_trace_stop();
+		CHECK(ok);
+		report(
+		    b.format == CRGPU_FORMAT_BC7_UNORM ? "Carrottus GPU writing a BC7 image from a buffer, its block and pitch alignment asked"
+			                                   : "Carrottus GPU writing an ASTC 4x4 image from a buffer, its block and pitch alignment asked");
+		uint64_t best = UINT64_MAX;
+		for (int run = 0; run < TIMED_RUNS && ok; ++run) {
+			const uint64_t start = crperf_get_monotonic_time_ns();
+			for (int i = 0; i < TIMED_ITERATIONS && ok; ++i)
+				ok = block_copy_frame(&b);
+			const uint64_t took = crperf_get_monotonic_time_ns() - start;
+			if (took < best)
+				best = took;
+		}
+		if (ok)
+			print_time("Carrottus GPU block copy frame (recording, submit, fence wait)", best, TIMED_ITERATIONS);
+		uint64_t value = b.frame;
+		crgpu_fence_wait(f.device, &b.fence, &value, 1, true, UINT64_MAX);
+	}
+	crgpu_fence_destroy(b.fence);
+	crgpu_buffer_destroy(b.upload);
+	crgpu_image_destroy(b.image);
+}
+
 #if defined(_WIN32) || CRGPU_COMPILE_METAL_API
 #define NOALLOC_PRESENT 1
 
@@ -435,7 +563,8 @@ static void test_gpu(uint32_t adapter_index) {
 	crgpu_device_desc device_desc;
 	memset(&device_desc, 0, sizeof(device_desc));
 	device_desc.base.type          = CR_STRUCT_TYPE_GPU_DEVICE_DESC;
-	device_desc.required_features  = can_present ? CRGPU_FEATURE_PRESENT : 0;
+	device_desc.required_features  = (can_present ? CRGPU_FEATURE_PRESENT : 0) |
+	                                 (properties.supported_features & (CRGPU_FEATURE_TEXTURE_COMPRESSION_BC | CRGPU_FEATURE_TEXTURE_COMPRESSION_ASTC_LDR));
 	device_desc.direct_queue_count = 1;
 	device_desc.max_descriptors    = 16;
 	device_desc.max_samplers       = 4;
@@ -454,6 +583,7 @@ static void test_gpu(uint32_t adapter_index) {
 			CHECK(crgpu_command_list_create(f.allocator, &f.cmd) == CR_SUCCESS);
 		if (f.queue && f.cmd) {
 			test_gpu_offscreen(f);
+			test_gpu_block_copy(f);
 #if NOALLOC_PRESENT
 			if (!can_present) {
 				printf("cr_noalloc_tests: Carrottus GPU: the adapter can't present, the present loop skipped\n");

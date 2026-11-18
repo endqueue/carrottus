@@ -5,7 +5,9 @@
  * included), and creates and destroys devices on it: the argument checks of
  * every call, a device's queues by kind, features asked for and not, the
  * descriptor budget, one device per adapter, and a device made again after
- * one is destroyed. Everything goes through a checking allocator, which must
+ * one is destroyed. On every adapter: its image limits, and its two
+ * block-format bits (card S48) against what the graphics API says, each
+ * asked for at device creation. Everything goes through a checking allocator, which must
  * end with nothing left.
  *
  * Needs a GPU but no window, nobody watching and nothing drawn, so it is a
@@ -19,6 +21,9 @@
 #include "crtest_allocator.h"
 #if CRGPU_COMPILE_METAL_API
 #include "crgpu_test_metal_family.h"
+#endif
+#if CRGPU_COMPILE_VULKAN_API
+#include <crgpu_vulkan_natives.h>
 #endif
 
 #include <stdio.h>
@@ -198,6 +203,59 @@ static void test_image_limits(uint32_t index, crgpu_adapter adapter) {
 	CHECK(properties.max_image_size_3d == 2048);
 	CHECK(properties.max_image_array_layers == 2048);
 #endif
+}
+
+/* The block-format bits (card S48) on one adapter: each as the graphics API
+ * reports it (Metal: BC exactly when supportsBCTextureCompression, ASTC LDR
+ * exactly when the GPU is in MTLGPUFamilyApple2; D3D12: BC on every
+ * adapter, ASTC on none; Vulkan: VkPhysicalDeviceFeatures'
+ * textureCompressionBC and textureCompressionASTC_LDR). A device created
+ * with each bit the adapter has reports it, one created without doesn't,
+ * and asking for one it lacks is refused. */
+static void test_block_format_bits(
+    uint32_t index,
+    crgpu_adapter adapter) {
+	const CRGPU_ADAPTER_PROPERTIES properties = properties_of(adapter);
+	const bool bc                             = (properties.supported_features & CRGPU_FEATURE_TEXTURE_COMPRESSION_BC) != 0;
+	const bool astc                           = (properties.supported_features & CRGPU_FEATURE_TEXTURE_COMPRESSION_ASTC_LDR) != 0;
+	printf("crgpu_device_test: adapter %u (%s): BC %s, ASTC LDR %s\n", index, properties.description, bc ? "yes" : "no", astc ? "yes" : "no");
+#if CRGPU_COMPILE_METAL_API
+	bool metal_bc = false, metal_astc = false;
+	CHECK(crgpu_test_metal_block_formats(properties.adapter_id, &metal_bc, &metal_astc));
+	CHECK(bc == metal_bc);
+	CHECK(astc == metal_astc);
+#elif CRGPU_COMPILE_D3D12_API
+	CHECK(bc);
+	CHECK(!astc);
+#elif CRGPU_COMPILE_VULKAN_API
+	VkPhysicalDeviceFeatures available;
+	memset(&available, 0, sizeof(available));
+	vkGetPhysicalDeviceFeatures(crgpu_get_vk_physical_device(adapter), &available);
+	CHECK(bc == (available.textureCompressionBC == VK_TRUE));
+	CHECK(astc == (available.textureCompressionASTC_LDR == VK_TRUE));
+#endif
+
+	const CRGPU_FEATURES bits[2] = {CRGPU_FEATURE_TEXTURE_COMPRESSION_BC, CRGPU_FEATURE_TEXTURE_COMPRESSION_ASTC_LDR};
+	for (uint32_t i = 0; i < 2; ++i) {
+		crgpu_device_desc desc = device_desc();
+		desc.required_features = bits[i];
+		crgpu_device device    = (crgpu_device)(uintptr_t)1;
+		if (properties.supported_features & bits[i]) {
+			CHECK(crgpu_device_create(adapter, &desc, &device) == CR_SUCCESS);
+			CHECK(crgpu_device_get_features(device) == bits[i]);
+			crgpu_device_destroy(device);
+		} else {
+			CHECK(crgpu_device_create(adapter, &desc, &device) == CR_RESULT_GPU_FEATURE_NOT_SUPPORTED);
+			CHECK(device == NULL);
+		}
+	}
+	// Without either: neither reported.
+	crgpu_device_desc desc = device_desc();
+	crgpu_device device    = NULL;
+	CHECK(crgpu_device_create(adapter, &desc, &device) == CR_SUCCESS);
+	CHECK((crgpu_device_get_features(device) & bits[0]) == 0);
+	CHECK((crgpu_device_get_features(device) & bits[1]) == 0);
+	crgpu_device_destroy(device);
 }
 
 static void test_device_desc_checks(crgpu_adapter adapter) {
@@ -396,8 +454,10 @@ int main(void) {
 	}
 	const crgpu_adapter adapter = adapters[0];
 
-	for (uint32_t i = 0; i < adapter_count; ++i)
+	for (uint32_t i = 0; i < adapter_count; ++i) {
 		test_image_limits(i, adapters[i]);
+		test_block_format_bits(i, adapters[i]);
+	}
 	test_adapter_properties(adapter);
 	test_device_desc_checks(adapter);
 

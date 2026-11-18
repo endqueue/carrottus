@@ -1949,6 +1949,9 @@ Its feature bit is **bit 18** (`CRGPU_FEATURE_SAMPLER_ANISOTROPY`, the
 name its draft confirms): S48 takes 16 and 17, S50 19, so the three
 drafts don't collide (S48's third critique round, 2026-11-17).
 
+**Draft approved 2026-11-17 with the user** (`crgpu_anisotropy_draft.h` v1,
+every question as recommended). Not built.
+
 ## Block-compressed formats: ASTC added, BC finished (card S48, decided 2026-11-17)
 
 Decided 2026-11-17 with you: `crgpu_astc_draft.h` approved, every
@@ -1988,6 +1991,89 @@ the same session, for approval, not built.
   SDK. A general per-format capabilities query is card S51 (open).
 - The build regenerates the misuse harness for the two new calls.
 
+**Built on the Mac, 2026-11-17 (Apple M5 Pro, macOS 27; the `macos-metal`
+trees), from the draft as approved (version 9).** Metal built and run;
+Vulkan written and type-checked (`clang -fsyntax-only` against the Vulkan
+SDK 1.4.363.0 headers here), not compiled; D3D12 written, not compiled.
+- **Public (`crgpu.h`):** the 28 ASTC LDR formats at 1000 to 1027; bits 16
+  (`CRGPU_FEATURE_TEXTURE_COMPRESSION_BC`) and 17 (`_ASTC_LDR`);
+  `crgpu_format_get_texel_block()`; `crgpu_image_get_buffer_copy_row_pitch_alignment()`;
+  both copies returning `CR_RESULT`; the copy desc's, copy size's, offset
+  query's, image create's, pipeline's and blit's comments as the draft has
+  them; the 28 names in `crgpu_format_from_string()`. No version raise (0.4.0
+  untagged).
+- **Shared (`src/gpu/`):** one table of every format's texel block and its
+  family (`crgpuformat.c`, by value up to `V408`, ASTC's 28 from 1000; it
+  replaces `crgpu___internal_format_block_bytes()`); the creates' block checks
+  (`crgpu___internal_check_image_block`: feature, usage, type, whole blocks,
+  after the `UNKNOWN` check, in every backend's desc check, so the placed
+  create and the placement query get them too); the pipeline's refusal of a
+  block format as a colour or depth attachment or (with a vertex module) a
+  vertex attribute, beside the colour attachment checks; and the copies'
+  checks after their handles and desc (`crgpu___internal_check_buffer_image_copy`:
+  format, usages in parameter order, then the region: level, layers (0
+  refused), sizes (0 refused), extent, the block's rules, offset, row pitch,
+  each later layer's start, the buffer's range, in 64-bit arithmetic held
+  at its maximum where it would wrap), which also hands each backend the
+  layout in rows of blocks; the tight copy size for Vulkan and Metal.
+- **Metal:** BC (every format but TYPELESS) and the 28 ASTC formats in the
+  table, ASTC in a second array from 1000; BC from
+  `supportsBCTextureCompression`, ASTC LDR from `MTLGPUFamilyApple2`; bytes
+  per row and per image from the layout; both alignments the block's bytes.
+- **Vulkan (written):** the 28 ASTC formats mapped; `textureCompressionBC` and
+  `textureCompressionASTC_LDR` read with the other features and enabled only
+  for a device created with each bit (it never enabled BC before); copies
+  pass `bufferRowLength`/`bufferImageHeight` in texels, `layerCount` and depth
+  as given (0 no longer becomes 1); offset alignment the least common
+  multiple of the block's bytes and 4, row pitch the block's bytes. The swap
+  chain's images now carry a desc (format, size, one level and layer, 2D,
+  the colour attachment and caller's usages), as D3D12's and Metal's do: they
+  were zeroed, which the copies' checks would have refused as a format with
+  no block.
+- **D3D12 (written):** BC on every adapter, ASTC on none; the cast returns
+  `DXGI_FORMAT_UNKNOWN` from 1000 on; `crgpu_d3d12_make_footprint()` from the
+  layout (row pitch in rows of blocks, width and height whole blocks, each
+  layer `layer_bytes` on), the readback's box right and bottom rounded up to
+  the block; the copy size 0 for a planar format; alignments 512 and 256.
+- **Tests, each seen failing first:** before the header, 32 compile errors
+  (the new calls, values and the copies' `void`). With the header and
+  Metal's new signatures alone: `crgpu_device_test`'s bits unreported (2
+  checks); `crgpu_objects_test`'s BC and ASTC creates refused as
+  `CR_RESULT_GPU_INVALID_FORMAT` where `_FEATURE_NOT_SUPPORTED` was due, and
+  a BC7 colour attachment reaching Metal's pipeline creation, which its
+  validation ended (exit on assert). A mutation run (Metal's bytes per row
+  one block too wide in both directions) failed the round trips from each
+  level's second row of blocks, as pass 6 says it must.
+- **Run, Debug, Release, `-asan` and `-tsan`:** 15 ctests each, passing,
+  under Metal API and shader validation with errors and warnings as
+  asserts. `crgpu_device_test`: BC yes, ASTC LDR yes on the M5 Pro, as Metal
+  says; a device with each bit reports it. `crgpu_objects_test`: 126 images
+  (14 BC and 28 ASTC formats, each a 2D image, a 3-layer array and a cube
+  with full chains) written in whole with padded rows and read back a row of
+  blocks at a time and as a sub-region, 4,642 copies, 22,700 blocks
+  compared, none wrong; every creation, pipeline and copy refusal in order,
+  nothing recorded (an image read back unchanged, a sentinel buffer kept);
+  the tight 64-byte row and the 3-layer copy of a 1-block level taken.
+  `cr_misuse_tests` ten times in Debug: 276 calls with zeroes, 240 with a
+  destroyed handle, no failure. `cr_noalloc_tests`, Release: a 64 x 64 BC7
+  level written each frame with its block and row pitch alignment asked,
+  none of ours (21 a frame of Metal's own), 151 us a frame.
+- **Owed:** Windows 11 (D3D12 on the Iris Xe, A2000 and WARP: BC, every ASTC
+  create refused; Vulkan on the Iris Xe and A2000) and Fedora (Vulkan on
+  ANV, NVK, RADV), each Vulkan driver's two booleans recorded here; Vulkan's
+  ASTC path runs only for its refusals until a GPU that samples ASTC over
+  Vulkan is at hand. crgpusamples' `CrGPUDynamicIndexing` uploading its BC1
+  texture (Windows). The iOS simulator was not built this session.
+- **Found while building, not in the draft (for a card):** a
+  `buffer_row_length` below `width`, or a `buffer_image_height` below
+  `height`, is not refused, so rows or slices overlap and reach the API
+  (Vulkan's valid usage, Metal's validation and D3D12's footprint each
+  refuse it); and a 3D copy whose `buffer_image_height` exceeds its height is
+  laid out differently on D3D12, whose footprint has no slice pitch of its
+  own (as before this change).
+
+**Drafted 2026-11-17:** the draft is `carrottus/crgpu_anisotropy_draft.h`, version 1 (2026-11-17, seven critique passes), for approval: the bit (18), `max_sampler_anisotropy` in the adapter's properties (16 on D3D12 and Metal, Vulkan's limit, 1 without the bit), `CR_RESULT_GPU_SAMPLER_ANISOTROPY_TOO_LARGE` (371), and Q1 to Q5 with recommendations; nothing is built. Found while drafting (each in the draft): D3D12's `crgpu_d3d12_filter()` ignores min/mag/mip above level 1; every backend turns a level of 0 into 1, and D3D12 and Metal truncate fractions where Vulkan keeps them; Metal's API validation ends the process at 0, 17 and 32; `crgpu.h`'s "feature limits are always chained" is already contradicted by `max_draw_indirect_count`. It recommends a card of its own for the sampler's other unchecked fields (an unknown filter or address mode, a NaN level of detail, min_lod above max_lod).
+
 ## Dual-source blending (card S50, decided 2026-11-17: a)
 
 Opened 2026-11-17: a feature bit asked for at device creation and the
@@ -2005,3 +2091,34 @@ Metal blend dual-source into render target 0 only), a pipeline with more
 refused; and how the shader's second output is declared (Slang's, read on
 Metal, D3D12 and Vulkan). Asked for by A55's third critique round.
 
+**Drafted 2026-11-17:** the draft is `carrottus/crgpu_dual_source_blend_draft.h` (2026-11-17, version 1, seven critique passes, not approved): bit 19 and the four SRC1 factors (10 to 13), one colour attachment, and fixes for three faults found in the code as built: an unknown blend factor silently becomes ZERO (an unknown op three different ways), now refused; D3D12 handed a `*_COLOR` factor in an alpha slot; D3D12 writing a disabled target's factors. Slang's second output confirmed on SPIR-V, DXIL and Metal's default route (`[[vk::location(0)]] SV_Target0` and `[[vk::location(0), vk::index(1)]] SV_Target1`), not `METAL_ROUTE SLANG` (which emits a second attachment); questions Q1 to Q4, each recommended (a). Nothing is built.
+
+**Draft approved 2026-11-17 with the user** (`crgpu_dual_source_blend_draft.h`
+v1, every question as recommended). Not built (the meta repo's
+`ROADMAP.md` names the session that builds it).
+
+## Per-format capabilities (card S51, decided 2026-11-17: a)
+
+Found 2026-11-17 by A55's third critique round: Carrottus GPU reports no
+per-format capabilities, though Vulkan leaves blending into
+`R32G32B32A32_SFLOAT` and `B10G11R11_UFLOAT` optional and a caller blends
+over both unchecked. Decided with the user:
+`crgpu_adapter_get_format_capabilities(adapter, format, out_flags)`,
+sampled, filtered, storage, colour attachment, blend, depth attachment,
+vertex and copy, each bit read from the API (Vulkan's format properties,
+D3D12's `CheckFeatureSupport(FORMAT_SUPPORT)`, Metal's documented
+pixel-format tables by GPU family); a pipeline blending into a format
+without the blend bit refused. A Carrottus draft first (seven critique
+passes), read with S48, S49 and S50. Not drafted.
+
+## A copy's buffer rows shorter than the image's (card S52, decided 2026-11-17: a)
+
+Found 2026-11-17 by S48's build: a copy's `buffer_row_length` or
+`buffer_image_height` above 0 and below the region's isn't refused, so
+overlapping rows reach the API (Vulkan forbids it, D3D12 can't express
+it); D3D12 lays out a 3D copy's taller image height differently from
+Vulkan and Metal. Decided with the user: each refused in every build with
+its own code, as S48's other copy checks (in texels rounded to whole
+blocks); D3D12's taller 3D slice pitch refused until a backend can lay it
+out as the others. A listed break: a Carrottus draft first (seven
+critique passes). Not drafted.

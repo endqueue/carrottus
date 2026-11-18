@@ -2509,8 +2509,7 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crgpu_command_list dead = dead_crgpu_command_list();
 		if (dead) {
-			crgpu_command_list_copy_buffer_to_image(dead, (crgpu_buffer){0}, (crgpu_image){0}, (const crgpu_image_buffer_copy_desc *){0});
-			unchecked++;
+			expect_refused("crgpu_command_list_copy_buffer_to_image", crgpu_command_list_copy_buffer_to_image(dead, (crgpu_buffer){0}, (crgpu_image){0}, (const crgpu_image_buffer_copy_desc *){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -2519,8 +2518,7 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crgpu_command_list dead = dead_crgpu_command_list();
 		if (dead) {
-			crgpu_command_list_copy_image_to_buffer(dead, (crgpu_image){0}, (crgpu_buffer){0}, (const crgpu_image_buffer_copy_desc *){0});
-			unchecked++;
+			expect_refused("crgpu_command_list_copy_image_to_buffer", crgpu_command_list_copy_image_to_buffer(dead, (crgpu_image){0}, (crgpu_buffer){0}, (const crgpu_image_buffer_copy_desc *){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -3165,6 +3163,15 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 		crgpu_image dead = dead_crgpu_image();
 		if (dead) {
 			expect_refused("crgpu_image_get_buffer_copy_offset_alignment", crgpu_image_get_buffer_copy_offset_alignment(dead, (uint64_t *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_image dead = dead_crgpu_image();
+		if (dead) {
+			expect_refused("crgpu_image_get_buffer_copy_row_pitch_alignment", crgpu_image_get_buffer_copy_row_pitch_alignment(dead, (uint64_t *){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -4393,11 +4400,9 @@ int main(void)
 	crgpu_command_list_copy_buffer((crgpu_command_list){0}, (crgpu_buffer){0}, (crgpu_buffer){0}, (uint64_t){0}, (uint64_t){0}, (uint64_t){0});
 	unchecked++;
 	calls++;
-	crgpu_command_list_copy_buffer_to_image((crgpu_command_list){0}, (crgpu_buffer){0}, (crgpu_image){0}, (const crgpu_image_buffer_copy_desc *){0});
-	unchecked++;
+	expect_error("crgpu_command_list_copy_buffer_to_image", crgpu_command_list_copy_buffer_to_image((crgpu_command_list){0}, (crgpu_buffer){0}, (crgpu_image){0}, (const crgpu_image_buffer_copy_desc *){0}));
 	calls++;
-	crgpu_command_list_copy_image_to_buffer((crgpu_command_list){0}, (crgpu_image){0}, (crgpu_buffer){0}, (const crgpu_image_buffer_copy_desc *){0});
-	unchecked++;
+	expect_error("crgpu_command_list_copy_image_to_buffer", crgpu_command_list_copy_image_to_buffer((crgpu_command_list){0}, (crgpu_image){0}, (crgpu_buffer){0}, (const crgpu_image_buffer_copy_desc *){0}));
 	calls++;
 	expect_error("crgpu_command_list_create", crgpu_command_list_create((crgpu_command_allocator){0}, (crgpu_command_list *){0}));
 	calls++;
@@ -4553,6 +4558,8 @@ int main(void)
 	calls++;
 	(void)crgpu_format_get_bit_count((CRGPU_FORMAT){0});
 	calls++;
+	expect_error("crgpu_format_get_texel_block", crgpu_format_get_texel_block((CRGPU_FORMAT){0}, (uint32_t *){0}, (uint32_t *){0}, (uint32_t *){0}));
+	calls++;
 	expect_error("crgpu_graphics_pipeline_create", crgpu_graphics_pipeline_create((crgpu_device){0}, (const crgpu_graphics_pipeline_desc *){0}, (crgpu_graphics_pipeline *){0}));
 	calls++;
 	crgpu_graphics_pipeline_destroy((crgpu_graphics_pipeline){0});
@@ -4577,6 +4584,8 @@ int main(void)
 	unchecked++;
 	calls++;
 	expect_error("crgpu_image_get_buffer_copy_offset_alignment", crgpu_image_get_buffer_copy_offset_alignment((crgpu_image){0}, (uint64_t *){0}));
+	calls++;
+	expect_error("crgpu_image_get_buffer_copy_row_pitch_alignment", crgpu_image_get_buffer_copy_row_pitch_alignment((crgpu_image){0}, (uint64_t *){0}));
 	calls++;
 	crgpu_image_get_buffer_copy_size((crgpu_image){0}, (uint32_t){0}, (uint64_t *){0}, (uint64_t *){0});
 	unchecked++;

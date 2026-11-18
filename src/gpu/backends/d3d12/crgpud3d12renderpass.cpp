@@ -303,24 +303,34 @@ void crgpu_command_list_image_barrier_subresource(
 	}
 }
 
-// Builds a D3D12_PLACED_SUBRESOURCE_FOOTPRINT describing the buffer-side
-// layout for one array layer of a buffer<->image copy region. Uses the
-// caller-supplied row/image length as-is (0 = tightly packed) rather than
-// forcing D3D12's 256-byte row-pitch alignment — a caller that wants a
-// portable, correctly-aligned staging buffer should size it via
-// crgpu_image_get_buffer_copy_size first and pass that pitch in.
+// A copy's buffer offset is a placed footprint's Offset, whatever the
+// format (D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT, 512), and its row pitch a
+// footprint's RowPitch (D3D12_TEXTURE_DATA_PITCH_ALIGNMENT, 256). Both 0
+// for a format with no block, which the copies' checks refuse before
+// reading them.
+static uint64_t crgpu_d3d12_copy_offset_alignment(crgpu___texel_block block) { return block.bytes ? D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT : 0; }
+
+static uint64_t crgpu_d3d12_copy_row_pitch_alignment(crgpu___texel_block block) { return block.bytes ? D3D12_TEXTURE_DATA_PITCH_ALIGNMENT : 0; }
+
+// The D3D12_PLACED_SUBRESOURCE_FOOTPRINT of the first layer of a checked
+// copy between a buffer and an image ([layout], from the copies' checks): a
+// row pitch of whole rows of blocks (it was the bit count's bytes a texel,
+// wrong for every block format), and a width and height of whole blocks,
+// rounded up where the region stops at the level's edge (D3D12's rule for a
+// block-compressed footprint). Each later layer's footprint is
+// layout->layer_bytes on: a slice of rows of blocks, which it stepped
+// before in texel rows.
 static D3D12_PLACED_SUBRESOURCE_FOOTPRINT crgpu_d3d12_make_footprint(
     CRGPU_FORMAT format,
-    const crgpu_image_buffer_copy_desc *desc) {
-	UINT bytesPerTexel = crgpu_format_get_bit_count(format) / 8;
-
+    const crgpu_image_buffer_copy_desc *desc,
+    const crgpu___copy_layout *layout) {
 	D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
-	footprint.Offset             = desc->buffer_offset;
-	footprint.Footprint.Format   = crgpu_d3d12_get_dxgi_format(format);
-	footprint.Footprint.Width    = desc->width;
-	footprint.Footprint.Height   = desc->height;
-	footprint.Footprint.Depth    = desc->depth ? desc->depth : 1;
-	footprint.Footprint.RowPitch = (desc->buffer_row_length ? desc->buffer_row_length : desc->width) * bytesPerTexel;
+	footprint.Offset                             = desc->buffer_offset;
+	footprint.Footprint.Format                   = crgpu_d3d12_get_dxgi_format(format);
+	footprint.Footprint.Width                    = layout->region_blocks_wide * layout->block.width;
+	footprint.Footprint.Height                   = layout->region_blocks_high * layout->block.height;
+	footprint.Footprint.Depth                    = desc->depth;
+	footprint.Footprint.RowPitch                 = (UINT)layout->row_pitch;
 	return footprint;
 }
 
@@ -344,30 +354,36 @@ void crgpu_command_list_copy_buffer(
 	    src_buffer->_d3d_resource.Get(), src_offset, size);
 }
 
-void crgpu_command_list_copy_buffer_to_image(
+CR_RESULT crgpu_command_list_copy_buffer_to_image(
     crgpu_command_list cmd,
     crgpu_buffer src_buffer,
     crgpu_image dst_image,
     const crgpu_image_buffer_copy_desc *desc) {
-	if (!cmd || !src_buffer || !dst_image || !desc)
-		return;
+	if (!cmd)
+		return CR_RESULT_GPU_INVALID_COMMAND_LIST;
 	if (CR_STALE(cmd, "crgpu_command_list_copy_buffer_to_image", "cmd"))
-		return;
+		return CR_RESULT_GPU_INVALID_COMMAND_LIST;
+	if (!src_buffer)
+		return CR_RESULT_GPU_INVALID_BUFFER;
 	if (CR_STALE(src_buffer, "crgpu_command_list_copy_buffer_to_image", "src_buffer"))
-		return;
+		return CR_RESULT_GPU_INVALID_BUFFER;
+	if (!dst_image)
+		return CR_RESULT_GPU_INVALID_IMAGE;
 	if (CR_STALE(dst_image, "crgpu_command_list_copy_buffer_to_image", "dst_image"))
-		return;
+		return CR_RESULT_GPU_INVALID_IMAGE;
+	if (!desc)
+		return CR_RESULT_NULL_DESC;
+	const crgpu___texel_block block = crgpu___internal_texel_block(dst_image->_desc.format);
+	crgpu___copy_layout layout;
+	const CR_RESULT checked = crgpu___internal_check_buffer_image_copy(
+	    &dst_image->_desc, &src_buffer->_desc, true, crgpu_d3d12_copy_offset_alignment(block), crgpu_d3d12_copy_row_pitch_alignment(block), desc, &layout);
+	if (checked != CR_SUCCESS)
+		return checked;
 
-	D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint =
-	    crgpu_d3d12_make_footprint(dst_image->_desc.format, desc);
-
-	UINT layerCount        = desc->array_layer_count ? desc->array_layer_count : 1;
-	UINT bufferImageHeight = desc->buffer_image_height ? desc->buffer_image_height : desc->height;
-	UINT64 layerPitchBytes = (UINT64)footprint.Footprint.RowPitch * bufferImageHeight;
-
-	for (UINT layer = 0; layer < layerCount; ++layer) {
+	const D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = crgpu_d3d12_make_footprint(dst_image->_desc.format, desc, &layout);
+	for (UINT layer = 0; layer < desc->array_layer_count; ++layer) {
 		D3D12_PLACED_SUBRESOURCE_FOOTPRINT layerFootprint = footprint;
-		layerFootprint.Offset += (UINT64)layer * layerPitchBytes;
+		layerFootprint.Offset += (UINT64)layer * layout.layer_bytes;
 
 		UINT dstSubresource = D3D12CalcSubresource(
 		    desc->mip_level, desc->base_array_layer + layer, 0,
@@ -376,43 +392,56 @@ void crgpu_command_list_copy_buffer_to_image(
 		CD3DX12_TEXTURE_COPY_LOCATION srcLoc(src_buffer->_d3d_resource.Get(), layerFootprint);
 		CD3DX12_TEXTURE_COPY_LOCATION dstLoc(dst_image->_d3d_resource.Get(), dstSubresource);
 
+		// The whole footprint: whole blocks, which may reach past a level
+		// smaller than a block into the block's own texels.
 		cmd->_d3d_cmd_list->CopyTextureRegion(
 		    &dstLoc, desc->image_x, desc->image_y, desc->image_z, &srcLoc, nullptr);
 	}
+	return CR_SUCCESS;
 }
 
-void crgpu_command_list_copy_image_to_buffer(
+CR_RESULT crgpu_command_list_copy_image_to_buffer(
     crgpu_command_list cmd,
     crgpu_image src_image,
     crgpu_buffer dst_buffer,
     const crgpu_image_buffer_copy_desc *desc) {
-	if (!cmd || !src_image || !dst_buffer || !desc)
-		return;
+	if (!cmd)
+		return CR_RESULT_GPU_INVALID_COMMAND_LIST;
 	if (CR_STALE(cmd, "crgpu_command_list_copy_image_to_buffer", "cmd"))
-		return;
+		return CR_RESULT_GPU_INVALID_COMMAND_LIST;
+	if (!src_image)
+		return CR_RESULT_GPU_INVALID_IMAGE;
 	if (CR_STALE(src_image, "crgpu_command_list_copy_image_to_buffer", "src_image"))
-		return;
+		return CR_RESULT_GPU_INVALID_IMAGE;
+	if (!dst_buffer)
+		return CR_RESULT_GPU_INVALID_BUFFER;
 	if (CR_STALE(dst_buffer, "crgpu_command_list_copy_image_to_buffer", "dst_buffer"))
-		return;
+		return CR_RESULT_GPU_INVALID_BUFFER;
+	if (!desc)
+		return CR_RESULT_NULL_DESC;
+	const crgpu___texel_block block = crgpu___internal_texel_block(src_image->_desc.format);
+	crgpu___copy_layout layout;
+	const CR_RESULT checked = crgpu___internal_check_buffer_image_copy(
+	    &src_image->_desc, &dst_buffer->_desc, false, crgpu_d3d12_copy_offset_alignment(block), crgpu_d3d12_copy_row_pitch_alignment(block), desc, &layout);
+	if (checked != CR_SUCCESS)
+		return checked;
 
-	D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint =
-	    crgpu_d3d12_make_footprint(src_image->_desc.format, desc);
+	const D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = crgpu_d3d12_make_footprint(src_image->_desc.format, desc, &layout);
 
-	UINT layerCount        = desc->array_layer_count ? desc->array_layer_count : 1;
-	UINT bufferImageHeight = desc->buffer_image_height ? desc->buffer_image_height : desc->height;
-	UINT64 layerPitchBytes = (UINT64)footprint.Footprint.RowPitch * bufferImageHeight;
-
+	// The source box in texels, whole blocks as the footprint is: its right
+	// and bottom rounded up to the block where the region stops at the
+	// level's edge (a 1 x 1 BC level is read as its one 4 x 4 block).
 	D3D12_BOX srcBox;
 	srcBox.left   = desc->image_x;
 	srcBox.top    = desc->image_y;
 	srcBox.front  = desc->image_z;
-	srcBox.right  = desc->image_x + desc->width;
-	srcBox.bottom = desc->image_y + desc->height;
-	srcBox.back   = desc->image_z + (desc->depth ? desc->depth : 1);
+	srcBox.right  = desc->image_x + footprint.Footprint.Width;
+	srcBox.bottom = desc->image_y + footprint.Footprint.Height;
+	srcBox.back   = desc->image_z + desc->depth;
 
-	for (UINT layer = 0; layer < layerCount; ++layer) {
+	for (UINT layer = 0; layer < desc->array_layer_count; ++layer) {
 		D3D12_PLACED_SUBRESOURCE_FOOTPRINT layerFootprint = footprint;
-		layerFootprint.Offset += (UINT64)layer * layerPitchBytes;
+		layerFootprint.Offset += (UINT64)layer * layout.layer_bytes;
 
 		UINT srcSubresource = D3D12CalcSubresource(
 		    desc->mip_level, desc->base_array_layer + layer, 0,
@@ -423,6 +452,7 @@ void crgpu_command_list_copy_image_to_buffer(
 
 		cmd->_d3d_cmd_list->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, &srcBox);
 	}
+	return CR_SUCCESS;
 }
 
 // GetCopyableFootprints reports D3D12's actual required (already-aligned)
@@ -437,6 +467,15 @@ void crgpu_image_get_buffer_copy_size(
 		return;
 	if (CR_STALE(image, "crgpu_image_get_buffer_copy_size", "image"))
 		return;
+	// A planar format has no one texel block: no copy takes it, and the
+	// layout is 0, as on Vulkan and Metal.
+	if (crgpu___internal_texel_block(image->_desc.format).bytes == 0) {
+		if (out_row_pitch)
+			*out_row_pitch = 0;
+		if (out_total_size)
+			*out_total_size = 0;
+		return;
+	}
 
 	D3D12_RESOURCE_DESC resDesc = image->_d3d_resource_desc;
 	D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
@@ -460,10 +499,26 @@ CR_RESULT crgpu_image_get_buffer_copy_offset_alignment(
 		return CR_RESULT_GPU_INVALID_IMAGE;
 	if (!out_alignment)
 		return CR_RESULT_NULL_OUTPUT_PARAMETER;
-	if (crgpu___internal_format_block_bytes(image->_desc.format) == 0)
+	const crgpu___texel_block block = crgpu___internal_texel_block(image->_desc.format);
+	if (block.bytes == 0)
 		return CR_RESULT_GPU_INVALID_FORMAT;
-	// A placed footprint's Offset, whatever the format.
-	*out_alignment = D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT;
+	*out_alignment = crgpu_d3d12_copy_offset_alignment(block);
+	return CR_SUCCESS;
+}
+
+CR_RESULT crgpu_image_get_buffer_copy_row_pitch_alignment(
+    crgpu_image image,
+    uint64_t *out_alignment) {
+	if (!image)
+		return CR_RESULT_GPU_INVALID_IMAGE;
+	if (CR_STALE(image, "crgpu_image_get_buffer_copy_row_pitch_alignment", "image"))
+		return CR_RESULT_GPU_INVALID_IMAGE;
+	if (!out_alignment)
+		return CR_RESULT_NULL_OUTPUT_PARAMETER;
+	const crgpu___texel_block block = crgpu___internal_texel_block(image->_desc.format);
+	if (block.bytes == 0)
+		return CR_RESULT_GPU_INVALID_FORMAT;
+	*out_alignment = crgpu_d3d12_copy_row_pitch_alignment(block);
 	return CR_SUCCESS;
 }
 

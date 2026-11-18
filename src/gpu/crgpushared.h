@@ -24,10 +24,27 @@ CR_RESULT crgpu___internal_check_instance_desc(
     const crgpu_instance_desc *desc,
     crgpu_instance *out_instance);
 
-/* The size of one texel block of [fmt] in bytes: a texel for an uncompressed
- * format, a 4x4 block for a block-compressed one (BC1-BC7). 0 for a format
- * whose texels aren't a whole number of bytes or have no known size. */
-uint32_t crgpu___internal_format_block_bytes(CRGPU_FORMAT fmt);
+/* Which family of block compression a format is in: the creates' and the
+ * pipelines' block checks, and the feature bit each family needs. */
+typedef enum CRGPU___BLOCK_FAMILY {
+	CRGPU___BLOCK_FAMILY_NONE = 0,
+	CRGPU___BLOCK_FAMILY_BC,
+	CRGPU___BLOCK_FAMILY_ASTC,
+} CRGPU___BLOCK_FAMILY;
+
+/* A format's texel block (crgpu_format_get_texel_block()): width and height
+ * in texels, bytes, and its family. Plain data, 4 bytes. */
+typedef struct crgpu___texel_block {
+	uint8_t width;
+	uint8_t height;
+	uint8_t bytes;
+	uint8_t family;
+} crgpu___texel_block;
+
+/* [fmt]'s texel block from crgpuformat.c's table: bytes 0 (and everything
+ * else 0) for a format with none (UNKNOWN, R1_UNORM, the planar formats,
+ * unnamed values). Reads only the table: any thread, any time. */
+crgpu___texel_block crgpu___internal_texel_block(CRGPU_FORMAT fmt);
 
 /* The one shader format the backend compiled in takes: SPIR-V (Vulkan),
  * DXIL (D3D12) or a .metallib (Metal). */
@@ -54,6 +71,9 @@ CR_RESULT crgpu___internal_check_shader_module_desc(
  * CR_RESULT_GPU_EXT_GEOMETRY_SHADER_NOT_SUPPORTED,
  * CR_RESULT_GPU_EXT_TESSELLATION_NOT_SUPPORTED,
  * CR_RESULT_GPU_TOO_MANY_COLOR_ATTACHMENTS,
+ * CR_RESULT_GPU_INVALID_FORMAT (a block-compressed format as a colour
+ * attachment, the depth attachment or, with a vertex module, a vertex
+ * attribute, in that order),
  * CR_RESULT_GPU_DEPTH_BIAS_CLAMP_NOT_SUPPORTED,
  * CR_RESULT_GPU_INDEPENDENT_BLEND_NOT_SUPPORTED. [features] are the
  * device's. */
@@ -91,6 +111,67 @@ typedef struct crgpu___adapter_facts {
 	uint32_t ray_query_scratch_offset_alignment;
 	uint32_t ray_query_placement_alignment;
 } crgpu___adapter_facts;
+
+/* The block-format checks of crgpu_image_create()'s desc (card S48), the same
+ * on every backend, after its format check (CR_RESULT_GPU_INVALID_FORMAT for
+ * UNKNOWN) and before anything the backend reads of the format: for a BC or
+ * ASTC format, in this order, CR_RESULT_GPU_FEATURE_NOT_SUPPORTED (the
+ * family's bit not in the device's [features]),
+ * CR_RESULT_GPU_INVALID_IMAGE_USAGE (anything but sampled and the two
+ * transfers), CR_RESULT_GPU_INVALID_IMAGE_TYPE (not 2D),
+ * CR_RESULT_DESC_INVALID_PARAMETERS (level 0 not whole blocks). Nothing for
+ * any other format. So no ASTC value reaches D3D12's cast. */
+CR_RESULT crgpu___internal_check_image_block(
+    CRGPU_FEATURES features,
+    const crgpu_image_desc *desc);
+
+/* How a checked copy between a buffer and an image lays the buffer out, for
+ * the backend to translate: the image format's texel block, the bytes
+ * between rows of blocks, between slices (#image_rows rows of blocks) and
+ * between layers (a slice times the region's depth), and the region in
+ * blocks, rounded up where it stops at the level's edge. */
+typedef struct crgpu___copy_layout {
+	crgpu___texel_block block;
+	uint32_t region_blocks_wide;
+	uint32_t region_blocks_high;
+	uint64_t row_pitch;
+	uint64_t image_rows;
+	uint64_t slice_bytes;
+	uint64_t layer_bytes;
+} crgpu___copy_layout;
+
+/* The checks of crgpu_command_list_copy_buffer_to_image() ([to_image]) and
+ * crgpu_command_list_copy_image_to_buffer() after their handles and desc, in
+ * the header's order, reading only [image]'s and [buffer]'s descs and the
+ * copy's: CR_RESULT_GPU_INVALID_FORMAT (no texel block), the usages in
+ * parameter order (CR_RESULT_GPU_INVALID_BUFFER_USAGE,
+ * CR_RESULT_GPU_INVALID_IMAGE_USAGE), then CR_RESULT_DESC_INVALID_PARAMETERS
+ * for the region (level, layers, sizes, extent, the block's rules, the
+ * offset against [offset_alignment], the row pitch against
+ * [row_pitch_alignment], each later layer's start, the buffer's range). The
+ * two alignments are the backend's for the image's format (what its
+ * crgpu_image_get_buffer_copy_offset_alignment() and
+ * crgpu_image_get_buffer_copy_row_pitch_alignment() give), read only once
+ * the format has a block. On CR_SUCCESS [out_layout] is filled in;
+ * otherwise it isn't written. No allocation. */
+CR_RESULT crgpu___internal_check_buffer_image_copy(
+    const crgpu_image_desc *image,
+    const crgpu_buffer_desc *buffer,
+    bool to_image,
+    uint64_t offset_alignment,
+    uint64_t row_pitch_alignment,
+    const crgpu_image_buffer_copy_desc *desc,
+    crgpu___copy_layout *out_layout);
+
+/* crgpu_image_get_buffer_copy_size()'s answer where the row is tight (Vulkan
+ * and Metal): one row of blocks of [image]'s level [mip_level], and that
+ * times its rows of blocks and its depth. Both 0 for a format with no
+ * texel block. */
+void crgpu___internal_tight_copy_size(
+    const crgpu_image_desc *image,
+    uint32_t mip_level,
+    uint64_t *out_row_pitch,
+    uint64_t *out_total_size);
 
 /* The size check of crgpu_image_create() and crgpu_image_create_placed()
  * (CR_RESULT_GPU_IMAGE_TOO_LARGE), the same on every backend: one `if` per

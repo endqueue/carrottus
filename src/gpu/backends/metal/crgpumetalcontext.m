@@ -154,6 +154,15 @@ static void crgpumetal___internal_read_adapter_facts(crgpu_adapter_metal *adapte
 		// when a structure is placed.
 		facts->ray_query_placement_alignment = (uint64_t)[mtl heapAccelerationStructureSizeAndAlignWithSize:1].align;
 	}
+	// The block-compressed formats (card S48): BC where the device says so
+	// (every Apple Silicon Mac, iPads from the M1, no iPhone); ASTC LDR on
+	// every Apple family from Apple2, never on a GPU in MTLGPUFamilyMac2
+	// alone (an Intel or AMD Mac). Nothing to switch on: Metal samples a
+	// format the device has.
+	if (mtl.supportsBCTextureCompression)
+		features |= CRGPU_FEATURE_TEXTURE_COMPRESSION_BC;
+	if ([mtl supportsFamily:MTLGPUFamilyApple2])
+		features |= CRGPU_FEATURE_TEXTURE_COMPRESSION_ASTC_LDR;
 	// No CRGPU_FEATURE_BINDLESS: CRGPU_EXT_BINDLESS is 0 on Metal.
 	properties->supported_features = features;
 

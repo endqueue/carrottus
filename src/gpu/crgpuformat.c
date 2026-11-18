@@ -8,10 +8,12 @@ extern "C" {
 #endif
 
 /* Bits-per-pixel table. Values match Microsoft's published DXGI_FORMAT bit
- * depths (CRGPU_FORMAT is numerically identical to DXGI_FORMAT — see
- * crgpu_d3d12_get_dxgi_format). Block-compressed formats (BC1-7) report
- * their average bits-per-pixel (block byte size * 8 / 16 texels per block),
- * matching how DirectXTex's BitsPerPixel() reports them. */
+ * depths (CRGPU_FORMAT is numerically identical to DXGI_FORMAT below 1000 -
+ * see crgpu_d3d12_get_dxgi_format). Block-compressed BC formats (BC1-7)
+ * report their average bits-per-pixel (block byte size * 8 / 16 texels per
+ * block), matching how DirectXTex's BitsPerPixel() reports them; ASTC
+ * formats, whose blocks have no whole number of bits a texel in general,
+ * give 0 (the default below). */
 uint32_t crgpu_format_get_bit_count(CRGPU_FORMAT fmt) {
 	switch (fmt) {
 	case CRGPU_FORMAT_UNKNOWN:
@@ -314,18 +316,205 @@ static const crgpu_format_name_map crgpu_format_names[] = {
 	{"BC7_TYPELESS", CRGPU_FORMAT_BC7_TYPELESS},
 	{"BC7_UNORM", CRGPU_FORMAT_BC7_UNORM},
 	{"BC7_UNORM_SRGB", CRGPU_FORMAT_BC7_UNORM_SRGB},
+
+	{"ASTC_4X4_UNORM", CRGPU_FORMAT_ASTC_4X4_UNORM},
+	{"ASTC_4X4_UNORM_SRGB", CRGPU_FORMAT_ASTC_4X4_UNORM_SRGB},
+	{"ASTC_5X4_UNORM", CRGPU_FORMAT_ASTC_5X4_UNORM},
+	{"ASTC_5X4_UNORM_SRGB", CRGPU_FORMAT_ASTC_5X4_UNORM_SRGB},
+	{"ASTC_5X5_UNORM", CRGPU_FORMAT_ASTC_5X5_UNORM},
+	{"ASTC_5X5_UNORM_SRGB", CRGPU_FORMAT_ASTC_5X5_UNORM_SRGB},
+	{"ASTC_6X5_UNORM", CRGPU_FORMAT_ASTC_6X5_UNORM},
+	{"ASTC_6X5_UNORM_SRGB", CRGPU_FORMAT_ASTC_6X5_UNORM_SRGB},
+	{"ASTC_6X6_UNORM", CRGPU_FORMAT_ASTC_6X6_UNORM},
+	{"ASTC_6X6_UNORM_SRGB", CRGPU_FORMAT_ASTC_6X6_UNORM_SRGB},
+	{"ASTC_8X5_UNORM", CRGPU_FORMAT_ASTC_8X5_UNORM},
+	{"ASTC_8X5_UNORM_SRGB", CRGPU_FORMAT_ASTC_8X5_UNORM_SRGB},
+	{"ASTC_8X6_UNORM", CRGPU_FORMAT_ASTC_8X6_UNORM},
+	{"ASTC_8X6_UNORM_SRGB", CRGPU_FORMAT_ASTC_8X6_UNORM_SRGB},
+	{"ASTC_8X8_UNORM", CRGPU_FORMAT_ASTC_8X8_UNORM},
+	{"ASTC_8X8_UNORM_SRGB", CRGPU_FORMAT_ASTC_8X8_UNORM_SRGB},
+	{"ASTC_10X5_UNORM", CRGPU_FORMAT_ASTC_10X5_UNORM},
+	{"ASTC_10X5_UNORM_SRGB", CRGPU_FORMAT_ASTC_10X5_UNORM_SRGB},
+	{"ASTC_10X6_UNORM", CRGPU_FORMAT_ASTC_10X6_UNORM},
+	{"ASTC_10X6_UNORM_SRGB", CRGPU_FORMAT_ASTC_10X6_UNORM_SRGB},
+	{"ASTC_10X8_UNORM", CRGPU_FORMAT_ASTC_10X8_UNORM},
+	{"ASTC_10X8_UNORM_SRGB", CRGPU_FORMAT_ASTC_10X8_UNORM_SRGB},
+	{"ASTC_10X10_UNORM", CRGPU_FORMAT_ASTC_10X10_UNORM},
+	{"ASTC_10X10_UNORM_SRGB", CRGPU_FORMAT_ASTC_10X10_UNORM_SRGB},
+	{"ASTC_12X10_UNORM", CRGPU_FORMAT_ASTC_12X10_UNORM},
+	{"ASTC_12X10_UNORM_SRGB", CRGPU_FORMAT_ASTC_12X10_UNORM_SRGB},
+	{"ASTC_12X12_UNORM", CRGPU_FORMAT_ASTC_12X12_UNORM},
+	{"ASTC_12X12_UNORM_SRGB", CRGPU_FORMAT_ASTC_12X12_UNORM_SRGB},
 };
 
-uint32_t crgpu___internal_format_block_bytes(CRGPU_FORMAT fmt) {
-	const uint32_t bits = crgpu_format_get_bit_count(fmt);
-	// crgpu_format_get_bit_count gives a block-compressed format's average
-	// over its 16 texels: bits * 16 / 8 bytes a block.
-	if ((fmt >= CRGPU_FORMAT_BC1_TYPELESS && fmt <= CRGPU_FORMAT_BC5_SNORM) ||
-	    (fmt >= CRGPU_FORMAT_BC6H_TYPELESS && fmt <= CRGPU_FORMAT_BC7_UNORM_SRGB))
-		return bits * 2;
-	if (bits % 8)
-		return 0;
-	return bits / 8;
+/* The texel block of every format with one: its width and height in
+ * texels, its bytes, and its family of block compression. A fixed property
+ * of each format, indexed by value (DXGI's numbers up to
+ * CRGPU_FORMAT_V408), with ASTC's 28 values from 1000 in a second table.
+ * An entry left zeroed (bytes 0) is a format with no block: UNKNOWN,
+ * R1_UNORM (a texel of one bit), the planar formats, and the values
+ * CRGPU_FORMAT doesn't name. */
+#define CRGPU___TEXEL(bytes) {1, 1, (bytes), CRGPU___BLOCK_FAMILY_NONE}
+#define CRGPU___PAIR(bytes) {2, 1, (bytes), CRGPU___BLOCK_FAMILY_NONE}
+#define CRGPU___BC(bytes) {4, 4, (bytes), CRGPU___BLOCK_FAMILY_BC}
+#define CRGPU___ASTC(w, h) {(w), (h), 16, CRGPU___BLOCK_FAMILY_ASTC}
+
+static const crgpu___texel_block crgpu___texel_blocks[CRGPU_FORMAT_V408 + 1] = {
+    [CRGPU_FORMAT_R32G32B32A32_TYPELESS]    = CRGPU___TEXEL(16),
+    [CRGPU_FORMAT_R32G32B32A32_FLOAT]       = CRGPU___TEXEL(16),
+    [CRGPU_FORMAT_R32G32B32A32_UINT]        = CRGPU___TEXEL(16),
+    [CRGPU_FORMAT_R32G32B32A32_SINT]        = CRGPU___TEXEL(16),
+    [CRGPU_FORMAT_R32G32B32_TYPELESS]       = CRGPU___TEXEL(12),
+    [CRGPU_FORMAT_R32G32B32_FLOAT]          = CRGPU___TEXEL(12),
+    [CRGPU_FORMAT_R32G32B32_UINT]           = CRGPU___TEXEL(12),
+    [CRGPU_FORMAT_R32G32B32_SINT]           = CRGPU___TEXEL(12),
+    [CRGPU_FORMAT_R16G16B16A16_TYPELESS]    = CRGPU___TEXEL(8),
+    [CRGPU_FORMAT_R16G16B16A16_FLOAT]       = CRGPU___TEXEL(8),
+    [CRGPU_FORMAT_R16G16B16A16_UNORM]       = CRGPU___TEXEL(8),
+    [CRGPU_FORMAT_R16G16B16A16_UINT]        = CRGPU___TEXEL(8),
+    [CRGPU_FORMAT_R16G16B16A16_SNORM]       = CRGPU___TEXEL(8),
+    [CRGPU_FORMAT_R16G16B16A16_SINT]        = CRGPU___TEXEL(8),
+    [CRGPU_FORMAT_R32G32_TYPELESS]          = CRGPU___TEXEL(8),
+    [CRGPU_FORMAT_R32G32_FLOAT]             = CRGPU___TEXEL(8),
+    [CRGPU_FORMAT_R32G32_UINT]              = CRGPU___TEXEL(8),
+    [CRGPU_FORMAT_R32G32_SINT]              = CRGPU___TEXEL(8),
+    [CRGPU_FORMAT_R32G8X24_TYPELESS]        = CRGPU___TEXEL(8),
+    [CRGPU_FORMAT_D32_FLOAT_S8X24_UINT]     = CRGPU___TEXEL(8),
+    [CRGPU_FORMAT_R32_FLOAT_X8X24_TYPELESS] = CRGPU___TEXEL(8),
+    [CRGPU_FORMAT_X32_TYPELESS_G8X24_UINT]  = CRGPU___TEXEL(8),
+    [CRGPU_FORMAT_R10G10B10A2_TYPELESS]     = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_R10G10B10A2_UNORM]        = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_R10G10B10A2_UINT]         = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_R11G11B10_FLOAT]          = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_R8G8B8A8_TYPELESS]        = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_R8G8B8A8_UNORM]           = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_R8G8B8A8_UNORM_SRGB]      = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_R8G8B8A8_UINT]            = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_R8G8B8A8_SNORM]           = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_R8G8B8A8_SINT]            = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_R16G16_TYPELESS]          = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_R16G16_FLOAT]             = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_R16G16_UNORM]             = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_R16G16_UINT]              = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_R16G16_SNORM]             = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_R16G16_SINT]              = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_R32_TYPELESS]             = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_D32_FLOAT]                = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_R32_FLOAT]                = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_R32_UINT]                 = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_R32_SINT]                 = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_R24G8_TYPELESS]           = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_D24_UNORM_S8_UINT]        = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_R24_UNORM_X8_TYPELESS]    = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_X24_TYPELESS_G8_UINT]     = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_R8G8_TYPELESS]            = CRGPU___TEXEL(2),
+    [CRGPU_FORMAT_R8G8_UNORM]               = CRGPU___TEXEL(2),
+    [CRGPU_FORMAT_R8G8_UINT]                = CRGPU___TEXEL(2),
+    [CRGPU_FORMAT_R8G8_SNORM]               = CRGPU___TEXEL(2),
+    [CRGPU_FORMAT_R8G8_SINT]                = CRGPU___TEXEL(2),
+    [CRGPU_FORMAT_R16_TYPELESS]             = CRGPU___TEXEL(2),
+    [CRGPU_FORMAT_R16_FLOAT]                = CRGPU___TEXEL(2),
+    [CRGPU_FORMAT_D16_UNORM]                = CRGPU___TEXEL(2),
+    [CRGPU_FORMAT_R16_UNORM]                = CRGPU___TEXEL(2),
+    [CRGPU_FORMAT_R16_UINT]                 = CRGPU___TEXEL(2),
+    [CRGPU_FORMAT_R16_SNORM]                = CRGPU___TEXEL(2),
+    [CRGPU_FORMAT_R16_SINT]                 = CRGPU___TEXEL(2),
+    [CRGPU_FORMAT_R8_TYPELESS]              = CRGPU___TEXEL(1),
+    [CRGPU_FORMAT_R8_UNORM]                 = CRGPU___TEXEL(1),
+    [CRGPU_FORMAT_R8_UINT]                  = CRGPU___TEXEL(1),
+    [CRGPU_FORMAT_R8_SNORM]                 = CRGPU___TEXEL(1),
+    [CRGPU_FORMAT_R8_SINT]                  = CRGPU___TEXEL(1),
+    [CRGPU_FORMAT_A8_UNORM]                 = CRGPU___TEXEL(1),
+    [CRGPU_FORMAT_R9G9B9E5_SHAREDEXP]       = CRGPU___TEXEL(4),
+    // Two texels in four bytes: Vulkan's VK_FORMAT_B8G8R8G8_422_UNORM and
+    // G8B8G8R8_422_UNORM.
+    [CRGPU_FORMAT_R8G8_B8G8_UNORM]            = CRGPU___PAIR(4),
+    [CRGPU_FORMAT_G8R8_G8B8_UNORM]            = CRGPU___PAIR(4),
+    [CRGPU_FORMAT_BC1_TYPELESS]               = CRGPU___BC(8),
+    [CRGPU_FORMAT_BC1_UNORM]                  = CRGPU___BC(8),
+    [CRGPU_FORMAT_BC1_UNORM_SRGB]             = CRGPU___BC(8),
+    [CRGPU_FORMAT_BC2_TYPELESS]               = CRGPU___BC(16),
+    [CRGPU_FORMAT_BC2_UNORM]                  = CRGPU___BC(16),
+    [CRGPU_FORMAT_BC2_UNORM_SRGB]             = CRGPU___BC(16),
+    [CRGPU_FORMAT_BC3_TYPELESS]               = CRGPU___BC(16),
+    [CRGPU_FORMAT_BC3_UNORM]                  = CRGPU___BC(16),
+    [CRGPU_FORMAT_BC3_UNORM_SRGB]             = CRGPU___BC(16),
+    [CRGPU_FORMAT_BC4_TYPELESS]               = CRGPU___BC(8),
+    [CRGPU_FORMAT_BC4_UNORM]                  = CRGPU___BC(8),
+    [CRGPU_FORMAT_BC4_SNORM]                  = CRGPU___BC(8),
+    [CRGPU_FORMAT_BC5_TYPELESS]               = CRGPU___BC(16),
+    [CRGPU_FORMAT_BC5_UNORM]                  = CRGPU___BC(16),
+    [CRGPU_FORMAT_BC5_SNORM]                  = CRGPU___BC(16),
+    [CRGPU_FORMAT_B5G6R5_UNORM]               = CRGPU___TEXEL(2),
+    [CRGPU_FORMAT_B5G5R5A1_UNORM]             = CRGPU___TEXEL(2),
+    [CRGPU_FORMAT_B8G8R8A8_UNORM]             = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_B8G8R8X8_UNORM]             = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_R10G10B10_XR_BIAS_A2_UNORM] = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_B8G8R8A8_TYPELESS]          = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_B8G8R8A8_UNORM_SRGB]        = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_B8G8R8X8_TYPELESS]          = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_B8G8R8X8_UNORM_SRGB]        = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_BC6H_TYPELESS]              = CRGPU___BC(16),
+    [CRGPU_FORMAT_BC6H_UF16]                  = CRGPU___BC(16),
+    [CRGPU_FORMAT_BC6H_SF16]                  = CRGPU___BC(16),
+    [CRGPU_FORMAT_BC7_TYPELESS]               = CRGPU___BC(16),
+    [CRGPU_FORMAT_BC7_UNORM]                  = CRGPU___BC(16),
+    [CRGPU_FORMAT_BC7_UNORM_SRGB]             = CRGPU___BC(16),
+    [CRGPU_FORMAT_AYUV]                       = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_Y410]                       = CRGPU___TEXEL(4),
+    [CRGPU_FORMAT_Y416]                       = CRGPU___TEXEL(8),
+    // Two texels in four or eight bytes: Vulkan's G8B8G8R8_422_UNORM,
+    // G10X6B10X6G10X6R10X6_422_UNORM_4PACK16 and G16B16G16R16_422_UNORM.
+    [CRGPU_FORMAT_YUY2]           = CRGPU___PAIR(4),
+    [CRGPU_FORMAT_Y210]           = CRGPU___PAIR(8),
+    [CRGPU_FORMAT_Y216]           = CRGPU___PAIR(8),
+    [CRGPU_FORMAT_AI44]           = CRGPU___TEXEL(1),
+    [CRGPU_FORMAT_IA44]           = CRGPU___TEXEL(1),
+    [CRGPU_FORMAT_P8]             = CRGPU___TEXEL(1),
+    [CRGPU_FORMAT_A8P8]           = CRGPU___TEXEL(2),
+    [CRGPU_FORMAT_B4G4R4A4_UNORM] = CRGPU___TEXEL(2),
+};
+
+// In Vulkan's order of sizes, each UNORM and then sRGB.
+static const crgpu___texel_block crgpu___astc_blocks[CRGPU_FORMAT_ASTC_12X12_UNORM_SRGB - CRGPU_FORMAT_ASTC_4X4_UNORM + 1] = {
+    CRGPU___ASTC(4, 4),  CRGPU___ASTC(4, 4),   CRGPU___ASTC(5, 4),   CRGPU___ASTC(5, 4),   CRGPU___ASTC(5, 5),   CRGPU___ASTC(5, 5),   CRGPU___ASTC(6, 5),
+    CRGPU___ASTC(6, 5),  CRGPU___ASTC(6, 6),   CRGPU___ASTC(6, 6),   CRGPU___ASTC(8, 5),   CRGPU___ASTC(8, 5),   CRGPU___ASTC(8, 6),   CRGPU___ASTC(8, 6),
+    CRGPU___ASTC(8, 8),  CRGPU___ASTC(8, 8),   CRGPU___ASTC(10, 5),  CRGPU___ASTC(10, 5),  CRGPU___ASTC(10, 6),  CRGPU___ASTC(10, 6),  CRGPU___ASTC(10, 8),
+    CRGPU___ASTC(10, 8), CRGPU___ASTC(10, 10), CRGPU___ASTC(10, 10), CRGPU___ASTC(12, 10), CRGPU___ASTC(12, 10), CRGPU___ASTC(12, 12), CRGPU___ASTC(12, 12),
+};
+
+#undef CRGPU___TEXEL
+#undef CRGPU___PAIR
+#undef CRGPU___BC
+#undef CRGPU___ASTC
+
+crgpu___texel_block crgpu___internal_texel_block(CRGPU_FORMAT fmt) {
+	const crgpu___texel_block none = {0, 0, 0, CRGPU___BLOCK_FAMILY_NONE};
+	if (fmt <= CRGPU_FORMAT_V408)
+		return crgpu___texel_blocks[fmt];
+	if (fmt >= CRGPU_FORMAT_ASTC_4X4_UNORM && fmt <= CRGPU_FORMAT_ASTC_12X12_UNORM_SRGB)
+		return crgpu___astc_blocks[fmt - CRGPU_FORMAT_ASTC_4X4_UNORM];
+	return none;
+}
+
+CR_RESULT crgpu_format_get_texel_block(
+    CRGPU_FORMAT format,
+    uint32_t *out_width,
+    uint32_t *out_height,
+    uint32_t *out_bytes) {
+	const crgpu___texel_block block = crgpu___internal_texel_block(format);
+	if (block.bytes == 0)
+		return CR_RESULT_GPU_INVALID_FORMAT;
+	if (!out_width)
+		return CR_RESULT_NULL_OUTPUT_PARAMETER;
+	if (!out_height)
+		return CR_RESULT_NULL_OUTPUT_PARAMETER;
+	if (!out_bytes)
+		return CR_RESULT_NULL_OUTPUT_PARAMETER;
+	*out_width  = block.width;
+	*out_height = block.height;
+	*out_bytes  = block.bytes;
+	return CR_SUCCESS;
 }
 
 CRGPU_FORMAT crgpu_format_from_string(const char *fmt_str) {

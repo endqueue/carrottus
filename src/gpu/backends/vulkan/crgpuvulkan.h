@@ -558,8 +558,10 @@ uint32_t crgpuvulkan___memory_type_for_kind(
     CRGPU_MEMORY_KIND kind,
     VkMemoryPropertyFlags *out_flags);
 // crgpu_image_create's desc checks, in its order, after its argument
-// checks.
-CR_RESULT crgpuvulkan___check_image_desc(const crgpu_image_desc *desc);
+// checks; the block-format ones against the device's [features].
+CR_RESULT crgpuvulkan___check_image_desc(
+    CRGPU_FEATURES features,
+    const crgpu_image_desc *desc);
 // The VkImageCreateInfo of an image of [desc].
 void crgpuvulkan___image_create_info(
     const crgpu_image_desc *desc,

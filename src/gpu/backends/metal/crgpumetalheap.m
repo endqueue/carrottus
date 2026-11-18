@@ -51,7 +51,7 @@ static CR_RESULT crgpumetal___internal_check_buffer_placement(
 static CR_RESULT crgpumetal___internal_check_image_placement(
     crgpu_heap_metal *heap,
     const crgpu_image_desc *desc) {
-	const CR_RESULT sr = crgpumetal___check_image_desc(desc);
+	const CR_RESULT sr = crgpumetal___check_image_desc(heap->_parent_device->_features, desc);
 	if (sr != CR_SUCCESS)
 		return sr;
 	if (desc->usage & (CRGPU_IMAGE_USAGE_TRANSIENT_ATTACHMENT | CRGPU_IMAGE_USAGE_PRESENTABLE))

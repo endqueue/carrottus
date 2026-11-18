@@ -13,9 +13,14 @@
 
 // Which formats are here, and why the others aren't:
 //
-// - The common uncompressed formats, not the whole DXGI-shaped enum. The
-//   block-compressed formats and the many *_TYPELESS ones have no caller
-//   in this workspace yet.
+// - The common uncompressed formats, not the whole DXGI-shaped enum, and
+//   the block-compressed ones (card S48): every BC format but the TYPELESS
+//   ones (MTLPixelFormatBC1_RGBA to BC7_RGBAUnorm_sRGB, sampled where
+//   supportsBCTextureCompression) and the 28 ASTC LDR formats
+//   (MTLPixelFormatASTC_<w>x<h>_LDR and _sRGB, on every Apple family), in a
+//   second table indexed from CRGPU_FORMAT_ASTC_4X4_UNORM (1000). Whether
+//   the device samples one is the creates' feature check
+//   (crgpu___internal_check_image_block), made before this table is read.
 // - TYPELESS formats are never mapped. Metal has no typeless resource the
 //   way D3D12 does: every texture needs one concrete MTLPixelFormat at
 //   creation, so a typeless request is refused rather than given an
@@ -36,6 +41,7 @@
 #define PIX(pixel, vertex) {(pixel), MTLPixelFormatInvalid, (vertex), CRGPU_IMAGE_ASPECT_COLOR, false}
 #define PRESENT(pixel, vertex) {(pixel), MTLPixelFormatInvalid, (vertex), CRGPU_IMAGE_ASPECT_COLOR, true}
 #define VERTEX_ONLY(vertex) {MTLPixelFormatInvalid, MTLPixelFormatInvalid, (vertex), CRGPU_IMAGE_ASPECT_COLOR, false}
+#define BLOCK(pixel) {(pixel), MTLPixelFormatInvalid, MTLVertexFormatInvalid, CRGPU_IMAGE_ASPECT_COLOR, false}
 
 static const crgpumetal_format_info crgpumetal___formats[] = {
 	// 8 bits per channel
@@ -103,17 +109,56 @@ static const crgpumetal_format_info crgpumetal___formats[] = {
 	[CRGPU_FORMAT_D32_FLOAT_S8X24_UINT] = {MTLPixelFormatDepth32Float_Stencil8, MTLPixelFormatX32_Stencil8,
 	                                         MTLVertexFormatInvalid,
 	                                         CRGPU_IMAGE_ASPECT_DEPTH | CRGPU_IMAGE_ASPECT_STENCIL, false},
+
+	// BC, sampled only. BC1 is MTLPixelFormatBC1_RGBA, DXGI's BC1 (alpha
+	// from the block's 1-bit mode); BC6H's signed and unsigned are
+	// BC6H_RGBFloat and BC6H_RGBUfloat.
+	[CRGPU_FORMAT_BC1_UNORM]      = BLOCK(MTLPixelFormatBC1_RGBA),
+	[CRGPU_FORMAT_BC1_UNORM_SRGB] = BLOCK(MTLPixelFormatBC1_RGBA_sRGB),
+	[CRGPU_FORMAT_BC2_UNORM]      = BLOCK(MTLPixelFormatBC2_RGBA),
+	[CRGPU_FORMAT_BC2_UNORM_SRGB] = BLOCK(MTLPixelFormatBC2_RGBA_sRGB),
+	[CRGPU_FORMAT_BC3_UNORM]      = BLOCK(MTLPixelFormatBC3_RGBA),
+	[CRGPU_FORMAT_BC3_UNORM_SRGB] = BLOCK(MTLPixelFormatBC3_RGBA_sRGB),
+	[CRGPU_FORMAT_BC4_UNORM]      = BLOCK(MTLPixelFormatBC4_RUnorm),
+	[CRGPU_FORMAT_BC4_SNORM]      = BLOCK(MTLPixelFormatBC4_RSnorm),
+	[CRGPU_FORMAT_BC5_UNORM]      = BLOCK(MTLPixelFormatBC5_RGUnorm),
+	[CRGPU_FORMAT_BC5_SNORM]      = BLOCK(MTLPixelFormatBC5_RGSnorm),
+	[CRGPU_FORMAT_BC6H_UF16]      = BLOCK(MTLPixelFormatBC6H_RGBUfloat),
+	[CRGPU_FORMAT_BC6H_SF16]      = BLOCK(MTLPixelFormatBC6H_RGBFloat),
+	[CRGPU_FORMAT_BC7_UNORM]      = BLOCK(MTLPixelFormatBC7_RGBAUnorm),
+	[CRGPU_FORMAT_BC7_UNORM_SRGB] = BLOCK(MTLPixelFormatBC7_RGBAUnorm_sRGB),
 };
+
+// ASTC LDR, from CRGPU_FORMAT_ASTC_4X4_UNORM on, in CRGPU_FORMAT's order:
+// each size's UNORM (Metal's _LDR) and then its sRGB.
+static const crgpumetal_format_info crgpumetal___astc_formats[] = {
+	BLOCK(MTLPixelFormatASTC_4x4_LDR),   BLOCK(MTLPixelFormatASTC_4x4_sRGB),   BLOCK(MTLPixelFormatASTC_5x4_LDR),
+	BLOCK(MTLPixelFormatASTC_5x4_sRGB),  BLOCK(MTLPixelFormatASTC_5x5_LDR),    BLOCK(MTLPixelFormatASTC_5x5_sRGB),
+	BLOCK(MTLPixelFormatASTC_6x5_LDR),   BLOCK(MTLPixelFormatASTC_6x5_sRGB),   BLOCK(MTLPixelFormatASTC_6x6_LDR),
+	BLOCK(MTLPixelFormatASTC_6x6_sRGB),  BLOCK(MTLPixelFormatASTC_8x5_LDR),    BLOCK(MTLPixelFormatASTC_8x5_sRGB),
+	BLOCK(MTLPixelFormatASTC_8x6_LDR),   BLOCK(MTLPixelFormatASTC_8x6_sRGB),   BLOCK(MTLPixelFormatASTC_8x8_LDR),
+	BLOCK(MTLPixelFormatASTC_8x8_sRGB),  BLOCK(MTLPixelFormatASTC_10x5_LDR),   BLOCK(MTLPixelFormatASTC_10x5_sRGB),
+	BLOCK(MTLPixelFormatASTC_10x6_LDR),  BLOCK(MTLPixelFormatASTC_10x6_sRGB),  BLOCK(MTLPixelFormatASTC_10x8_LDR),
+	BLOCK(MTLPixelFormatASTC_10x8_sRGB), BLOCK(MTLPixelFormatASTC_10x10_LDR),  BLOCK(MTLPixelFormatASTC_10x10_sRGB),
+	BLOCK(MTLPixelFormatASTC_12x10_LDR), BLOCK(MTLPixelFormatASTC_12x10_sRGB), BLOCK(MTLPixelFormatASTC_12x12_LDR),
+	BLOCK(MTLPixelFormatASTC_12x12_sRGB),
+};
+_Static_assert(sizeof(crgpumetal___astc_formats) / sizeof(crgpumetal___astc_formats[0]) ==
+                   CRGPU_FORMAT_ASTC_12X12_UNORM_SRGB - CRGPU_FORMAT_ASTC_4X4_UNORM + 1,
+               "one ASTC entry for each CRGPU_FORMAT_ASTC_* value");
 
 #undef PIX
 #undef PRESENT
 #undef VERTEX_ONLY
+#undef BLOCK
 
 // A format with no entry: a color format Metal has nothing for here.
 static const crgpumetal_format_info crgpumetal___no_format = {
     MTLPixelFormatInvalid, MTLPixelFormatInvalid, MTLVertexFormatInvalid, CRGPU_IMAGE_ASPECT_COLOR, false};
 
 const crgpumetal_format_info *crgpumetal___format_info(CRGPU_FORMAT format) {
+	if (format >= CRGPU_FORMAT_ASTC_4X4_UNORM && format <= CRGPU_FORMAT_ASTC_12X12_UNORM_SRGB)
+		return &crgpumetal___astc_formats[format - CRGPU_FORMAT_ASTC_4X4_UNORM];
 	if (format >= sizeof(crgpumetal___formats) / sizeof(crgpumetal___formats[0]))
 		return &crgpumetal___no_format;
 	const crgpumetal_format_info *info = &crgpumetal___formats[format];
