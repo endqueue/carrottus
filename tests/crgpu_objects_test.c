@@ -2070,6 +2070,410 @@ static void test_drawing(crgpu_adapter adapter, CRGPU_FEATURES supported) {
 	crgpu_device_destroy(device);
 }
 
+// ---- Dual-source blending (card S50) ---------------------------------------
+
+// An 8 x 8 R16G16B16A16_FLOAT target, a cell a pixel (the draw vertex
+// shader's grid), cleared to D. Every value below is a half exactly, so
+// the readback is compared bit for bit.
+#define DUAL_SIZE 8u
+#define DUAL_DRAWS 4u
+
+typedef struct dual_run {
+	crgpu_graphics_pipeline pipelines[DUAL_DRAWS];
+	draw_push pushes[DUAL_DRAWS];
+	crgpu_image target;
+	crgpu_image_view target_view;
+	crgpu_buffer readback;
+	crgpu_buffer_view corners, cells[DUAL_DRAWS];
+	uint64_t row_pitch;
+} dual_run;
+
+static const float dual_clear[4] = {0.5f, 0.25f, 1.0f, 0.5f};
+
+// The half of one of the few values the test uses; 0xFFFF for any other.
+static uint16_t dual_half(float v) {
+	if (v == 0.0f)
+		return 0x0000;
+	if (v == 0.125f)
+		return 0x3000;
+	if (v == 0.25f)
+		return 0x3400;
+	if (v == 0.5f)
+		return 0x3800;
+	if (v == 0.75f)
+		return 0x3A00;
+	if (v == 1.0f)
+		return 0x3C00;
+	return 0xFFFF;
+}
+
+static crgpu_blend_attachment_desc dual_blend(CRGPU_BLEND_FACTOR src_color, CRGPU_BLEND_FACTOR dst_color, CRGPU_BLEND_FACTOR src_alpha,
+                                              CRGPU_BLEND_FACTOR dst_alpha) {
+	crgpu_blend_attachment_desc blend;
+	memset(&blend, 0, sizeof(blend));
+	blend.blend_enable           = true;
+	blend.src_color_blend_factor = src_color;
+	blend.dst_color_blend_factor = dst_color;
+	blend.color_blend_op         = CRGPU_BLEND_OP_ADD;
+	blend.src_alpha_blend_factor = src_alpha;
+	blend.dst_alpha_blend_factor = dst_alpha;
+	blend.alpha_blend_op         = CRGPU_BLEND_OP_ADD;
+	return blend;
+}
+
+// A pipeline over the draw vertex shader and [fragment], [count] colour
+// attachments of R16G16B16A16_FLOAT blended as [blends], with [layout] (or
+// none) and the draw push block. Returns what the create returned.
+static CR_RESULT dual_pipeline(crgpu_device device, crgpu_shader_module vertex, crgpu_shader_module fragment, crgpu_descriptor_set_layout layout,
+                               uint32_t count, const crgpu_blend_attachment_desc *blends, crgpu_graphics_pipeline *out_pipeline) {
+	crgpu_graphics_pipeline_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type                       = CR_STRUCT_TYPE_GPU_GRAPHICS_PIPELINE_DESC;
+	desc.debug_name                      = "dual source";
+	desc.vertex_module                   = vertex;
+	desc.fragment_module                 = fragment;
+	desc.vertex_attributes[0].location   = 0;
+	desc.vertex_attributes[0].binding    = 0;
+	desc.vertex_attributes[0].format     = CRGPU_FORMAT_R32G32_FLOAT;
+	desc.vertex_attributes[1].location   = 1;
+	desc.vertex_attributes[1].binding    = 1;
+	desc.vertex_attributes[1].format     = CRGPU_FORMAT_R32G32_FLOAT;
+	desc.vertex_attribute_count          = 2;
+	desc.vertex_bindings[0].binding      = 0;
+	desc.vertex_bindings[0].stride       = sizeof(cell);
+	desc.vertex_bindings[1].binding      = 1;
+	desc.vertex_bindings[1].stride       = sizeof(cell);
+	desc.vertex_bindings[1].per_instance = true;
+	desc.vertex_binding_count            = 2;
+	desc.primitive_topology              = CRGPU_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	desc.cull_mode                       = CRGPU_CULL_MODE_NONE;
+	for (uint32_t i = 0; i < count; ++i) {
+		desc.color_attachment_formats[i] = CRGPU_FORMAT_R16G16B16A16_FLOAT;
+		desc.blend_attachments[i]        = blends[i];
+	}
+	desc.color_attachment_count = count;
+	if (layout) {
+		desc.descriptor_set_layouts[0]   = layout;
+		desc.descriptor_set_layout_count = 1;
+	}
+	desc.push_constant_ranges[0].stage_flags = CRGPU_SHADER_STAGE_VERTEX | CRGPU_SHADER_STAGE_FRAGMENT;
+	desc.push_constant_ranges[0].size        = sizeof(draw_push);
+	desc.push_constant_range_count           = 1;
+	*out_pipeline                            = NULL;
+	return crgpu_graphics_pipeline_create(device, &desc, out_pipeline);
+}
+
+// The draw fragment shader's set: a uniform buffer, a sampled image and a
+// sampler, as test_draw_frame() makes it.
+static crgpu_descriptor_set_layout dual_draw_layout(crgpu_device device) {
+	crgpu_descriptor_set_layout_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type = CR_STRUCT_TYPE_GPU_DESCRIPTOR_SET_LAYOUT_DESC;
+	const CRGPU_DESCRIPTOR_TYPE types[3] = {CRGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER, CRGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE, CRGPU_DESCRIPTOR_TYPE_SAMPLER};
+	for (uint32_t i = 0; i < 3; ++i) {
+		desc.bindings[i].binding         = i;
+		desc.bindings[i].descriptor_type = types[i];
+		desc.bindings[i].count           = 1;
+		desc.bindings[i].stage_flags     = CRGPU_SHADER_STAGE_FRAGMENT;
+	}
+	desc.binding_count                 = 3;
+	crgpu_descriptor_set_layout layout = NULL;
+	CHECK(crgpu_descriptor_set_layout_create(device, &desc, &layout) == CR_SUCCESS);
+	return layout;
+}
+
+static void record_dual_source(crgpu_command_list cmd, void *context) {
+	dual_run *r = (dual_run *)context;
+	crgpu_command_list_image_barrier_view(cmd, r->target_view, CRGPU_IMAGE_LAYOUT_UNDEFINED, CRGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	crgpu_rendering_begin_desc pass;
+	memset(&pass, 0, sizeof(pass));
+	pass.base.type                       = CR_STRUCT_TYPE_GPU_RENDERING_BEGIN_DESC;
+	pass.color_attachments[0].image_view = r->target_view;
+	pass.color_attachments[0].load_op    = CRGPU_LOAD_OP_CLEAR;
+	pass.color_attachments[0].store_op   = CRGPU_STORE_OP_STORE;
+	memcpy(pass.color_attachments[0].clear_color, dual_clear, sizeof(dual_clear));
+	pass.color_attachment_count = 1;
+	pass.width                  = DUAL_SIZE;
+	pass.height                 = DUAL_SIZE;
+	crgpu_command_list_begin_rendering(cmd, &pass);
+	CRGPU_VIEWPORT viewport = {0.0f, 0.0f, (float)DUAL_SIZE, (float)DUAL_SIZE, 0.0f, 1.0f};
+	crgpu_command_list_set_viewports(cmd, 0, 1, &viewport);
+	CRGPU_SCISSOR_RECT scissor = {0.0f, 0.0f, (float)DUAL_SIZE, (float)DUAL_SIZE};
+	crgpu_command_list_set_scissor_rects(cmd, 0, 1, &scissor);
+	for (uint32_t i = 0; i < DUAL_DRAWS; ++i) {
+		crgpu_command_list_bind_graphics_pipeline(cmd, r->pipelines[i]);
+		crgpu_buffer_view views[2] = {r->corners, r->cells[i]};
+		crgpu_command_list_set_vertex_buffers(cmd, 0, 2, views);
+		crgpu_command_list_push_graphics_constants(cmd, r->pipelines[i], 0, sizeof(draw_push), &r->pushes[i]);
+		crgpu_command_list_draw(cmd, 6, 0);
+	}
+	crgpu_command_list_end_rendering(cmd);
+	crgpu_command_list_image_barrier_view(cmd, r->target_view, CRGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, CRGPU_IMAGE_LAYOUT_TRANSFER_SRC);
+	crgpu_image_buffer_copy_desc copy;
+	memset(&copy, 0, sizeof(copy));
+	copy.buffer_row_length = (uint32_t)(r->row_pitch / 8);
+	copy.array_layer_count = 1;
+	copy.width             = DUAL_SIZE;
+	copy.height            = DUAL_SIZE;
+	copy.depth             = 1;
+	CHECK(crgpu_command_list_copy_image_to_buffer(cmd, r->target, r->readback, &copy) == CR_SUCCESS);
+}
+
+// The four blends of the draft's tests, A to D, a cell each in row 0, read
+// back bit for bit; the cells left undrawn keep D.
+static void test_dual_source_draws(crgpu_device device) {
+	crgpu_command_queue queue = NULL;
+	CHECK(crgpu_command_queue_get(device, CRGPU_COMMAND_LIST_TYPE_DIRECT, 0, &queue) == CR_SUCCESS);
+	crgpu_command_allocator_desc allocator_desc;
+	memset(&allocator_desc, 0, sizeof(allocator_desc));
+	allocator_desc.base.type          = CR_STRUCT_TYPE_GPU_COMMAND_ALLOCATOR_DESC;
+	allocator_desc.type               = CRGPU_COMMAND_LIST_TYPE_DIRECT;
+	crgpu_command_allocator allocator = NULL;
+	CHECK(crgpu_command_allocator_create(device, &allocator_desc, &allocator) == CR_SUCCESS);
+	crgpu_command_list cmd = NULL;
+	if (allocator)
+		CHECK(crgpu_command_list_create(allocator, &cmd) == CR_SUCCESS);
+
+	dual_run r;
+	memset(&r, 0, sizeof(r));
+	crgpu_shader_module vertex   = make_module(device, &crgpu_test_objects_draw_vert, "dual source vertex");
+	crgpu_shader_module fragment = make_module(device, &crgpu_test_objects_dual_source_frag, "dual source fragment");
+	// A to D: the factors, X (the first output) and T (the second).
+	const crgpu_blend_attachment_desc blends[DUAL_DRAWS] = {
+	    dual_blend(CRGPU_BLEND_FACTOR_ONE, CRGPU_BLEND_FACTOR_SRC1_COLOR, CRGPU_BLEND_FACTOR_ONE, CRGPU_BLEND_FACTOR_SRC1_ALPHA),
+	    dual_blend(CRGPU_BLEND_FACTOR_ZERO, CRGPU_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR, CRGPU_BLEND_FACTOR_ZERO, CRGPU_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA),
+	    dual_blend(CRGPU_BLEND_FACTOR_SRC1_ALPHA, CRGPU_BLEND_FACTOR_ZERO, CRGPU_BLEND_FACTOR_ZERO, CRGPU_BLEND_FACTOR_SRC1_COLOR),
+	    dual_blend(CRGPU_BLEND_FACTOR_ZERO, CRGPU_BLEND_FACTOR_SRC1_COLOR, CRGPU_BLEND_FACTOR_ZERO, CRGPU_BLEND_FACTOR_SRC_COLOR),
+	};
+	const draw_push pushes[DUAL_DRAWS] = {
+	    {{0.25f, 0.5f, 0.0f, 0.0f}, {0.5f, 1.0f, 0.25f, 0.5f}},
+	    {{0.25f, 0.5f, 0.0f, 0.0f}, {0.5f, 1.0f, 0.25f, 0.5f}},
+	    {{1.0f, 1.0f, 1.0f, 1.0f}, {0.5f, 0.5f, 0.5f, 0.25f}},
+	    {{0.0f, 0.0f, 0.0f, 0.5f}, {1.0f, 1.0f, 1.0f, 1.0f}},
+	};
+	const float expected[DUAL_DRAWS][4] = {
+	    {0.5f, 0.75f, 0.25f, 0.25f},
+	    {0.25f, 0.0f, 0.75f, 0.25f},
+	    {0.25f, 0.25f, 0.25f, 0.125f},
+	    {0.5f, 0.25f, 1.0f, 0.25f},
+	};
+	memcpy(r.pushes, pushes, sizeof(pushes));
+	bool made = vertex && fragment;
+	for (uint32_t i = 0; i < DUAL_DRAWS && made; ++i) {
+		CHECK(dual_pipeline(device, vertex, fragment, NULL, 1, &blends[i], &r.pipelines[i]) == CR_SUCCESS);
+		made = r.pipelines[i] != NULL;
+	}
+
+	static const cell corners[6] = {{0, 0}, {1, 0}, {0, 1}, {0, 1}, {1, 0}, {1, 1}};
+	static const cell cells[DUAL_DRAWS] = {{0, 0}, {1, 0}, {2, 0}, {3, 0}};
+	crgpu_buffer corner_buffer = make_buffer(device, CRGPU_MEMORY_KIND_UPLOAD, CRGPU_BUFFER_USAGE_VERTEX, sizeof(corners), corners);
+	crgpu_buffer cell_buffer   = make_buffer(device, CRGPU_MEMORY_KIND_UPLOAD, CRGPU_BUFFER_USAGE_VERTEX, sizeof(cells), cells);
+	r.corners                  = make_view(corner_buffer, 0, sizeof(cell), sizeof(corners));
+	for (uint32_t i = 0; i < DUAL_DRAWS; ++i)
+		r.cells[i] = make_view(cell_buffer, (uint64_t)i * sizeof(cell), sizeof(cell), sizeof(cell));
+
+	crgpu_image_desc image_desc;
+	memset(&image_desc, 0, sizeof(image_desc));
+	image_desc.base.type          = CR_STRUCT_TYPE_GPU_IMAGE_DESC;
+	image_desc.usage              = CRGPU_IMAGE_USAGE_COLOR_ATTACHMENT | CRGPU_IMAGE_USAGE_TRANSFER_SRC;
+	image_desc.type               = CRGPU_IMAGE_TYPE_2D;
+	image_desc.format             = CRGPU_FORMAT_R16G16B16A16_FLOAT;
+	image_desc.clear_value.format = CRGPU_FORMAT_R16G16B16A16_FLOAT;
+	memcpy(image_desc.clear_value.color, dual_clear, sizeof(dual_clear));
+	image_desc.width        = DUAL_SIZE;
+	image_desc.height       = DUAL_SIZE;
+	image_desc.depth        = 1;
+	image_desc.array_layers = 1;
+	image_desc.mip_levels   = 1;
+	image_desc.debug_name   = "dual source target";
+	CHECK(crgpu_image_create(device, &image_desc, &r.target) == CR_SUCCESS);
+	r.target_view  = make_image_view(r.target, CRGPU_IMAGE_ASPECT_COLOR);
+	uint64_t total = 0;
+	if (r.target) {
+		crgpu_image_get_buffer_copy_size(r.target, 0, &r.row_pitch, &total);
+		r.readback = make_buffer(device, CRGPU_MEMORY_KIND_READBACK, CRGPU_BUFFER_USAGE_TRANSFER_DST, total, NULL);
+	}
+	if (made && queue && cmd && r.target_view && r.readback && r.corners && r.cells[DUAL_DRAWS - 1]) {
+		run_once(queue, allocator, cmd, record_dual_source, &r);
+		void *mapped = NULL;
+		CHECK(crgpu_buffer_map(r.readback, 0, total, &mapped) == CR_SUCCESS);
+		if (mapped) {
+			CHECK(crgpu_buffer_invalidate(r.readback, 0, total) == CR_SUCCESS);
+			uint32_t wrong = 0;
+			for (uint32_t y = 0; y < DUAL_SIZE; ++y)
+				for (uint32_t x = 0; x < DUAL_SIZE; ++x) {
+					const float *want = (y == 0 && x < DUAL_DRAWS) ? expected[x] : dual_clear;
+					uint16_t texel[4];
+					memcpy(texel, (const uint8_t *)mapped + y * r.row_pitch + x * 8, sizeof(texel));
+					for (uint32_t c = 0; c < 4; ++c)
+						if (texel[c] != dual_half(want[c])) {
+							if (wrong < 8)
+								fprintf(stderr, "  dual source (%u, %u) channel %u is 0x%04x, expected 0x%04x\n", x, y, c, texel[c],
+								        dual_half(want[c]));
+							++wrong;
+						}
+				}
+			CHECK(wrong == 0);
+			printf("crgpu_objects_test: dual-source blending, four blends drawn: %u values wrong\n", wrong);
+			crgpu_buffer_unmap(r.readback);
+		}
+	}
+	crgpu_buffer_destroy(r.readback);
+	crgpu_image_view_destroy(r.target_view);
+	crgpu_image_destroy(r.target);
+	for (uint32_t i = 0; i < DUAL_DRAWS; ++i)
+		crgpu_buffer_view_destroy(r.cells[i]);
+	crgpu_buffer_view_destroy(r.corners);
+	crgpu_buffer_destroy(cell_buffer);
+	crgpu_buffer_destroy(corner_buffer);
+	for (uint32_t i = 0; i < DUAL_DRAWS; ++i)
+		crgpu_graphics_pipeline_destroy(r.pipelines[i]);
+	crgpu_shader_module_destroy(fragment);
+	crgpu_shader_module_destroy(vertex);
+	crgpu_command_list_destroy(cmd);
+	crgpu_command_allocator_destroy(allocator);
+}
+
+// The refusals, each with its result and nothing made, and the order.
+// [device] was created with [features] (the dual-source bit or not, the
+// independent-blend bit or not).
+static void test_dual_source_refusals(crgpu_device device, CRGPU_FEATURES features) {
+	crgpu_shader_module vertex           = make_module(device, &crgpu_test_objects_draw_vert, "dual refusals vertex");
+	crgpu_shader_module dual             = make_module(device, &crgpu_test_objects_dual_source_frag, "dual refusals fragment");
+	crgpu_shader_module plain            = make_module(device, &crgpu_test_objects_draw_frag, "dual refusals plain");
+	crgpu_descriptor_set_layout layout   = dual_draw_layout(device);
+	const bool dual_bit                  = (features & CRGPU_FEATURE_DUAL_SOURCE_BLEND) != 0;
+	const bool independent               = (features & CRGPU_FEATURE_INDEPENDENT_BLEND) != 0;
+	const CRGPU_BLEND_FACTOR src1[4]     = {CRGPU_BLEND_FACTOR_SRC1_COLOR, CRGPU_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR, CRGPU_BLEND_FACTOR_SRC1_ALPHA,
+	                                        CRGPU_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA};
+	crgpu_graphics_pipeline pipeline     = NULL;
+	crgpu_blend_attachment_desc blend[2];
+	if (!vertex || !dual || !plain || !layout) {
+		CHECK(false);
+		goto done;
+	}
+
+	if (!dual_bit) {
+		// Each SRC1 factor in each factor field of attachment 0.
+		uint32_t refused = 0;
+		for (uint32_t f = 0; f < 4; ++f)
+			for (uint32_t field = 0; field < 4; ++field) {
+				blend[0]           = dual_blend(CRGPU_BLEND_FACTOR_ONE, CRGPU_BLEND_FACTOR_ZERO, CRGPU_BLEND_FACTOR_ONE, CRGPU_BLEND_FACTOR_ZERO);
+				CRGPU_BLEND_FACTOR *fields[4] = {&blend[0].src_color_blend_factor, &blend[0].dst_color_blend_factor,
+				                                 &blend[0].src_alpha_blend_factor, &blend[0].dst_alpha_blend_factor};
+				*fields[field]                = src1[f];
+				pipeline                      = (crgpu_graphics_pipeline)(uintptr_t)1;
+				const CR_RESULT result        = dual_pipeline(device, vertex, dual, NULL, 1, blend, &pipeline);
+				CHECK(result == CR_RESULT_GPU_FEATURE_NOT_SUPPORTED);
+				CHECK(pipeline == NULL);
+				refused += result == CR_RESULT_GPU_FEATURE_NOT_SUPPORTED && pipeline == NULL;
+			}
+		printf("crgpu_objects_test: dual-source blending without the feature: %u of 16 refused\n", refused);
+		// The order: a garbage factor beside an SRC1 one is the garbage's.
+		blend[0]                        = dual_blend(CRGPU_BLEND_FACTOR_SRC1_COLOR, 14u, CRGPU_BLEND_FACTOR_ONE, CRGPU_BLEND_FACTOR_ZERO);
+		CHECK(dual_pipeline(device, vertex, dual, NULL, 1, blend, &pipeline) == CR_RESULT_GPU_INVALID_BLEND_FACTOR);
+		CHECK(pipeline == NULL);
+	} else {
+		// One attachment of two names SRC1: the count. Equal blends first,
+		// which pass the independent-blend check on any device.
+		blend[0] = dual_blend(CRGPU_BLEND_FACTOR_ONE, CRGPU_BLEND_FACTOR_SRC1_COLOR, CRGPU_BLEND_FACTOR_ONE, CRGPU_BLEND_FACTOR_SRC1_ALPHA);
+		blend[1] = blend[0];
+		CHECK(dual_pipeline(device, vertex, dual, NULL, 2, blend, &pipeline) == CR_RESULT_GPU_TOO_MANY_COLOR_ATTACHMENTS);
+		CHECK(pipeline == NULL);
+		// Differing: with independent blend the count, without the difference.
+		memset(&blend[1], 0, sizeof(blend[1]));
+		CHECK(dual_pipeline(device, vertex, dual, NULL, 2, blend, &pipeline) ==
+		      (independent ? CR_RESULT_GPU_TOO_MANY_COLOR_ATTACHMENTS : CR_RESULT_GPU_INDEPENDENT_BLEND_NOT_SUPPORTED));
+		CHECK(pipeline == NULL);
+	}
+
+	// An SRC1 factor, and garbage, on a disabled attachment: ignored.
+	memset(&blend[0], 0, sizeof(blend[0]));
+	blend[0].src_color_blend_factor = CRGPU_BLEND_FACTOR_SRC1_COLOR;
+	blend[0].dst_alpha_blend_factor = CRGPU_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA;
+	CHECK(dual_pipeline(device, vertex, plain, layout, 1, blend, &pipeline) == CR_SUCCESS);
+	CHECK(pipeline != NULL);
+	crgpu_graphics_pipeline_destroy(pipeline);
+	blend[0].src_color_blend_factor = 14u;
+	blend[0].dst_color_blend_factor = UINT32_MAX;
+	blend[0].color_blend_op         = 5u;
+	blend[0].alpha_blend_op         = UINT32_MAX;
+	CHECK(dual_pipeline(device, vertex, plain, layout, 1, blend, &pipeline) == CR_SUCCESS);
+	CHECK(pipeline != NULL);
+	crgpu_graphics_pipeline_destroy(pipeline);
+
+	// Garbage on an enabled attachment, in each field.
+	for (uint32_t field = 0; field < 6; ++field) {
+		blend[0]                = dual_blend(CRGPU_BLEND_FACTOR_ONE, CRGPU_BLEND_FACTOR_ZERO, CRGPU_BLEND_FACTOR_ONE, CRGPU_BLEND_FACTOR_ZERO);
+		CR_RESULT want          = CR_RESULT_GPU_INVALID_BLEND_FACTOR;
+		const uint32_t garbage  = field % 2 ? UINT32_MAX : 14u;
+		switch (field) {
+		case 0: blend[0].src_color_blend_factor = garbage; break;
+		case 1: blend[0].dst_color_blend_factor = garbage; break;
+		case 2: blend[0].src_alpha_blend_factor = garbage; break;
+		case 3: blend[0].dst_alpha_blend_factor = garbage; break;
+		case 4: blend[0].color_blend_op = 5u; want = CR_RESULT_GPU_INVALID_BLEND_OP; break;
+		default: blend[0].alpha_blend_op = UINT32_MAX; want = CR_RESULT_GPU_INVALID_BLEND_OP; break;
+		}
+		pipeline = (crgpu_graphics_pipeline)(uintptr_t)1;
+		CHECK(dual_pipeline(device, vertex, plain, layout, 1, blend, &pipeline) == want);
+		CHECK(pipeline == NULL);
+	}
+	// A garbage op and a garbage factor in one attachment: fields in
+	// declaration order, so the colour op's, ahead of the alpha factor's.
+	blend[0]                        = dual_blend(CRGPU_BLEND_FACTOR_ONE, CRGPU_BLEND_FACTOR_ZERO, 14u, CRGPU_BLEND_FACTOR_ZERO);
+	blend[0].color_blend_op         = 5u;
+	CHECK(dual_pipeline(device, vertex, plain, layout, 1, blend, &pipeline) == CR_RESULT_GPU_INVALID_BLEND_OP);
+	CHECK(pipeline == NULL);
+
+	// Two attachments differing only by a garbage factor, without
+	// independent blend: the garbage, not the difference.
+	if (!independent) {
+		blend[0] = dual_blend(CRGPU_BLEND_FACTOR_ONE, CRGPU_BLEND_FACTOR_ZERO, CRGPU_BLEND_FACTOR_ONE, CRGPU_BLEND_FACTOR_ZERO);
+		blend[1] = blend[0];
+		blend[1].dst_color_blend_factor = 14u;
+		CHECK(dual_pipeline(device, vertex, plain, layout, 2, blend, &pipeline) == CR_RESULT_GPU_INVALID_BLEND_FACTOR);
+		CHECK(pipeline == NULL);
+	}
+
+done:
+	crgpu_descriptor_set_layout_destroy(layout);
+	crgpu_shader_module_destroy(plain);
+	crgpu_shader_module_destroy(dual);
+	crgpu_shader_module_destroy(vertex);
+}
+
+// Card S50 on one adapter: the refusals on a device without the bit (and
+// without independent blend), then on one with it (with and without
+// independent blend where the adapter has it), and the draws on the one
+// with it.
+static void test_dual_source(crgpu_adapter adapter, CRGPU_FEATURES supported) {
+	CRGPU_FEATURES sets[3] = {0, CRGPU_FEATURE_DUAL_SOURCE_BLEND, CRGPU_FEATURE_DUAL_SOURCE_BLEND | CRGPU_FEATURE_INDEPENDENT_BLEND};
+	for (uint32_t s = 0; s < 3; ++s) {
+		if ((sets[s] & supported) != sets[s]) {
+			printf("crgpu_objects_test: the adapter lacks features 0x%llx, dual-source case %u skipped\n", (unsigned long long)sets[s], s);
+			continue;
+		}
+		crgpu_device_desc desc;
+		memset(&desc, 0, sizeof(desc));
+		desc.base.type          = CR_STRUCT_TYPE_GPU_DEVICE_DESC;
+		desc.required_features  = sets[s];
+		desc.direct_queue_count = 1;
+		desc.max_descriptors    = 16;
+		desc.max_samplers       = 4;
+		desc.debug_name         = "crgpu_objects_test dual source";
+		crgpu_device device     = NULL;
+		CHECK(crgpu_device_create(adapter, &desc, &device) == CR_SUCCESS);
+		if (!device)
+			continue;
+		CHECK(crgpu_device_get_features(device) == sets[s]);
+		test_dual_source_refusals(device, sets[s]);
+		if (s == 1)
+			test_dual_source_draws(device);
+		crgpu_device_destroy(device);
+	}
+}
+
 // ---- Block formats (card S48) ---------------------------------------------
 
 // The texel block the test expects of [format], worked out here rather than
@@ -5222,6 +5626,7 @@ int main(int argc, char **argv) {
 	test_quarantine(adapter, &tracker);
 	test_drawing(adapter, properties.supported_features);
 	test_block_formats(adapter, properties.supported_features, &properties);
+	test_dual_source(adapter, properties.supported_features);
 #if CRGPU_EXT_RAY_QUERY
 	test_ray_queries(adapter, properties.supported_features);
 #endif

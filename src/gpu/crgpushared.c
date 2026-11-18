@@ -24,6 +24,10 @@ CR_RESULT crgpu___internal_check_instance_desc(
 	return cr_allocator_check(desc->allocator);
 }
 
+bool crgpu___internal_blend_factor_is_src1(CRGPU_BLEND_FACTOR factor) {
+	return factor >= CRGPU_BLEND_FACTOR_SRC1_COLOR && factor <= CRGPU_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA;
+}
+
 bool crgpu___internal_blend_attachments_equal(
     const crgpu_blend_attachment_desc *a,
     const crgpu_blend_attachment_desc *b) {
@@ -114,10 +118,41 @@ CR_RESULT crgpu___internal_check_pipeline_outputs(
 				return CR_RESULT_GPU_INVALID_FORMAT;
 	if (desc->depth_bias_clamp != 0.0f && !(features & CRGPU_FEATURE_DEPTH_BIAS_CLAMP))
 		return CR_RESULT_GPU_DEPTH_BIAS_CLAMP_NOT_SUPPORTED;
+	// Every factor and op of an enabled attachment is a value of its enum,
+	// in index order and each one's fields in declaration order, before the
+	// independent-blend check compares them (card S50). A disabled
+	// attachment's are ignored: never refused, never sent on.
+	bool dual_source = false;
+	for (uint32_t i = 0; i < desc->color_attachment_count; ++i) {
+		const crgpu_blend_attachment_desc *blend = &desc->blend_attachments[i];
+		if (!blend->blend_enable)
+			continue;
+		if (blend->src_color_blend_factor > CRGPU_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA)
+			return CR_RESULT_GPU_INVALID_BLEND_FACTOR;
+		if (blend->dst_color_blend_factor > CRGPU_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA)
+			return CR_RESULT_GPU_INVALID_BLEND_FACTOR;
+		if (blend->color_blend_op > CRGPU_BLEND_OP_MAX)
+			return CR_RESULT_GPU_INVALID_BLEND_OP;
+		if (blend->src_alpha_blend_factor > CRGPU_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA)
+			return CR_RESULT_GPU_INVALID_BLEND_FACTOR;
+		if (blend->dst_alpha_blend_factor > CRGPU_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA)
+			return CR_RESULT_GPU_INVALID_BLEND_FACTOR;
+		if (blend->alpha_blend_op > CRGPU_BLEND_OP_MAX)
+			return CR_RESULT_GPU_INVALID_BLEND_OP;
+		dual_source = dual_source || crgpu___internal_blend_factor_is_src1(blend->src_color_blend_factor) ||
+		              crgpu___internal_blend_factor_is_src1(blend->dst_color_blend_factor) ||
+		              crgpu___internal_blend_factor_is_src1(blend->src_alpha_blend_factor) ||
+		              crgpu___internal_blend_factor_is_src1(blend->dst_alpha_blend_factor);
+	}
 	if (!(features & CRGPU_FEATURE_INDEPENDENT_BLEND))
 		for (uint32_t i = 1; i < desc->color_attachment_count; ++i)
 			if (!crgpu___internal_blend_attachments_equal(&desc->blend_attachments[0], &desc->blend_attachments[i]))
 				return CR_RESULT_GPU_INDEPENDENT_BLEND_NOT_SUPPORTED;
+	// Dual-source blending writes attachment 0 alone, on every backend.
+	if (dual_source && !(features & CRGPU_FEATURE_DUAL_SOURCE_BLEND))
+		return CR_RESULT_GPU_FEATURE_NOT_SUPPORTED;
+	if (dual_source && desc->color_attachment_count > 1)
+		return CR_RESULT_GPU_TOO_MANY_COLOR_ATTACHMENTS;
 	return CR_SUCCESS;
 }
 

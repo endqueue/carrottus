@@ -121,7 +121,10 @@ endif()
 # source instead of crgpu_msl's (card S21); NO_METAL <reason> makes no
 # Metal source at all, for a shader of a program that never builds for an
 # Apple platform and that neither route takes (bindless). The reason is
-# written beside the call either way.
+# written beside the call either way. A dual-source fragment shader (card
+# S50) takes the default route: Slang's own Metal writes its second output
+# as [[color(1)]], a second attachment, where SPIRV-Cross reads SPIR-V's
+# Index 1 as [[color(0), index(1)]].
 #
 # Appends the .inc files and Metal sources made to <var> in the caller's
 # scope, for a target to depend on, and sets <name>_FORMATS there to the

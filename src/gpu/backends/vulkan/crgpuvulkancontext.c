@@ -481,6 +481,11 @@ static bool crgpuvulkan___read_adapter_facts(
     // must be enabled for an image of one to be within Vulkan's rules.
     if (available.textureCompressionBC) features |= CRGPU_FEATURE_TEXTURE_COMPRESSION_BC;
     if (available.textureCompressionASTC_LDR) features |= CRGPU_FEATURE_TEXTURE_COMPRESSION_ASTC_LDR;
+    // The SRC1 blend factors (card S50): the specification promises
+    // maxFragmentDualSrcAttachments of 1 or more with dualSrcBlend; both are
+    // read, so the bit is never claimed on a driver that says otherwise.
+    if (available.dualSrcBlend && props->limits.maxFragmentDualSrcAttachments >= 1)
+        features |= CRGPU_FEATURE_DUAL_SOURCE_BLEND;
 
     VkPhysicalDeviceVulkan12Features vk12 = {0};
     vk12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
@@ -956,6 +961,7 @@ static VkResult crgpuvulkan___create_logical_device(
     deviceFeatures.tessellationShader = (features & CRGPU_FEATURE_TESSELLATION) ? VK_TRUE : VK_FALSE;
     deviceFeatures.textureCompressionBC = (features & CRGPU_FEATURE_TEXTURE_COMPRESSION_BC) ? VK_TRUE : VK_FALSE;
     deviceFeatures.textureCompressionASTC_LDR = (features & CRGPU_FEATURE_TEXTURE_COMPRESSION_ASTC_LDR) ? VK_TRUE : VK_FALSE;
+    deviceFeatures.dualSrcBlend = (features & CRGPU_FEATURE_DUAL_SOURCE_BLEND) ? VK_TRUE : VK_FALSE;
 
     // The base set: every buffer has an address (crgpu_buffer_get_gpu_address),
     // crgpu_fence is a timeline semaphore (crgpuvulkansync.c).

@@ -447,6 +447,28 @@ GameInput and evdev builds were not run.
   - A block format as a pipeline's colour or depth attachment, or a vertex
     attribute, is `CR_RESULT_GPU_INVALID_FORMAT`, beside the colour
     attachment checks. Blits never take one (the caller's rule, unchecked).
+- **Dual-source blending, one colour attachment, and every blend value
+  checked** (card S50, 0.4.0, `crgpu_dual_source_blend_draft.h`, approved
+  and built on the Mac 2026-11-17; Vulkan type-checked, D3D12 written, not
+  compiled; `CRGPU_DEVICE_TODO.md`, S50).
+  - `CRGPU_FEATURE_DUAL_SOURCE_BLEND` (bit 19) and the four `SRC1`
+    factors: an enabled blend attachment naming one needs the bit
+    (`CR_RESULT_GPU_FEATURE_NOT_SUPPORTED`) and a pipeline of one colour
+    attachment (`CR_RESULT_GPU_TOO_MANY_COLOR_ATTACHMENTS`), the limit every
+    backend shares. Vulkan: `dualSrcBlend` and
+    `maxFragmentDualSrcAttachments >= 1`; D3D12 and Metal: every adapter.
+  - The shader declares its second output `[[vk::location(0)]] ... :
+    SV_Target0` and `[[vk::location(0), vk::index(1)]] ... : SV_Target1`,
+    and takes the default Metal route (SPIRV-Cross writes
+    `[[color(0), index(1)]]`); `METAL_ROUTE SLANG` writes `[[color(1)]]`,
+    a second attachment, so a dual-source shader never takes it.
+  - `crgpu___internal_check_pipeline_outputs()` (`crgpushared.c`) refuses
+    an enabled attachment's factor or op that is no value of its enum
+    (`CR_RESULT_GPU_INVALID_BLEND_FACTOR`, `_BLEND_OP`) before the
+    independent-blend check; a disabled attachment's are never checked and
+    never reach the API (D3D12 writes its own default there). A `*_COLOR`
+    factor in an alpha slot is that colour's alpha on every backend (D3D12
+    writes the `*_ALPHA` twin).
 - **Native escape hatches are interop-only.** `crgpu_vulkan_natives.h` /
   `_d3d12_natives.h` / `_metal_natives.h` unwrap a handle back to its raw native type
   (`VkInstance`, `ID3D12Device14`, ...) for third-party libraries Carrottus doesn't wrap

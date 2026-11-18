@@ -175,6 +175,8 @@ static bool crgpu_d3d12___read_adapter_facts(crgpu_adapter_d3d12 *adapter) {
 	            CRGPU_FEATURE_CUBE_ARRAY_VIEWS | CRGPU_FEATURE_PASS_TIMESTAMPS | CRGPU_FEATURE_MAPPABLE_HEAPS |
 	            CRGPU_FEATURE_PRESENT | CRGPU_FEATURE_DRAW_INDIRECT_FIRST_INSTANCE |
 	            CRGPU_FEATURE_GEOMETRY_SHADER | CRGPU_FEATURE_TESSELLATION;
+	// The SRC1 blend factors, at every feature level (card S50).
+	features |= CRGPU_FEATURE_DUAL_SOURCE_BLEND;
 	// CRGPU_MEMORY_KIND_DEVICE_MAPPABLE is a custom heap in pool L0 that
 	// the CPU can map, which holds a resource in any state only on a UMA
 	// adapter.

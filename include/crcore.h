@@ -253,7 +253,9 @@ typedef enum CR_RESULT {
 	/** The device can't give the memory kind asked for: it wasn't created
 	 * with the feature that kind needs. */
 	CR_RESULT_GPU_MEMORY_KIND_NOT_SUPPORTED                   = 225,
-	/** More color attachments than CRGPU_MAX_COLOR_ATTACHMENTS. */
+	/** More color attachments than CRGPU_MAX_COLOR_ATTACHMENTS, or more than
+	 * one in a pipeline that blends with two sources
+	 * (CRGPU_FEATURE_DUAL_SOURCE_BLEND). */
 	CR_RESULT_GPU_TOO_MANY_COLOR_ATTACHMENTS                  = 226,
 	/** A pipeline desc's depth bias clamp is not 0 on a device without
 	 * CRGPU_FEATURE_DEPTH_BIAS_CLAMP. */
@@ -330,9 +332,11 @@ typedef enum CR_RESULT {
 	/** A shader module desc's workgroup size has a 0 for a compute, mesh or
 	 * task stage, or anything but 0 for another stage. */
 	CR_RESULT_GPU_INVALID_WORKGROUP_SIZE                      = 285,
-	/** Reserved: no call returns it. */
+	/** A pipeline's enabled blend attachment has a factor that is no
+	 * CRGPU_BLEND_FACTOR. Since 0.4.0 (reserved before). */
 	CR_RESULT_GPU_INVALID_BLEND_FACTOR                        = 290,
-	/** Reserved: no call returns it. */
+	/** A pipeline's enabled blend attachment has an op that is no
+	 * CRGPU_BLEND_OP. Since 0.4.0 (reserved before). */
 	CR_RESULT_GPU_INVALID_BLEND_OP                            = 291,
 	/** A shader module is NULL, or has no shader the call can use. */
 	CR_RESULT_GPU_INVALID_SHADER_MODULE                       = 300,

@@ -109,6 +109,9 @@ static void crgpumetal___internal_read_adapter_facts(crgpu_adapter_metal *adapte
 	features |= CRGPU_FEATURE_DEPTH_BIAS_CLAMP | CRGPU_FEATURE_INDEPENDENT_BLEND |
 	            CRGPU_FEATURE_MULTI_DRAW_INDIRECT | CRGPU_FEATURE_CUBE_ARRAY_VIEWS |
 	            CRGPU_FEATURE_DRAW_INDIRECT_FIRST_INSTANCE;
+	// The Source1 blend factors (macOS 10.12, iOS 11): on every GPU this
+	// backend lists, with nothing to read (card S50).
+	features |= CRGPU_FEATURE_DUAL_SOURCE_BLEND;
 	// A pass's timestamps are samples of the timestamp counter set at its
 	// stage boundaries.
 	id<MTLCounterSet> timestamp_counter_set = crgpumetal___internal_timestamp_counter_set(mtl);

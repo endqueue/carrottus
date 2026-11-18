@@ -7,7 +7,14 @@
 
 #include "../../../crstructbase.h"
 
-static D3D12_BLEND crgpu_d3d12_blend_factor(CRGPU_BLEND_FACTOR f) {
+#include <cassert>
+
+// CRGPU_BLEND_FACTOR as D3D12_BLEND. In an alpha slot (SrcBlendAlpha,
+// DestBlendAlpha), where D3D12 takes no *_COLOR factor, a *_COLOR factor is
+// written as its *_ALPHA twin: the factor Vulkan and Metal apply to alpha
+// for the same value (card S50, Q4 a), so one value means one thing on
+// every backend.
+static D3D12_BLEND crgpu_d3d12_blend_factor(CRGPU_BLEND_FACTOR f, bool alpha_slot) {
 	switch (f) {
 	case CRGPU_BLEND_FACTOR_ZERO:
 		return D3D12_BLEND_ZERO;
@@ -22,21 +29,35 @@ static D3D12_BLEND crgpu_d3d12_blend_factor(CRGPU_BLEND_FACTOR f) {
 	case CRGPU_BLEND_FACTOR_ONE_MINUS_DST_ALPHA:
 		return D3D12_BLEND_INV_DEST_ALPHA;
 	case CRGPU_BLEND_FACTOR_SRC_COLOR:
-		return D3D12_BLEND_SRC_COLOR;
+		return alpha_slot ? D3D12_BLEND_SRC_ALPHA : D3D12_BLEND_SRC_COLOR;
 	case CRGPU_BLEND_FACTOR_ONE_MINUS_SRC_COLOR:
-		return D3D12_BLEND_INV_SRC_COLOR;
+		return alpha_slot ? D3D12_BLEND_INV_SRC_ALPHA : D3D12_BLEND_INV_SRC_COLOR;
 	case CRGPU_BLEND_FACTOR_DST_COLOR:
-		return D3D12_BLEND_DEST_COLOR;
+		return alpha_slot ? D3D12_BLEND_DEST_ALPHA : D3D12_BLEND_DEST_COLOR;
 	case CRGPU_BLEND_FACTOR_ONE_MINUS_DST_COLOR:
-		return D3D12_BLEND_INV_DEST_COLOR;
+		return alpha_slot ? D3D12_BLEND_INV_DEST_ALPHA : D3D12_BLEND_INV_DEST_COLOR;
+	case CRGPU_BLEND_FACTOR_SRC1_COLOR:
+		return alpha_slot ? D3D12_BLEND_SRC1_ALPHA : D3D12_BLEND_SRC1_COLOR;
+	case CRGPU_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR:
+		return alpha_slot ? D3D12_BLEND_INV_SRC1_ALPHA : D3D12_BLEND_INV_SRC1_COLOR;
+	case CRGPU_BLEND_FACTOR_SRC1_ALPHA:
+		return D3D12_BLEND_SRC1_ALPHA;
+	case CRGPU_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA:
+		return D3D12_BLEND_INV_SRC1_ALPHA;
 	default:
+		// crgpu___internal_check_pipeline_outputs() refused every other value.
+		assert(!"crgpud3d12: a blend factor the checks let through");
 		return D3D12_BLEND_ZERO;
 	}
 }
 
 // The blend state of [desc]: a render target for each colour attachment.
 // IndependentBlendEnable only when they differ, which every D3D12 device
-// allows (CRGPU_DEVICE_PROPERTIES::independent_blend).
+// allows (CRGPU_DEVICE_PROPERTIES::independent_blend). A disabled
+// attachment's factors and ops are ignored (crgpu_blend_attachment_desc),
+// so its target, and target 0 with no colour attachment, is written as
+// D3D12's own default blend state (BlendEnable FALSE, ONE, ZERO, ADD), a
+// value the API ignores: nothing the caller left there reaches D3D12.
 static D3D12_BLEND_DESC crgpu_d3d12___blend_desc(const crgpu_graphics_pipeline_desc *desc) {
 	D3D12_BLEND_DESC blendDesc       = {};
 	blendDesc.AlphaToCoverageEnable  = FALSE;
@@ -47,19 +68,28 @@ static D3D12_BLEND_DESC crgpu_d3d12___blend_desc(const crgpu_graphics_pipeline_d
 	// With none, target 0 still has a valid state, unused.
 	const uint32_t count = desc->color_attachment_count ? desc->color_attachment_count : 1;
 	for (uint32_t i = 0; i < count; ++i) {
-		// CRGPU blend op + 1 == D3D12_BLEND_OP.
 		const crgpu_blend_attachment_desc &ba = desc->blend_attachments[i];
 		D3D12_RENDER_TARGET_BLEND_DESC &rt      = blendDesc.RenderTarget[i];
-		rt.BlendEnable                          = ba.blend_enable ? TRUE : FALSE;
+		const bool enabled                      = i < desc->color_attachment_count && ba.blend_enable;
+		rt.BlendEnable                          = enabled ? TRUE : FALSE;
 		rt.LogicOpEnable                        = FALSE;
-		rt.SrcBlend                             = crgpu_d3d12_blend_factor(ba.src_color_blend_factor);
-		rt.DestBlend                            = crgpu_d3d12_blend_factor(ba.dst_color_blend_factor);
-		rt.BlendOp                              = (D3D12_BLEND_OP)(ba.color_blend_op + 1);
-		rt.SrcBlendAlpha                        = crgpu_d3d12_blend_factor(ba.src_alpha_blend_factor);
-		rt.DestBlendAlpha                       = crgpu_d3d12_blend_factor(ba.dst_alpha_blend_factor);
-		rt.BlendOpAlpha                         = (D3D12_BLEND_OP)(ba.alpha_blend_op + 1);
-		rt.LogicOp                              = D3D12_LOGIC_OP_NOOP;
-		rt.RenderTargetWriteMask                = D3D12_COLOR_WRITE_ENABLE_ALL;
+		rt.SrcBlend                             = D3D12_BLEND_ONE;
+		rt.DestBlend                            = D3D12_BLEND_ZERO;
+		rt.BlendOp                              = D3D12_BLEND_OP_ADD;
+		rt.SrcBlendAlpha                        = D3D12_BLEND_ONE;
+		rt.DestBlendAlpha                       = D3D12_BLEND_ZERO;
+		rt.BlendOpAlpha                         = D3D12_BLEND_OP_ADD;
+		if (enabled) {
+			// CRGPU blend op + 1 == D3D12_BLEND_OP; every op was checked.
+			rt.SrcBlend       = crgpu_d3d12_blend_factor(ba.src_color_blend_factor, false);
+			rt.DestBlend      = crgpu_d3d12_blend_factor(ba.dst_color_blend_factor, false);
+			rt.BlendOp        = (D3D12_BLEND_OP)(ba.color_blend_op + 1);
+			rt.SrcBlendAlpha  = crgpu_d3d12_blend_factor(ba.src_alpha_blend_factor, true);
+			rt.DestBlendAlpha = crgpu_d3d12_blend_factor(ba.dst_alpha_blend_factor, true);
+			rt.BlendOpAlpha   = (D3D12_BLEND_OP)(ba.alpha_blend_op + 1);
+		}
+		rt.LogicOp               = D3D12_LOGIC_OP_NOOP;
+		rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 	}
 	return blendDesc;
 }

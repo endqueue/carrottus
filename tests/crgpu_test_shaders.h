@@ -12,6 +12,7 @@
 
 #include "crgpu_test_objects_draw_vert.spv.inc"
 #include "crgpu_test_objects_draw_frag.spv.inc"
+#include "crgpu_test_objects_dual_source_frag.spv.inc"
 #include "crgpu_test_objects_draw_mesh.spv.inc"
 #include "crgpu_test_objects_double_comp.spv.inc"
 #include "crgpu_test_objects_first_use_comp.spv.inc"
@@ -34,6 +35,7 @@
 #if CARROTTUS_TEST_SHADERS_DXIL
 #include "crgpu_test_objects_draw_vert.dxil.inc"
 #include "crgpu_test_objects_draw_frag.dxil.inc"
+#include "crgpu_test_objects_dual_source_frag.dxil.inc"
 #include "crgpu_test_objects_draw_mesh.dxil.inc"
 #include "crgpu_test_objects_double_comp.dxil.inc"
 #include "crgpu_test_objects_first_use_comp.dxil.inc"
@@ -60,6 +62,7 @@
 #if CARROTTUS_TEST_SHADERS_METALLIB
 #include "crgpu_test_objects_draw_vert.metallib.inc"
 #include "crgpu_test_objects_draw_frag.metallib.inc"
+#include "crgpu_test_objects_dual_source_frag.metallib.inc"
 #include "crgpu_test_objects_draw_mesh.metallib.inc"
 #include "crgpu_test_objects_double_comp.metallib.inc"
 #include "crgpu_test_objects_first_use_comp.metallib.inc"
@@ -105,6 +108,8 @@ static const crgpu_test_shader crgpu_test_objects_draw_vert =
     CRGPU_TEST_SHADER(crgpu_test_objects_draw_vert, "objects_draw_vert", CRGPU_SHADER_STAGE_VERTEX, 0, 0, 0);
 static const crgpu_test_shader crgpu_test_objects_draw_frag =
     CRGPU_TEST_SHADER(crgpu_test_objects_draw_frag, "objects_draw_frag", CRGPU_SHADER_STAGE_FRAGMENT, 0, 0, 0);
+static const crgpu_test_shader crgpu_test_objects_dual_source_frag =
+    CRGPU_TEST_SHADER(crgpu_test_objects_dual_source_frag, "objects_dual_source_frag", CRGPU_SHADER_STAGE_FRAGMENT, 0, 0, 0);
 static const crgpu_test_shader crgpu_test_objects_draw_mesh =
     CRGPU_TEST_SHADER(crgpu_test_objects_draw_mesh, "objects_draw_mesh", CRGPU_SHADER_STAGE_MESH, 1, 1, 1);
 static const crgpu_test_shader crgpu_test_objects_double_comp =

@@ -11,6 +11,7 @@
 #include "crgpumetal.h"
 #include "../../crgpushared.h"
 #include <Metal/Metal.h>
+#include <assert.h>
 #include "../../../crstructbase.h"
 
 // Whether [function]'s type is [stage]'s: Metal's vertex, fragment, kernel,
@@ -281,7 +282,15 @@ static MTLBlendFactor crgpumetal___internal_blend_factor(CRGPU_BLEND_FACTOR fact
 	case CRGPU_BLEND_FACTOR_ONE_MINUS_SRC_COLOR: return MTLBlendFactorOneMinusSourceColor;
 	case CRGPU_BLEND_FACTOR_DST_COLOR:           return MTLBlendFactorDestinationColor;
 	case CRGPU_BLEND_FACTOR_ONE_MINUS_DST_COLOR: return MTLBlendFactorOneMinusDestinationColor;
-	default:                                       return MTLBlendFactorZero;
+	case CRGPU_BLEND_FACTOR_SRC1_COLOR:           return MTLBlendFactorSource1Color;
+	case CRGPU_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR: return MTLBlendFactorOneMinusSource1Color;
+	case CRGPU_BLEND_FACTOR_SRC1_ALPHA:           return MTLBlendFactorSource1Alpha;
+	case CRGPU_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA: return MTLBlendFactorOneMinusSource1Alpha;
+	case CRGPU_BLEND_FACTOR_ZERO:                 return MTLBlendFactorZero;
+	default:
+		// crgpu___internal_check_pipeline_outputs() refused every other value.
+		assert(!"crgpumetal: a blend factor the checks let through");
+		return MTLBlendFactorZero;
 	}
 }
 
@@ -291,7 +300,11 @@ static MTLBlendOperation crgpumetal___internal_blend_operation(CRGPU_BLEND_OP op
 	case CRGPU_BLEND_OP_REVERSE_SUBTRACT: return MTLBlendOperationReverseSubtract;
 	case CRGPU_BLEND_OP_MIN:              return MTLBlendOperationMin;
 	case CRGPU_BLEND_OP_MAX:              return MTLBlendOperationMax;
-	default:                                return MTLBlendOperationAdd;
+	case CRGPU_BLEND_OP_ADD:              return MTLBlendOperationAdd;
+	default:
+		// crgpu___internal_check_pipeline_outputs() refused every other value.
+		assert(!"crgpumetal: a blend op the checks let through");
+		return MTLBlendOperationAdd;
 	}
 }
 

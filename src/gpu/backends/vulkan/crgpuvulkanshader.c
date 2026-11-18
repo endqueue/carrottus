@@ -4,6 +4,7 @@
 #include "crgpu.h"
 #include "crgpuvulkan.h"
 #include "../../crgpushared.h"
+#include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 #include "../../../crstructbase.h"
@@ -95,7 +96,17 @@ static VkBlendFactor crgpuvulkan___blend_factor(CRGPU_BLEND_FACTOR factor) {
 		return VK_BLEND_FACTOR_DST_COLOR;
 	case CRGPU_BLEND_FACTOR_ONE_MINUS_DST_COLOR:
 		return VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
+	case CRGPU_BLEND_FACTOR_SRC1_COLOR:
+		return VK_BLEND_FACTOR_SRC1_COLOR;
+	case CRGPU_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR:
+		return VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR;
+	case CRGPU_BLEND_FACTOR_SRC1_ALPHA:
+		return VK_BLEND_FACTOR_SRC1_ALPHA;
+	case CRGPU_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA:
+		return VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA;
 	default:
+		// crgpu___internal_check_pipeline_outputs() refused every other value.
+		assert(!"crgpuvulkan: a blend factor the checks let through");
 		return VK_BLEND_FACTOR_ZERO;
 	}
 }
@@ -519,7 +530,10 @@ CR_RESULT crgpu_graphics_pipeline_create(
 	// ------------------------------------------------------------------
 	// 8. Colour blend attachments, one for each colour attachment, from
 	// the caller's factors and ops (CRGPU_BLEND_OP is VkBlendOp's
-	// numbering; CRGPU_BLEND_FACTOR is not VkBlendFactor's).
+	// numbering; CRGPU_BLEND_FACTOR is not VkBlendFactor's). Every value
+	// of an enabled attachment was checked; a disabled one's fields stay
+	// zeroed, as VkPipelineColorBlendAttachmentState's VUIDs 00608 to 00611
+	// want of an SRC1 factor on a device without dualSrcBlend.
 	// ------------------------------------------------------------------
 	VkPipelineColorBlendAttachmentState colorBlendAttachments[CRGPU_MAX_COLOR_ATTACHMENTS] = {0};
 	for (uint32_t i = 0; i < desc->color_attachment_count; ++i) {

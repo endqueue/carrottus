@@ -663,6 +663,10 @@ if(NOT TARGET carrottus)
             "crgpu_test_rq_instances_col72|rq_instances_col72|cs_6_0|"
             "crgpu_test_objects_draw_vert|objects_draw_vert|vs_6_0|"
             "crgpu_test_objects_draw_frag|objects_draw_frag|ps_6_0|"
+            # Dual-source blending (card S50): a second output at location 0
+            # index 1, on the default Metal route (never METAL_ROUTE SLANG,
+            # whose Metal writes it as [[color(1)]]).
+            "crgpu_test_objects_dual_source_frag|objects_dual_source_frag|ps_6_0|"
             "crgpu_test_objects_draw_mesh|objects_draw_mesh|ms_6_5|spvMeshShadingEXT"
             "crgpu_test_objects_double_comp|objects_double_comp|cs_6_0|"
             # An attachment image cleared first, then written by compute (card S38).

@@ -657,6 +657,15 @@ typedef uint64_t CRGPU_FEATURES;
  * MTLGPUFamilyMac2 alone, an Intel or AMD Mac's). "_LDR" because ASTC HDR
  * is a separate capability on every API that has it. Since 0.4.0. */
 #define CRGPU_FEATURE_TEXTURE_COMPRESSION_ASTC_LDR (UINT64_C(1) << 17)
+/** The adapter blends with the fragment shader's second output: a graphics
+ * pipeline with an enabled blend attachment naming
+ * CRGPU_BLEND_FACTOR_SRC1_COLOR, _ONE_MINUS_SRC1_COLOR, _SRC1_ALPHA or
+ * _ONE_MINUS_SRC1_ALPHA is refused with CR_RESULT_GPU_FEATURE_NOT_SUPPORTED
+ * on a device created without it. Vulkan:
+ * `VkPhysicalDeviceFeatures::dualSrcBlend` with
+ * `VkPhysicalDeviceLimits::maxFragmentDualSrcAttachments` 1 or more, enabled
+ * with it. D3D12 and Metal: every adapter. Since 0.4.0. */
+#define CRGPU_FEATURE_DUAL_SOURCE_BLEND (UINT64_C(1) << 19)
 
 /** @brief The kinds of queue, as bits, for CRGPU_QUEUE_POOL. */
 typedef uint32_t CRGPU_QUEUE_KINDS;
@@ -4955,6 +4964,12 @@ typedef struct crgpu_push_constant_range_desc {
 /**
  * @brief Factor a source or destination color or alpha is multiplied by when
  * blending.
+ *
+ * A *_COLOR factor in an alpha slot (src_alpha_blend_factor,
+ * dst_alpha_blend_factor) is that colour's alpha, on every backend:
+ * SRC_COLOR there is the source's alpha, as SRC_ALPHA is. A value that is
+ * none of these is refused by crgpu_graphics_pipeline_create() with
+ * CR_RESULT_GPU_INVALID_BLEND_FACTOR. Only appended to.
  */
 typedef uint32_t CRGPU_BLEND_FACTOR;
 
@@ -4968,7 +4983,23 @@ enum {
 	CRGPU_BLEND_FACTOR_SRC_COLOR           = 6, /**< Source color, per channel */
 	CRGPU_BLEND_FACTOR_ONE_MINUS_SRC_COLOR = 7, /**< 1 - source color, per channel */
 	CRGPU_BLEND_FACTOR_DST_COLOR           = 8, /**< Destination color, per channel */
-	CRGPU_BLEND_FACTOR_ONE_MINUS_DST_COLOR = 9  /**< 1 - destination color, per channel */
+	CRGPU_BLEND_FACTOR_ONE_MINUS_DST_COLOR = 9, /**< 1 - destination color, per channel */
+	/*
+	 * The fragment shader's second output, source 1: the output at location
+	 * 0 index 1 (SPIR-V `Location 0, Index 1`; HLSL SV_Target1; MSL
+	 * `[[color(0), index(1)]]`), which the blender reads and no attachment
+	 * receives. Named by a pipeline only on a device created with
+	 * CRGPU_FEATURE_DUAL_SOURCE_BLEND, and only with one colour attachment.
+	 * A pipeline naming one whose fragment shader writes no second output, or
+	 * one not naming one whose shader writes a second output, is the caller's
+	 * error, and what it blends is undefined. Vulkan:
+	 * VK_BLEND_FACTOR_SRC1_COLOR and on. D3D12: D3D12_BLEND_SRC1_COLOR and on.
+	 * Metal: MTLBlendFactorSource1Color and on. Since 0.4.0.
+	 */
+	CRGPU_BLEND_FACTOR_SRC1_COLOR           = 10, /**< Source 1's color, per channel */
+	CRGPU_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR = 11, /**< 1 - source 1's color, per channel */
+	CRGPU_BLEND_FACTOR_SRC1_ALPHA           = 12, /**< Source 1's alpha */
+	CRGPU_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA = 13  /**< 1 - source 1's alpha */
 };
 
 /**
@@ -4987,7 +5018,12 @@ enum {
 
 /**
  * @brief Per-attachment blend configuration.
- * Ignored entirely when blend_enable is false.
+ * Ignored entirely when blend_enable is false: a disabled attachment's
+ * factors and ops are never refused and never reach the graphics API,
+ * whatever they hold. On an enabled one each factor is a CRGPU_BLEND_FACTOR
+ * and each op a CRGPU_BLEND_OP, or the pipeline is refused. An SRC1 factor
+ * in any of its four factor fields, whatever its ops, makes the pipeline
+ * dual-source (CRGPU_FEATURE_DUAL_SOURCE_BLEND).
  */
 /* Frozen: an array element of crgpu_graphics_pipeline_desc. It never changes; a new need gets a new type. */
 typedef struct crgpu_blend_attachment_desc {
@@ -5345,8 +5381,12 @@ typedef struct crgpu_graphics_pipeline_desc {
 	/**
 	 * Blend configuration for each color attachment: entry i for
 	 * #color_attachment_formats[i]. Only the first #color_attachment_count
-	 * are read. Entries that differ from entry 0 need a device created with
-	 * CRGPU_FEATURE_INDEPENDENT_BLEND.
+	 * are read, and of those only the ones with blend_enable. Entries that
+	 * differ from entry 0 need a device created with
+	 * CRGPU_FEATURE_INDEPENDENT_BLEND. An entry naming an SRC1 factor needs a
+	 * device created with CRGPU_FEATURE_DUAL_SOURCE_BLEND and a
+	 * #color_attachment_count of 1: dual-source blending writes attachment 0
+	 * alone, on every backend.
 	 * @see crgpu_blend_attachment_desc
 	 */
 	crgpu_blend_attachment_desc blend_attachments[CRGPU_MAX_COLOR_ATTACHMENTS];
@@ -5447,7 +5487,10 @@ typedef struct crgpu_graphics_pipeline_desc {
  *         CRGPU_FEATURE_MESH_SHADING.
  * @retval CR_RESULT_GPU_TOO_MANY_COLOR_ATTACHMENTS
  *         `desc->color_attachment_count` is above
- *         CRGPU_MAX_COLOR_ATTACHMENTS.
+ *         CRGPU_MAX_COLOR_ATTACHMENTS; or, checked last of the blend
+ *         checks (after CR_RESULT_GPU_FEATURE_NOT_SUPPORTED below), an
+ *         enabled blend attachment names an SRC1 factor and
+ *         `desc->color_attachment_count` is above 1 (since 0.4.0).
  * @retval CR_RESULT_GPU_INVALID_FORMAT A block-compressed (BC or ASTC)
  *         format in the first `desc->color_attachment_count`
  *         `desc->color_attachment_formats`, as `desc->depth_format`, or, with
@@ -5458,9 +5501,18 @@ typedef struct crgpu_graphics_pipeline_desc {
  * @retval CR_RESULT_GPU_DEPTH_BIAS_CLAMP_NOT_SUPPORTED
  *         `desc->depth_bias_clamp` is not 0 and the device wasn't created
  *         with CRGPU_FEATURE_DEPTH_BIAS_CLAMP.
+ * @retval CR_RESULT_GPU_INVALID_BLEND_FACTOR A factor of one of the first
+ *         `desc->color_attachment_count` blend attachments with
+ *         blend_enable is no CRGPU_BLEND_FACTOR. Attachments in index order,
+ *         each one's fields in declaration order with its ops. Since 0.4.0.
+ * @retval CR_RESULT_GPU_INVALID_BLEND_OP An op of such an attachment is no
+ *         CRGPU_BLEND_OP. Since 0.4.0.
  * @retval CR_RESULT_GPU_INDEPENDENT_BLEND_NOT_SUPPORTED Two of the first
  *         `desc->color_attachment_count` blend attachments differ and the
  *         device wasn't created with CRGPU_FEATURE_INDEPENDENT_BLEND.
+ * @retval CR_RESULT_GPU_FEATURE_NOT_SUPPORTED Such an attachment names an
+ *         SRC1 factor and the device wasn't created with
+ *         CRGPU_FEATURE_DUAL_SOURCE_BLEND. Since 0.4.0.
  * @retval CR_RESULT_GPU_SHADER_LAYOUT_MISMATCH On Metal, a module's
  *         argument buffer for a set it reads isn't that set's layout
  *         (crgpu_shader_module_desc, "Every binding of a set"): a binding

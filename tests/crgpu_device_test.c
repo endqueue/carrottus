@@ -258,6 +258,48 @@ static void test_block_format_bits(
 	crgpu_device_destroy(device);
 }
 
+/* The dual-source blending bit (card S50) on one adapter, as the graphics
+ * API reports it (Metal and D3D12: every adapter; Vulkan: exactly when
+ * dualSrcBlend is true and maxFragmentDualSrcAttachments is 1 or more, both
+ * printed). A device created with it reports it, one created without
+ * doesn't. */
+static void test_dual_source_bit(
+    uint32_t index,
+    crgpu_adapter adapter) {
+	const CRGPU_ADAPTER_PROPERTIES properties = properties_of(adapter);
+	const bool dual                           = (properties.supported_features & CRGPU_FEATURE_DUAL_SOURCE_BLEND) != 0;
+	printf("crgpu_device_test: adapter %u (%s): dual-source blending %s\n", index, properties.description, dual ? "yes" : "no");
+#if CRGPU_COMPILE_METAL_API || CRGPU_COMPILE_D3D12_API
+	CHECK(dual);
+#elif CRGPU_COMPILE_VULKAN_API
+	VkPhysicalDeviceFeatures available;
+	memset(&available, 0, sizeof(available));
+	vkGetPhysicalDeviceFeatures(crgpu_get_vk_physical_device(adapter), &available);
+	VkPhysicalDeviceProperties vk_properties;
+	memset(&vk_properties, 0, sizeof(vk_properties));
+	vkGetPhysicalDeviceProperties(crgpu_get_vk_physical_device(adapter), &vk_properties);
+	printf("crgpu_device_test: adapter %u: dualSrcBlend %u, maxFragmentDualSrcAttachments %u\n", index, (unsigned)available.dualSrcBlend,
+	    (unsigned)vk_properties.limits.maxFragmentDualSrcAttachments);
+	CHECK(dual == (available.dualSrcBlend == VK_TRUE && vk_properties.limits.maxFragmentDualSrcAttachments >= 1));
+#endif
+	crgpu_device_desc desc = device_desc();
+	crgpu_device device    = (crgpu_device)(uintptr_t)1;
+	desc.required_features = CRGPU_FEATURE_DUAL_SOURCE_BLEND;
+	if (dual) {
+		CHECK(crgpu_device_create(adapter, &desc, &device) == CR_SUCCESS);
+		CHECK(crgpu_device_get_features(device) == CRGPU_FEATURE_DUAL_SOURCE_BLEND);
+		crgpu_device_destroy(device);
+	} else {
+		CHECK(crgpu_device_create(adapter, &desc, &device) == CR_RESULT_GPU_FEATURE_NOT_SUPPORTED);
+		CHECK(device == NULL);
+	}
+	desc   = device_desc();
+	device = NULL;
+	CHECK(crgpu_device_create(adapter, &desc, &device) == CR_SUCCESS);
+	CHECK((crgpu_device_get_features(device) & CRGPU_FEATURE_DUAL_SOURCE_BLEND) == 0);
+	crgpu_device_destroy(device);
+}
+
 static void test_device_desc_checks(crgpu_adapter adapter) {
 	const CRGPU_ADAPTER_PROPERTIES properties = properties_of(adapter);
 	crgpu_device device                       = (crgpu_device)(uintptr_t)1;
@@ -457,6 +499,7 @@ int main(void) {
 	for (uint32_t i = 0; i < adapter_count; ++i) {
 		test_image_limits(i, adapters[i]);
 		test_block_format_bits(i, adapters[i]);
+		test_dual_source_bit(i, adapters[i]);
 	}
 	test_adapter_properties(adapter);
 	test_device_desc_checks(adapter);

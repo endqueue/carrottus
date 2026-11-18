@@ -2097,6 +2097,45 @@ Metal, D3D12 and Vulkan). Asked for by A55's third critique round.
 v1, every question as recommended). Not built (the meta repo's
 `ROADMAP.md` names the session that builds it).
 
+**Built on the Mac 2026-11-17** (card A55's session, `../ROADMAP.md` names its prompt;
+card X25: Windows and Linux owed), from the approved draft as written:
+- `CRGPU_FEATURE_DUAL_SOURCE_BLEND` (bit 19), the four `SRC1` factors (10
+  to 13), `CR_RESULT_GPU_INVALID_BLEND_FACTOR` (290) and `_BLEND_OP` (291)
+  returned where they were reserved, `CR_RESULT_GPU_TOO_MANY_COLOR_ATTACHMENTS`
+  (226) grown by the one-attachment rule. The checks are in
+  `crgpu___internal_check_pipeline_outputs()` (`src/gpu/crgpushared.c`,
+  every backend): after the depth bias clamp, each enabled attachment's
+  factors and ops in index and field order, then independent blend, then
+  the feature, then the count. Every backend's factor and op switch now
+  asserts in its default (unreachable).
+- **Metal** built and run: the four `Source1` factors, the bit on every
+  adapter. **Vulkan** written and type-checked on the Mac (`clang
+  -fsyntax-only` against Vulkan SDK 1.4.363.0's headers): the factors, the
+  bit from `dualSrcBlend` and `maxFragmentDualSrcAttachments >= 1`,
+  `dualSrcBlend` enabled only with the bit. **D3D12** written, not
+  compiled: the factors, a `*_COLOR` factor in an alpha slot written as its
+  `*_ALPHA` twin (Q4 a), a disabled target and target 0 with no colour
+  attachment written as D3D12's default blend state, the bit on every
+  adapter.
+- Tests: `crgpu_device_test` (the bit as each API reports it, a device with
+  and without it), `crgpu_objects_test` (blends A to D drawn into an
+  `R16G16B16A16_FLOAT` target and read back bit for bit, 0 values wrong;
+  16 of 16 SRC1 placements refused without the bit; the count with and
+  without independent blend; garbage factors and ops in each field refused
+  on an enabled attachment and accepted on a disabled one; the order), each
+  seen failing first. The test shader
+  `tests/shaders/objects_dual_source_frag.slang` on the default Metal
+  route. carrottus 15/15 Debug and Release under Metal API and shader
+  validation with warnings fatal (Apple M5 Pro, macOS 27). The misuse
+  harness regenerated: unchanged, as expected. ABI: four constants and the
+  bit's macro added, nothing else.
+- Owed: Windows 11 (Iris Xe, RTX A2000, WARP over D3D12 under the debug
+  layer and GPU-based validation; the Iris Xe and the A2000 over Vulkan
+  under validation and synchronization validation) and Fedora (ANV, NVK,
+  RADV), each Vulkan driver's `dualSrcBlend` and
+  `maxFragmentDualSrcAttachments` recorded here (the device test prints
+  both).
+
 ## Per-format capabilities (card S51, decided 2026-11-17: a)
 
 Found 2026-11-17 by A55's third critique round: Carrottus GPU reports no

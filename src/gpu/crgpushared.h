@@ -75,11 +75,20 @@ CR_RESULT crgpu___internal_check_shader_module_desc(
  * attachment, the depth attachment or, with a vertex module, a vertex
  * attribute, in that order),
  * CR_RESULT_GPU_DEPTH_BIAS_CLAMP_NOT_SUPPORTED,
- * CR_RESULT_GPU_INDEPENDENT_BLEND_NOT_SUPPORTED. [features] are the
- * device's. */
+ * CR_RESULT_GPU_INVALID_BLEND_FACTOR and CR_RESULT_GPU_INVALID_BLEND_OP (an
+ * enabled attachment's, in index order and field order),
+ * CR_RESULT_GPU_INDEPENDENT_BLEND_NOT_SUPPORTED,
+ * CR_RESULT_GPU_FEATURE_NOT_SUPPORTED (an SRC1 factor without
+ * CRGPU_FEATURE_DUAL_SOURCE_BLEND), CR_RESULT_GPU_TOO_MANY_COLOR_ATTACHMENTS
+ * (an SRC1 factor with more than one attachment). So a backend translates
+ * only values of the enums. [features] are the device's. */
 CR_RESULT crgpu___internal_check_pipeline_outputs(
     const crgpu_graphics_pipeline_desc *desc,
     CRGPU_FEATURES features);
+
+/* Whether [factor] is one of the four that read the fragment's second
+ * output (CRGPU_BLEND_FACTOR_SRC1_COLOR to _ONE_MINUS_SRC1_ALPHA). */
+bool crgpu___internal_blend_factor_is_src1(CRGPU_BLEND_FACTOR factor);
 
 /* Whether blend attachment [a] and [b] blend the same way. Two that don't
  * blend are the same whatever their factors. */
