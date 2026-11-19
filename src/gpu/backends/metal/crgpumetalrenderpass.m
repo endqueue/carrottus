@@ -121,8 +121,11 @@ static id<MTLBlitCommandEncoder> crgpumetal___internal_ensure_blit_encoder(
 	}
 	crgpumetal___internal_end_active_compute_encoder(cmd_list_metal);
 
-	id<MTLBlitCommandEncoder> encoder = [cmd_list_metal->_command_buffer_mtl blitCommandEncoder];
-	cmd_list_metal->_active_blit_encoder = [encoder retain];
+	// In a pool of its own, as crgpumetal___internal_ensure_compute_encoder
+	// makes its encoder.
+	@autoreleasepool {
+		cmd_list_metal->_active_blit_encoder = [[cmd_list_metal->_command_buffer_mtl blitCommandEncoder] retain];
+	}
 	return cmd_list_metal->_active_blit_encoder;
 }
 
@@ -461,10 +464,15 @@ void crgpu_command_list_begin_rendering(
 	}
 
 	// -renderCommandEncoderWithDescriptor: returns an autoreleased encoder
-	// (same as -nextDrawable in crgpumetalswapchain.m) - retain it so it
-	// survives past this call, to be released in crgpu_command_list_end_rendering.
-	id<MTLRenderCommandEncoder> encoder = [cmd_metal->_command_buffer_mtl renderCommandEncoderWithDescriptor:pass_desc];
-	cmd_metal->_active_render_encoder   = [encoder retain];
+	// (same as -nextDrawable in crgpumetalswapchain.m), which keeps its
+	// command buffer. It is made in a pool of its own and retained inside
+	// it, so the retain is its only reference when this returns, whether or
+	// not the caller has a pool that ever drains; released in
+	// crgpu_command_list_end_rendering (crgpumetal___internal_drop_recording
+	// for a pass never ended).
+	@autoreleasepool {
+		cmd_metal->_active_render_encoder = [[cmd_metal->_command_buffer_mtl renderCommandEncoderWithDescriptor:pass_desc] retain];
+	}
 	// The encoder has what it needs; the kept descriptor holds no texture
 	// past the pass.
 	for (uint32_t i = 0; i < color_count; i++)

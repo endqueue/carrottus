@@ -19,25 +19,6 @@ static uint64_t crgpu_d3d12_format_aspects(CRGPU_FORMAT format) {
 	}
 }
 
-// The format a shader reads [aspect_mask] of an image of [format] in. A
-// depth format is not a shader resource format: each has a readable one in
-// its family, and a second for the stencil.
-static DXGI_FORMAT crgpu_d3d12_srv_format(CRGPU_FORMAT format, uint64_t aspect_mask) {
-	const bool stencil = aspect_mask == CRGPU_IMAGE_ASPECT_STENCIL;
-	switch (format) {
-	case CRGPU_FORMAT_D16_UNORM:
-		return DXGI_FORMAT_R16_UNORM;
-	case CRGPU_FORMAT_D32_FLOAT:
-		return DXGI_FORMAT_R32_FLOAT;
-	case CRGPU_FORMAT_D24_UNORM_S8_UINT:
-		return stencil ? DXGI_FORMAT_X24_TYPELESS_G8_UINT : DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
-	case CRGPU_FORMAT_D32_FLOAT_S8X24_UINT:
-		return stencil ? DXGI_FORMAT_X32_TYPELESS_G8X24_UINT : DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
-	default:
-		return crgpu_d3d12_get_dxgi_format(format);
-	}
-}
-
 // The typeless format of a depth format's family, or [format] itself for any
 // other. See crgpu_d3d12_create_resource_desc_from_image.
 static DXGI_FORMAT crgpu_d3d12_depth_typeless_format(DXGI_FORMAT format) {

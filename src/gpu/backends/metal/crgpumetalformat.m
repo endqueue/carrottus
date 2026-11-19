@@ -152,6 +152,182 @@ _Static_assert(sizeof(crgpumetal___astc_formats) / sizeof(crgpumetal___astc_form
 #undef VERTEX_ONLY
 #undef BLOCK
 
+// What each format can do (card S51). Metal has no per-format query: its
+// answers are Apple's "Metal Feature Set Tables" (developer.apple.com,
+// Metal-Feature-Set-Tables.pdf), the edition dated October 23, 2026, pages
+// 11 to 15, "Texture capabilities by pixel format", transcribed here for
+// every pixel format the table above maps: each one's Filter, Write, Color
+// and Blend in the Apple7, Apple8, Apple9 and Apple10 columns ("All" is all
+// four, with MSAA, Sparse and Resolve, which no bit reports). That edition
+// has no Mac2 column; its note 1 says every Metal 3 GPU has at least the
+// Apple7 column's, which is what a GPU in none of Apple7 to Apple10 is
+// given here. A family the tables add later takes the highest one listed,
+// as the GPU is in that one too. Where the device answers itself, it wins:
+// supportsBCTextureCompression for BC (the tables' "Varies" for Apple7 and
+// Apple8), MTLGPUFamilyApple2 for ASTC, supports32BitFloatFiltering for
+// R32Float, RG32Float and RGBA32Float, and readWriteTextureSupport (the
+// MTLReadWriteTextureTier documentation's lists) for STORAGE_READ.
+#define CAP_F 1u
+#define CAP_W 2u
+#define CAP_C 4u
+#define CAP_B 8u
+#define CAP_ALL (CAP_F | CAP_W | CAP_C | CAP_B)
+#define CAP_WC (CAP_W | CAP_C)
+#define SAME(letters) {(letters), (letters), (letters), (letters)}
+// The Apple7 and Apple8 columns, then the Apple9 and Apple10 columns.
+#define SPLIT(early, late) {(early), (early), (late), (late)}
+
+typedef struct crgpumetal___format_columns {
+	uint8_t apple[4]; // Apple7, Apple8, Apple9, Apple10
+} crgpumetal___format_columns;
+
+static const crgpumetal___format_columns crgpumetal___format_caps[] = {
+	// Ordinary 8-bit (page 11), 16-bit (pages 11 and 12), 32-bit (page 12)
+	// and 64-bit and 128-bit (page 14) pixel formats.
+	[CRGPU_FORMAT_R8_UNORM]            = {SAME(CAP_ALL)},
+	[CRGPU_FORMAT_R8_SNORM]            = {SAME(CAP_ALL)},
+	[CRGPU_FORMAT_R8_UINT]             = {SAME(CAP_WC)},
+	[CRGPU_FORMAT_R8_SINT]             = {SAME(CAP_WC)},
+	[CRGPU_FORMAT_R8G8_UNORM]          = {SAME(CAP_ALL)},
+	[CRGPU_FORMAT_R8G8_SNORM]          = {SAME(CAP_ALL)},
+	[CRGPU_FORMAT_R8G8_UINT]           = {SAME(CAP_WC)},
+	[CRGPU_FORMAT_R8G8_SINT]           = {SAME(CAP_WC)},
+	[CRGPU_FORMAT_R8G8B8A8_UNORM]      = {SAME(CAP_ALL)},
+	[CRGPU_FORMAT_R8G8B8A8_UNORM_SRGB] = {SAME(CAP_ALL)},
+	[CRGPU_FORMAT_R8G8B8A8_SNORM]      = {SAME(CAP_ALL)},
+	[CRGPU_FORMAT_R8G8B8A8_UINT]       = {SAME(CAP_WC)},
+	[CRGPU_FORMAT_R8G8B8A8_SINT]       = {SAME(CAP_WC)},
+	[CRGPU_FORMAT_B8G8R8A8_UNORM]      = {SAME(CAP_ALL)},
+	[CRGPU_FORMAT_B8G8R8A8_UNORM_SRGB] = {SAME(CAP_ALL)},
+	[CRGPU_FORMAT_R16_FLOAT]           = {SAME(CAP_ALL)},
+	[CRGPU_FORMAT_R16_UNORM]           = {SAME(CAP_ALL)},
+	[CRGPU_FORMAT_R16_SNORM]           = {SAME(CAP_ALL)},
+	[CRGPU_FORMAT_R16_UINT]            = {SAME(CAP_WC)},
+	[CRGPU_FORMAT_R16_SINT]            = {SAME(CAP_WC)},
+	[CRGPU_FORMAT_R16G16_FLOAT]        = {SAME(CAP_ALL)},
+	[CRGPU_FORMAT_R16G16_UNORM]        = {SAME(CAP_ALL)},
+	[CRGPU_FORMAT_R16G16_SNORM]        = {SAME(CAP_ALL)},
+	[CRGPU_FORMAT_R16G16_UINT]         = {SAME(CAP_WC)},
+	[CRGPU_FORMAT_R16G16_SINT]         = {SAME(CAP_WC)},
+	[CRGPU_FORMAT_R16G16B16A16_FLOAT]  = {SAME(CAP_ALL)},
+	[CRGPU_FORMAT_R16G16B16A16_UNORM]  = {SAME(CAP_ALL)},
+	[CRGPU_FORMAT_R16G16B16A16_SNORM]  = {SAME(CAP_ALL)},
+	[CRGPU_FORMAT_R16G16B16A16_UINT]   = {SAME(CAP_WC)},
+	[CRGPU_FORMAT_R16G16B16A16_SINT]   = {SAME(CAP_WC)},
+	// R32Float, RG32Float and RGBA32Float filter from Apple9 (and where
+	// supports32BitFloatFiltering says so).
+	[CRGPU_FORMAT_R32_FLOAT]           = {SPLIT(CAP_WC | CAP_B, CAP_ALL)},
+	[CRGPU_FORMAT_R32_UINT]            = {SAME(CAP_WC)},
+	[CRGPU_FORMAT_R32_SINT]            = {SAME(CAP_WC)},
+	[CRGPU_FORMAT_R32G32_FLOAT]        = {SPLIT(CAP_WC | CAP_B, CAP_ALL)},
+	[CRGPU_FORMAT_R32G32_UINT]         = {SAME(CAP_WC)},
+	[CRGPU_FORMAT_R32G32_SINT]         = {SAME(CAP_WC)},
+	[CRGPU_FORMAT_R32G32B32A32_FLOAT]  = {SPLIT(CAP_WC | CAP_B, CAP_ALL)},
+	[CRGPU_FORMAT_R32G32B32A32_UINT]   = {SAME(CAP_WC)},
+	[CRGPU_FORMAT_R32G32B32A32_SINT]   = {SAME(CAP_WC)},
+	// Packed 32-bit (page 13).
+	[CRGPU_FORMAT_R10G10B10A2_UNORM]   = {SAME(CAP_ALL)},
+	[CRGPU_FORMAT_R10G10B10A2_UINT]    = {SAME(CAP_WC)},
+	[CRGPU_FORMAT_R11G11B10_FLOAT]     = {SAME(CAP_ALL)},
+	// Depth and stencil (page 15): Filter alone, Depth32Float's and
+	// Depth32Float_Stencil8's from Apple9.
+	[CRGPU_FORMAT_D16_UNORM]            = {SAME(CAP_F)},
+	[CRGPU_FORMAT_D32_FLOAT]            = {SPLIT(0, CAP_F)},
+	[CRGPU_FORMAT_D32_FLOAT_S8X24_UINT] = {SPLIT(0, CAP_F)},
+};
+
+#undef SAME
+#undef SPLIT
+
+CRGPU_FORMAT_CAPABILITIES crgpumetal___format_capabilities(
+    id<MTLDevice> device,
+    CRGPU_FORMAT format) {
+	const crgpumetal_format_info *info = crgpumetal___format_info(format);
+	CRGPU_FORMAT_CAPABILITIES caps     = 0;
+	if (info->vertex != MTLVertexFormatInvalid)
+		caps |= CRGPU_FORMAT_CAPABILITY_VERTEX;
+	if (info->pixel == MTLPixelFormatInvalid)
+		return caps;
+	// The highest of the families the tables list that the GPU is in; the
+	// Apple7 column for a GPU in none of them (note 1).
+	uint32_t column = 0;
+	if ([device supportsFamily:MTLGPUFamilyApple8])
+		column = 1;
+	if ([device supportsFamily:MTLGPUFamilyApple9])
+		column = 2;
+	if ([device supportsFamily:MTLGPUFamilyApple10])
+		column = 3;
+	uint32_t letters = 0;
+	if (format < sizeof(crgpumetal___format_caps) / sizeof(crgpumetal___format_caps[0]))
+		letters = crgpumetal___format_caps[format].apple[column];
+	// The compressed formats (page 14): Filter in every column, where the
+	// device samples the family at all.
+	const bool bc   = format >= CRGPU_FORMAT_BC1_TYPELESS && format <= CRGPU_FORMAT_BC7_UNORM_SRGB &&
+	                  !(format >= CRGPU_FORMAT_B5G6R5_UNORM && format <= CRGPU_FORMAT_B8G8R8X8_UNORM_SRGB);
+	const bool astc = format >= CRGPU_FORMAT_ASTC_4X4_UNORM && format <= CRGPU_FORMAT_ASTC_12X12_UNORM_SRGB;
+	if (bc && !device.supportsBCTextureCompression)
+		return caps;
+	if (astc && ![device supportsFamily:MTLGPUFamilyApple2])
+		return caps;
+	if (bc || astc)
+		letters = CAP_F;
+	// Every pixel format is read by a shader (the tables' note under
+	// "Texture capabilities by pixel format"), and copied.
+	caps |= CRGPU_FORMAT_CAPABILITY_SAMPLED | CRGPU_FORMAT_CAPABILITY_COPY;
+	const bool float32 = format == CRGPU_FORMAT_R32_FLOAT || format == CRGPU_FORMAT_R32G32_FLOAT || format == CRGPU_FORMAT_R32G32B32A32_FLOAT;
+	if ((letters & CAP_F) || (float32 && device.supports32BitFloatFiltering))
+		caps |= CRGPU_FORMAT_CAPABILITY_FILTERED;
+	if (letters & CAP_W)
+		caps |= CRGPU_FORMAT_CAPABILITY_STORAGE;
+	if (letters & CAP_C)
+		caps |= CRGPU_FORMAT_CAPABILITY_COLOR_ATTACHMENT;
+	if (letters & CAP_B)
+		caps |= CRGPU_FORMAT_CAPABILITY_BLEND;
+	// Every Metal 3 GPU has Depth16Unorm, Depth32Float and
+	// Depth32Float_Stencil8.
+	if (info->aspects & CRGPU_IMAGE_ASPECT_DEPTH)
+		caps |= CRGPU_FORMAT_CAPABILITY_DEPTH_STENCIL_ATTACHMENT;
+	// Read-write textures: Tier 1 is R32Float, R32Uint and R32Sint; Tier 2
+	// adds the RGBA32, RGBA16, RGBA8 and R16 and R8 formats below.
+	bool read_write = false;
+	switch (info->pixel) {
+	case MTLPixelFormatR32Float:
+	case MTLPixelFormatR32Uint:
+	case MTLPixelFormatR32Sint:
+		read_write = device.readWriteTextureSupport >= MTLReadWriteTextureTier1;
+		break;
+	case MTLPixelFormatRGBA32Float:
+	case MTLPixelFormatRGBA32Uint:
+	case MTLPixelFormatRGBA32Sint:
+	case MTLPixelFormatRGBA16Float:
+	case MTLPixelFormatRGBA16Uint:
+	case MTLPixelFormatRGBA16Sint:
+	case MTLPixelFormatRGBA8Unorm:
+	case MTLPixelFormatRGBA8Uint:
+	case MTLPixelFormatRGBA8Sint:
+	case MTLPixelFormatR16Float:
+	case MTLPixelFormatR16Uint:
+	case MTLPixelFormatR16Sint:
+	case MTLPixelFormatR8Unorm:
+	case MTLPixelFormatR8Uint:
+	case MTLPixelFormatR8Sint:
+		read_write = device.readWriteTextureSupport >= MTLReadWriteTextureTier2;
+		break;
+	default:
+		break;
+	}
+	if (read_write && (letters & CAP_W))
+		caps |= CRGPU_FORMAT_CAPABILITY_STORAGE_READ;
+	return caps;
+}
+
+#undef CAP_F
+#undef CAP_W
+#undef CAP_C
+#undef CAP_B
+#undef CAP_ALL
+#undef CAP_WC
+
 // A format with no entry: a color format Metal has nothing for here.
 static const crgpumetal_format_info crgpumetal___no_format = {
     MTLPixelFormatInvalid, MTLPixelFormatInvalid, MTLVertexFormatInvalid, CRGPU_IMAGE_ASPECT_COLOR, false};

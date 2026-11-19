@@ -316,7 +316,7 @@ CR_RESULT crgpu_graphics_pipeline_create(
 		return CR_RESULT_GPU_INVALID_SHADER_STAGE;
 	if (desc->mesh_module && !(device->_features & CRGPU_FEATURE_MESH_SHADING))
 		return CR_RESULT_GPU_EXT_MESH_SHADING_NOT_SUPPORTED;
-	CR_RESULT outputs = crgpu___internal_check_pipeline_outputs(desc, device->_features);
+	CR_RESULT outputs = crgpu___internal_check_pipeline_outputs(desc, device->_features, &device->_adapter->_facts);
 	if (outputs != CR_SUCCESS)
 		return outputs;
 

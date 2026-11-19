@@ -443,7 +443,18 @@ GameInput and evdev builds were not run.
     (256 on D3D12, the block's bytes elsewhere), each later layer's start,
     and the buffer's range. The checks hand the backend the layout in rows
     of blocks, which Metal's bytes per row, D3D12's footprint and the copy
-    size are made from.
+    size are made from. Since card S52 (`crgpu_copy_rows_draft.h`,
+    approved and built on the Mac 2026-11-18; `CRGPU_DEVICE_TODO.md`,
+    S52), after the block's rules and before the offset: a
+    `buffer_row_length` above 0 of fewer blocks than the region's
+    (`CR_RESULT_GPU_COPY_ROW_LENGTH_TOO_SHORT`, 372), a
+    `buffer_image_height` above 0 of fewer rows of blocks
+    (`_IMAGE_HEIGHT_TOO_SHORT`, 373), and a copy of `depth` above 1 whose
+    image height is above its height (`_SLICE_PITCH_NOT_SUPPORTED`, 374:
+    D3D12's footprint has no slice pitch, so a 3D copy's slices are tight
+    in rows on every backend); and after the pitch's alignment, a row
+    pitch above 2^31 - 1 bytes (`CR_RESULT_DESC_INVALID_PARAMETERS`). 371
+    is held by card S49's draft.
   - A block format as a pipeline's colour or depth attachment, or a vertex
     attribute, is `CR_RESULT_GPU_INVALID_FORMAT`, beside the colour
     attachment checks. Blits never take one (the caller's rule, unchecked).
@@ -469,6 +480,70 @@ GameInput and evdev builds were not run.
     never reach the API (D3D12 writes its own default there). A `*_COLOR`
     factor in an alpha slot is that colour's alpha on every backend (D3D12
     writes the `*_ALPHA` twin).
+- **What an adapter can do with each format is read once and reported,
+  and blending into a format that can't blend is refused** (card S51,
+  0.4.0, `crgpu_format_capabilities_draft.h`, approved and built on the
+  Mac 2026-11-18; Vulkan type-checked, D3D12 written, not compiled;
+  `CRGPU_DEVICE_TODO.md`, S51).
+  - `crgpu_adapter_get_format_capabilities()`: nine bits (SAMPLED,
+    FILTERED, STORAGE, COLOR_ATTACHMENT, BLEND, DEPTH_STENCIL_ATTACHMENT,
+    VERTEX, COPY, STORAGE_READ), each the API's own answer for the native
+    format the backend makes for that use, read when the instance lists
+    its adapters into a 161-slot table in the adapter's facts
+    (`crgpu___internal_format_index()`: the value up to 132, ASTC's at 133
+    to 160). Vulkan: `VkFormatProperties3`, optimal tiling, the buffer's
+    for VERTEX. D3D12: `CheckFeatureSupport(FORMAT_SUPPORT)` on the probe
+    device, SAMPLED and FILTERED of the SRV format. Metal: Apple's "Metal
+    Feature Set Tables", the edition dated October 23, 2026 (pages 11 to
+    15), transcribed in `crgpumetalformat.m` by family (Apple7 to Apple10;
+    the edition has no Mac2 column, and its note 1 gives every Metal 3 GPU
+    the Apple7 column at least), the device's own property where it has
+    one (BC, ASTC, 32-bit float filtering, the read-write tier).
+  - What every backend masks the same way is in `crgpushared.c`: a
+    TYPELESS format, one a backend makes as another (A8_UNORM,
+    B8G8R8X8_UNORM and _SRGB) and a video or palette format report COPY at
+    most; no COPY without a texel block or for the depth-stencil family
+    (two aspects, which no copy desc names). An unnamed value or UNKNOWN is
+    `CR_RESULT_GPU_INVALID_FORMAT`.
+  - A graphics pipeline whose enabled blend attachment's format lacks
+    BLEND on the device's adapter is `CR_RESULT_GPU_INVALID_FORMAT`,
+    checked last in `crgpu___internal_check_pipeline_outputs()` (which
+    takes the adapter's facts). Nothing else is refused by the table yet
+    (the draft's Q6, a card of its own).
+  - Vulkan mapped B5G6R5, B5G5R5A1 and B4G4R4A4 to the channel-reversed
+    `_PACK16` formats; they are `R5G6B5`, `A1R5G5B5` and `A4R4G4B4` now,
+    DXGI's layout.
+- **Indirect dispatch: a compute dispatch whose group counts the GPU
+  reads from a buffer** (card A15, 0.4.0, `crgpu_dispatch_indirect_draft.h`,
+  approved 2026-11-18, its compute half built on the Mac the same day;
+  Vulkan type-checked, D3D12 written, not compiled; `CRGPU_DEVICE_TODO.md`,
+  "Indirect dispatch").
+  - `crgpu_command_list_dispatch_indirect(cmd, buffer, offset)` returns a
+    result and reads a frozen 12-byte `crgpu_dispatch_indirect_args`. Its
+    checks are written once (`crgpu___internal_check_dispatch_indirect`,
+    `crgpushared.c`), after the list's and the buffer's null and stale
+    checks: a COPY or BUNDLE list (`CR_RESULT_GPU_INVALID_COMMAND_LIST_TYPE`),
+    a pass open (`_COMMAND_INSIDE_RENDERING`, 375), no
+    `CRGPU_BUFFER_USAGE_INDIRECT` (`_INVALID_BUFFER_USAGE`), an offset not
+    a multiple of 4 (`_INDIRECT_OFFSET_ALIGNMENT`, 377), the 12 bytes not
+    within the buffer (`_INDIRECT_RANGE`, 378). 376 is held for the mesh
+    call, not built.
+  - The counts are the caller's to keep: each at most 65535 for compute,
+    and for a mesh dispatch each at most 65535 with their product at most
+    1024 (every Metal 3 GPU's mesh grid, Apple's feature set tables'
+    Apple7 column; 2^22 on Vulkan and D3D12). A 0 dispatches nothing.
+    Carrottus GPU never reads, clamps or rewrites them.
+  - What a dispatch reads is stated once on `crgpu_command_list_dispatch()`:
+    the compute pipeline, sets and push constants recorded since the last
+    begin, pass, copy, blit or clear outside a pass, debug label,
+    acceleration structure command or graphics pipeline bind (Metal ends
+    its compute encoder at each, D3D12 shares one pipeline slot); unchecked.
+  - D3D12's DISPATCH command signature is made with the device, beside the
+    tightly packed draw ones. Metal takes the threadgroup size from the
+    bound pipeline's module. The mesh call
+    (`crgpu_command_list_dispatch_mesh_indirect()`) is stopped: Metal has
+    indirect mesh draws from Apple9 only, and every Metal adapter reports
+    `CRGPU_FEATURE_MESH_SHADING`.
 - **Native escape hatches are interop-only.** `crgpu_vulkan_natives.h` /
   `_d3d12_natives.h` / `_metal_natives.h` unwrap a handle back to its raw native type
   (`VkInstance`, `ID3D12Device14`, ...) for third-party libraries Carrottus doesn't wrap
@@ -1130,6 +1205,18 @@ evening on the Mac (Known gaps below, `CRGPU_DEVICE_TODO.md`).
   and wireframe are written and not run. A command list's command buffer is taken
   inside an autorelease pool of the backend's own, so a caller that is plain C with
   no run loop works; before, such a caller hung at its 65th command list.
+  **Nothing the backend autoreleases may outlive the call that made it, and a
+  recording that is not submitted is let go of** (card S53, 2026-11-18): a
+  command buffer never committed holds its place in its queue (64 at once)
+  until it is deallocated, so every encoder is made inside a pool of the
+  backend's own and retained there, a list takes its buffer at each begin
+  (none when created), and a list's recording (any open encoder ended,
+  then the buffer released, never committed) is dropped when the list is
+  begun again, its allocator reset or the list destroyed.
+  Before, encoders autoreleased into a pool a plain C caller never drains
+  kept every recorded, unsubmitted buffer, and `-commandBuffer` blocked for
+  good. Any new Objective-C call that returns an autoreleased object (an
+  encoder above all) goes inside an `@autoreleasepool` of its own.
 
 ## Build system
 
@@ -1223,7 +1310,10 @@ evening on the Mac (Known gaps below, `CRGPU_DEVICE_TODO.md`).
   or the other calls.
 - An indirect draw's `stride` is a multiple of 4 and at least the size of
   its args struct, on every backend (Vulkan's rule); otherwise nothing is
-  recorded. A larger stride skips the caller's data between entries. Until
+  recorded. The draws check neither `CRGPU_BUFFER_USAGE_INDIRECT`, nor the
+  offset's multiple of 4, nor the entries' range, and return nothing: a
+  card (`crgpu_dispatch_indirect_draft.h`, "Found in the code" 4), to take
+  the indirect dispatch's checks and result. A larger stride skips the caller's data between entries. Until
   2026-10-16 D3D12 ignored `stride`: its one cached command signature fixed
   `ByteStride` at the args size. It now keeps a signature per stride and
   kind on the device: the two tightly packed ones made with the device (so

@@ -2109,6 +2109,15 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crgpu_adapter dead = dead_crgpu_adapter();
 		if (dead) {
+			expect_refused("crgpu_adapter_get_format_capabilities", crgpu_adapter_get_format_capabilities(dead, (CRGPU_FORMAT){0}, (CRGPU_FORMAT_CAPABILITIES *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_adapter dead = dead_crgpu_adapter();
+		if (dead) {
 			expect_refused("crgpu_adapter_get_properties", crgpu_adapter_get_properties(dead, (CRGPU_ADAPTER_PROPERTIES *){0}));
 			calls++;
 		} else {
@@ -2548,6 +2557,15 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 		if (dead) {
 			crgpu_command_list_dispatch(dead, (uint32_t){0}, (uint32_t){0}, (uint32_t){0});
 			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crgpu_command_list dead = dead_crgpu_command_list();
+		if (dead) {
+			expect_refused("crgpu_command_list_dispatch_indirect", crgpu_command_list_dispatch_indirect(dead, (crgpu_buffer){0}, (uint64_t){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -4280,6 +4298,8 @@ int main(void)
 	calls++;
 	expect_error("crgpu_adapter_enumerate", crgpu_adapter_enumerate((crgpu_instance){0}, (const crgpu_adapter **){0}, (uint32_t *){0}));
 	calls++;
+	expect_error("crgpu_adapter_get_format_capabilities", crgpu_adapter_get_format_capabilities((crgpu_adapter){0}, (CRGPU_FORMAT){0}, (CRGPU_FORMAT_CAPABILITIES *){0}));
+	calls++;
 	expect_error("crgpu_adapter_get_properties", crgpu_adapter_get_properties((crgpu_adapter){0}, (CRGPU_ADAPTER_PROPERTIES *){0}));
 	calls++;
 	expect_error("crgpu_adapter_supports_surface", crgpu_adapter_supports_surface((crgpu_adapter){0}, (crgpu_surface){0}, (bool *){0}));
@@ -4411,6 +4431,8 @@ int main(void)
 	calls++;
 	crgpu_command_list_dispatch((crgpu_command_list){0}, (uint32_t){0}, (uint32_t){0}, (uint32_t){0});
 	unchecked++;
+	calls++;
+	expect_error("crgpu_command_list_dispatch_indirect", crgpu_command_list_dispatch_indirect((crgpu_command_list){0}, (crgpu_buffer){0}, (uint64_t){0}));
 	calls++;
 	crgpu_command_list_dispatch_mesh((crgpu_command_list){0}, (uint32_t){0}, (uint32_t){0}, (uint32_t){0});
 	unchecked++;

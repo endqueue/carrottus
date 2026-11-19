@@ -80,11 +80,17 @@ CR_RESULT crgpu___internal_check_shader_module_desc(
  * CR_RESULT_GPU_INDEPENDENT_BLEND_NOT_SUPPORTED,
  * CR_RESULT_GPU_FEATURE_NOT_SUPPORTED (an SRC1 factor without
  * CRGPU_FEATURE_DUAL_SOURCE_BLEND), CR_RESULT_GPU_TOO_MANY_COLOR_ATTACHMENTS
- * (an SRC1 factor with more than one attachment). So a backend translates
- * only values of the enums. [features] are the device's. */
+ * (an SRC1 factor with more than one attachment), and last
+ * CR_RESULT_GPU_INVALID_FORMAT again (card S51: an enabled blend
+ * attachment, in index order, whose format lacks
+ * CRGPU_FORMAT_CAPABILITY_BLEND in [adapter]). So a backend translates
+ * only values of the enums. [features] are the device's, [adapter] the
+ * facts of the adapter it was made on. */
+struct crgpu___adapter_facts;
 CR_RESULT crgpu___internal_check_pipeline_outputs(
     const crgpu_graphics_pipeline_desc *desc,
-    CRGPU_FEATURES features);
+    CRGPU_FEATURES features,
+    const struct crgpu___adapter_facts *adapter);
 
 /* Whether [factor] is one of the four that read the fragment's second
  * output (CRGPU_BLEND_FACTOR_SRC1_COLOR to _ONE_MINUS_SRC1_ALPHA). */
@@ -99,6 +105,28 @@ bool crgpu___internal_blend_attachments_equal(
 /* ---------------------------------------------------------------------------
  * Adapters and devices
  * ------------------------------------------------------------------------ */
+
+/* Card S51: the slots of an adapter's format table. A named format's slot
+ * is its value from 1 to CRGPU_FORMAT_V408 (132; 116 to 129 and 0 are
+ * never used), and 133 to 160 for ASTC's 1000 to 1027, as crgpuformat.c's
+ * texel-block table is split. */
+#define CRGPU___FORMAT_SLOTS 161
+
+/* [fmt]'s slot in an adapter's format table, or -1 for UNKNOWN and every
+ * value CRGPU_FORMAT doesn't name. Reads nothing: any thread. */
+int32_t crgpu___internal_format_index(CRGPU_FORMAT fmt);
+
+/* Whether [fmt]'s use differs by backend (card S51, Q3): a TYPELESS format,
+ * one a backend makes as another (A8_UNORM, B8G8R8X8_UNORM and _SRGB), or a
+ * video or palette format (the packed 4:2:2 ones, the planar ones, AYUV,
+ * Y410, Y416, AI44, IA44, P8, A8P8). Such a format reports COPY at most. */
+bool crgpu___internal_format_differs_by_backend(CRGPU_FORMAT fmt);
+
+/* Whether [fmt] is of the combined depth-stencil family (the two
+ * depth-stencil formats, their TYPELESS resource formats and their four
+ * view formats): an image of one has two aspects on some backend, and a
+ * buffer-image copy names none, so it never reports COPY. */
+bool crgpu___internal_format_two_aspects(CRGPU_FORMAT fmt);
 
 /* What every backend keeps of an adapter: its properties as
  * crgpu_adapter_get_properties() hands them out (base set to its own type,
@@ -119,6 +147,11 @@ typedef struct crgpu___adapter_facts {
 	uint64_t ray_query_max_primitives;
 	uint32_t ray_query_scratch_offset_alignment;
 	uint32_t ray_query_placement_alignment;
+	// Card S51: each named format's CRGPU_FORMAT_CAPABILITIES as the
+	// backend read them from the graphics API, at
+	// crgpu___internal_format_index(); unmasked (what every backend masks
+	// the same way is crgpu___internal_format_capabilities()'s).
+	uint16_t format_capabilities[CRGPU___FORMAT_SLOTS];
 } crgpu___adapter_facts;
 
 /* The block-format checks of crgpu_image_create()'s desc (card S48), the same
@@ -155,9 +188,13 @@ typedef struct crgpu___copy_layout {
  * copy's: CR_RESULT_GPU_INVALID_FORMAT (no texel block), the usages in
  * parameter order (CR_RESULT_GPU_INVALID_BUFFER_USAGE,
  * CR_RESULT_GPU_INVALID_IMAGE_USAGE), then CR_RESULT_DESC_INVALID_PARAMETERS
- * for the region (level, layers, sizes, extent, the block's rules, the
- * offset against [offset_alignment], the row pitch against
- * [row_pitch_alignment], each later layer's start, the buffer's range). The
+ * for the region (level, layers, sizes, extent, the block's rules), then
+ * (card S52) CR_RESULT_GPU_COPY_ROW_LENGTH_TOO_SHORT,
+ * CR_RESULT_GPU_COPY_IMAGE_HEIGHT_TOO_SHORT and
+ * CR_RESULT_GPU_COPY_SLICE_PITCH_NOT_SUPPORTED, then
+ * CR_RESULT_DESC_INVALID_PARAMETERS again for the offset against
+ * [offset_alignment], the row pitch against [row_pitch_alignment] and
+ * above 2^31 - 1 bytes, each later layer's start, the buffer's range. The
  * two alignments are the backend's for the image's format (what its
  * crgpu_image_get_buffer_copy_offset_alignment() and
  * crgpu_image_get_buffer_copy_row_pitch_alignment() give), read only once
@@ -192,6 +229,24 @@ void crgpu___internal_tight_copy_size(
 CR_RESULT crgpu___internal_check_image_size(
     const CRGPU_ADAPTER_PROPERTIES *limits,
     const crgpu_image_desc *desc);
+
+/* [fmt]'s CRGPU_FORMAT_CAPABILITIES on the adapter of [facts] (card S51),
+ * the same masks on every backend: 0 for a value no slot holds; COPY at
+ * most for a format whose use differs by backend; no COPY for a format with
+ * no texel block or with two aspects. */
+CRGPU_FORMAT_CAPABILITIES crgpu___internal_format_capabilities(
+    const crgpu___adapter_facts *facts,
+    CRGPU_FORMAT fmt);
+
+/* crgpu_adapter_get_format_capabilities() after its adapter checks, the
+ * same on every backend: CR_RESULT_GPU_INVALID_FORMAT (UNKNOWN, or a value
+ * CRGPU_FORMAT doesn't name), CR_RESULT_NULL_OUTPUT_PARAMETER, then
+ * *out_flags written from crgpu___internal_format_capabilities(); nothing
+ * written on a refusal. */
+CR_RESULT crgpu___internal_get_format_capabilities(
+    const crgpu___adapter_facts *facts,
+    CRGPU_FORMAT format,
+    CRGPU_FORMAT_CAPABILITIES *out_flags);
 
 /* crgpu_adapter_get_properties() after its adapter check, the same on
  * every backend: CR_RESULT_NULL_OUTPUT_PARAMETER, the base's type, then the
@@ -385,6 +440,17 @@ CR_RESULT crgpu___internal_check_acceleration_structure_inputs(
  * or a bundle) and whether a rendering pass is open
  * (CR_RESULT_GPU_ACCELERATION_STRUCTURE_INSIDE_RENDERING). */
 CR_RESULT crgpu___internal_check_acceleration_structure_list(CRGPU_COMMAND_LIST_TYPE type, bool rendering);
+
+/* The checks of crgpu_command_list_dispatch_indirect() after its handles,
+ * in the header's order (card A15): the list's type (DIRECT or COMPUTE),
+ * no rendering pass open, the buffer's CRGPU_BUFFER_USAGE_INDIRECT, the
+ * offset a multiple of 4, and the 12 bytes from it within the buffer. No
+ * allocation. */
+CR_RESULT crgpu___internal_check_dispatch_indirect(
+    CRGPU_COMMAND_LIST_TYPE type,
+    bool rendering,
+    const crgpu_buffer_desc *buffer,
+    uint64_t offset);
 
 /* Room in [destination]'s geometry layouts for what a build of [inputs]
  * (which have passed their checks) records: CR_RESULT_OUT_OF_MEMORY when

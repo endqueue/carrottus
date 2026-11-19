@@ -247,12 +247,15 @@ typedef struct crgpu_command_allocator_t {
 	// persistent allocator/pool object the way Vulkan/D3D12 do. _parent_queue
 	// is that queue - resolved once from _desc.type at creation time (a
 	// borrowed reference into the device's cached queue families, not owned
-	// here) - and is what every crgpu_command_list_create/
-	// crgpu_command_list_begin call for lists made from this allocator
-	// pulls a fresh id<MTLCommandBuffer> from.
+	// here) - and is what every crgpu_command_list_begin call for lists made
+	// from this allocator pulls a fresh id<MTLCommandBuffer> from.
 	crgpu_device_metal *_parent_device;
 	crgpu_command_queue_metal *_parent_queue;
 	crgpu_command_allocator_desc _desc;
+	// The allocator's command lists, linked through their
+	// _next_in_allocator / _prev_in_allocator, so crgpu_command_allocator_reset
+	// drops each one's recording (crgpumetal___internal_drop_recording).
+	struct crgpu_command_list_t *_first_list;
 #if _DEBUG
 	// The list of this allocator that is open for recording, or NULL. One
 	// at a time on every backend (crgpu_command_list_begin): Metal has no
@@ -265,8 +268,19 @@ typedef struct crgpu_command_allocator_t {
 
 typedef struct crgpu_command_list_t {
 	cr_object_head head;
+	// The buffer the list records into, retained, never autoreleased (see
+	// crgpumetal___internal_acquire_command_buffer): taken at each
+	// crgpu_command_list_begin, nil before the first and after the
+	// allocator's reset. A buffer that is never committed holds its place
+	// in the queue for as long as anything references it, so the list lets
+	// go of its recording, ending any open encoder first and never
+	// committing it, when the list is begun again, its allocator reset or
+	// the list destroyed (crgpumetal___internal_drop_recording).
 	id<MTLCommandBuffer> _command_buffer_mtl;
 	crgpu_command_allocator_metal *_parent_allocator;
+	// Neighbours in _parent_allocator's _first_list.
+	struct crgpu_command_list_t *_next_in_allocator;
+	struct crgpu_command_list_t *_prev_in_allocator;
 
 	// Set by crgpu_command_list_begin_rendering, cleared by crgpu_command_list_end_rendering
 	// (crgpumetalrenderpass.m, not yet implemented) - all of
@@ -441,6 +455,15 @@ typedef struct crgpumetal_format_info {
 // with none (and any value out of range), one with every format Invalid,
 // the color aspect, and not presentable. Never NULL.
 const crgpumetal_format_info *crgpumetal___format_info(CRGPU_FORMAT format);
+
+// Defined in crgpumetalformat.m (card S51). [format]'s
+// CRGPU_FORMAT_CAPABILITIES on [device], as the backend makes it: Apple's
+// feature set tables transcribed there, by the GPU's family, with the
+// device's own answers where it has one. Unmasked (crgpushared.c masks what
+// every backend masks). Called when the instance lists its adapters.
+CRGPU_FORMAT_CAPABILITIES crgpumetal___format_capabilities(
+    id<MTLDevice> device,
+    CRGPU_FORMAT format);
 
 // Defined in crgpumetalcommand.m - ends and releases cmd_list_metal's
 // _active_compute_encoder if one is active, else a no-op. Shared with

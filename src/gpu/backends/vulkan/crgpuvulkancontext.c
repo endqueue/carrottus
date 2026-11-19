@@ -108,15 +108,21 @@ VkFormat convert_cr_to_vulkan_format(CRGPU_FORMAT format) {
         case CRGPU_FORMAT_G8R8_G8B8_UNORM: return VK_FORMAT_G8B8G8R8_422_UNORM;
 
         // ── BGR / swapchain formats ───────────────────────────────────────────
-        case CRGPU_FORMAT_B5G6R5_UNORM: return VK_FORMAT_B5G6R5_UNORM_PACK16;
-        case CRGPU_FORMAT_B5G5R5A1_UNORM: return VK_FORMAT_B5G5R5A1_UNORM_PACK16;
+        // DXGI names a packed format's components from the lowest bits (B5G6R5:
+        // blue in bits 0 to 4), Vulkan's _PACK16 names from the highest, so
+        // each of the three is the Vulkan format named the other way round
+        // (card S51): red where D3D12 has it, and the 5551 and 4444 alpha in
+        // the top bits. A4R4G4B4 is core in 1.3, its support optional, which
+        // crgpu_adapter_get_format_capabilities() reports.
+        case CRGPU_FORMAT_B5G6R5_UNORM: return VK_FORMAT_R5G6B5_UNORM_PACK16;
+        case CRGPU_FORMAT_B5G5R5A1_UNORM: return VK_FORMAT_A1R5G5B5_UNORM_PACK16;
         case CRGPU_FORMAT_B8G8R8A8_UNORM: return VK_FORMAT_B8G8R8A8_UNORM;
         case CRGPU_FORMAT_B8G8R8X8_UNORM: return VK_FORMAT_B8G8R8A8_UNORM; // X = ignored alpha; same bits
         case CRGPU_FORMAT_B8G8R8A8_TYPELESS: return VK_FORMAT_B8G8R8A8_UNORM;
         case CRGPU_FORMAT_B8G8R8A8_UNORM_SRGB: return VK_FORMAT_B8G8R8A8_SRGB;
         case CRGPU_FORMAT_B8G8R8X8_TYPELESS: return VK_FORMAT_B8G8R8A8_UNORM;
         case CRGPU_FORMAT_B8G8R8X8_UNORM_SRGB: return VK_FORMAT_B8G8R8A8_SRGB;
-        case CRGPU_FORMAT_B4G4R4A4_UNORM: return VK_FORMAT_B4G4R4A4_UNORM_PACK16;
+        case CRGPU_FORMAT_B4G4R4A4_UNORM: return VK_FORMAT_A4R4G4B4_UNORM_PACK16;
         case CRGPU_FORMAT_R10G10B10_XR_BIAS_A2_UNORM: return VK_FORMAT_UNDEFINED;
         // XR bias is display-only; no Vulkan match
 
@@ -360,6 +366,44 @@ static bool crgpuvulkan___read_queue_families(const CR_ALLOCATOR *allocator, crg
         *features |= CRGPU_FEATURE_PASS_TIMESTAMPS;
     CR_DELETE_ARRAY(allocator, VkQueueFamilyProperties, families, capacity);
     return true;
+}
+
+// [format]'s CRGPU_FORMAT_CAPABILITIES on [physicalDevice] (card S51), for
+// the VkFormat this backend makes of it: optimal tiling's features (every
+// image here is VK_IMAGE_TILING_OPTIMAL), and the buffer's for vertices,
+// through VkFormatProperties3 (core in 1.3) for the 64-bit storage bits.
+// Storage is the bit that holds whatever the shader declares: with and
+// without a format. 0 for a format this backend makes nothing of.
+// Unmasked (crgpushared.c masks what every backend masks).
+static CRGPU_FORMAT_CAPABILITIES crgpuvulkan___format_capabilities(VkPhysicalDevice physicalDevice, CRGPU_FORMAT format) {
+    const VkFormat vk = convert_cr_to_vulkan_format(format);
+    if (vk == VK_FORMAT_UNDEFINED) return 0;
+    VkFormatProperties3 properties3 = {0};
+    properties3.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3;
+    VkFormatProperties2 properties2 = {0};
+    properties2.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2;
+    properties2.pNext = &properties3;
+    vkGetPhysicalDeviceFormatProperties2(physicalDevice, vk, &properties2);
+    const VkFormatFeatureFlags2 tiling = properties3.optimalTilingFeatures;
+    const VkFormatFeatureFlags2 buffer = properties3.bufferFeatures;
+    CRGPU_FORMAT_CAPABILITIES caps = 0;
+    if (tiling & VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT) {
+        caps |= CRGPU_FORMAT_CAPABILITY_SAMPLED;
+        if (tiling & VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_LINEAR_BIT) caps |= CRGPU_FORMAT_CAPABILITY_FILTERED;
+    }
+    if ((tiling & VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT) && (tiling & VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT)) {
+        caps |= CRGPU_FORMAT_CAPABILITY_STORAGE;
+        if (tiling & VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT) caps |= CRGPU_FORMAT_CAPABILITY_STORAGE_READ;
+    }
+    if (tiling & VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT) {
+        caps |= CRGPU_FORMAT_CAPABILITY_COLOR_ATTACHMENT;
+        if (tiling & VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BLEND_BIT) caps |= CRGPU_FORMAT_CAPABILITY_BLEND;
+    }
+    if (tiling & VK_FORMAT_FEATURE_2_DEPTH_STENCIL_ATTACHMENT_BIT) caps |= CRGPU_FORMAT_CAPABILITY_DEPTH_STENCIL_ATTACHMENT;
+    if (buffer & VK_FORMAT_FEATURE_2_VERTEX_BUFFER_BIT) caps |= CRGPU_FORMAT_CAPABILITY_VERTEX;
+    if ((tiling & VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT) && (tiling & VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT))
+        caps |= CRGPU_FORMAT_CAPABILITY_COPY;
+    return caps;
 }
 
 // Fills in what [adapter] is and can do. False when the GPU can't have a
@@ -625,6 +669,12 @@ static bool crgpuvulkan___read_adapter_facts(
     }
 
     properties->supported_features = features;
+    // Each named format's capabilities (card S51), once.
+    for (uint32_t value = 0; value <= CRGPU_FORMAT_ASTC_12X12_UNORM_SRGB; value++) {
+        const int32_t slot = crgpu___internal_format_index((CRGPU_FORMAT) value);
+        if (slot >= 0)
+            facts->format_capabilities[slot] = (uint16_t) crgpuvulkan___format_capabilities(physicalDevice, (CRGPU_FORMAT) value);
+    }
     return true;
 }
 
@@ -830,6 +880,15 @@ CR_RESULT crgpu_adapter_get_properties(
     if (!adapter) return CR_RESULT_GPU_INVALID_ADAPTER;
     if (CR_STALE(adapter, "crgpu_adapter_get_properties", "adapter")) return CR_RESULT_GPU_INVALID_ADAPTER;
     return crgpu___internal_get_adapter_properties(&adapter->_facts, out_properties);
+}
+
+CR_RESULT crgpu_adapter_get_format_capabilities(
+    crgpu_adapter adapter,
+    CRGPU_FORMAT format,
+    CRGPU_FORMAT_CAPABILITIES *out_flags) {
+    if (!adapter) return CR_RESULT_GPU_INVALID_ADAPTER;
+    if (CR_STALE(adapter, "crgpu_adapter_get_format_capabilities", "adapter")) return CR_RESULT_GPU_INVALID_ADAPTER;
+    return crgpu___internal_get_format_capabilities(&adapter->_facts, format, out_flags);
 }
 
 CR_RESULT crgpu_adapter_supports_surface(
@@ -1140,9 +1199,14 @@ CR_RESULT crgpu_device_create(
             vkGetDeviceProcAddr(device->_logical_device_vk, "vkCmdBeginDebugUtilsLabelEXT");
         device->_vkCmdEndDebugUtilsLabelEXT = (PFN_vkCmdEndDebugUtilsLabelEXT)
             vkGetDeviceProcAddr(device->_logical_device_vk, "vkCmdEndDebugUtilsLabelEXT");
-        if (desc->required_features & CRGPU_FEATURE_MESH_SHADING)
+        if (desc->required_features & CRGPU_FEATURE_MESH_SHADING) {
             device->_vkCmdDrawMeshTasksEXT = (PFN_vkCmdDrawMeshTasksEXT)
                 vkGetDeviceProcAddr(device->_logical_device_vk, "vkCmdDrawMeshTasksEXT");
+            // A device made with VK_EXT_mesh_shader has it; a driver that
+            // broke that fails the device here, never a call.
+            if (!device->_vkCmdDrawMeshTasksEXT)
+                sr = CR_RESULT_API_SPECIFIC_FAILURE;
+        }
         if (desc->required_features & CRGPU_FEATURE_RAY_QUERY) {
             VkDevice vk = device->_logical_device_vk;
             device->_vkCreateAccelerationStructureKHR =

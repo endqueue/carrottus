@@ -128,24 +128,48 @@ static crgpu_command_queue_metal *crgpumetal___internal_resolve_allocator_queue(
 	}
 }
 
+// Lets go of cmd_list_metal's recording: ends whichever encoder is open
+// and releases it, then releases the command buffer, never committing it
+// (that would run what was recorded). Called when the list is begun (it
+// takes a new buffer), its allocator reset and the list destroyed, so a
+// list holds a buffer only from its begin to the next of those: none for
+// being created or reset. A command buffer that is
+// never committed gives its place in the queue back only when it is
+// deallocated, and a queue hands out a fixed number at once
+// (maxCommandBufferCount, 64 by default), after which -commandBuffer blocks
+// for good; so nothing may keep a dropped recording's buffer: no encoder
+// left open (each holds its buffer) and no autoreleased reference (each
+// encoder is made in a pool of its own, as the buffer is in
+// crgpumetal___internal_acquire_command_buffer). Releasing a committed
+// buffer is safe too: Metal keeps it until it has run.
+static void crgpumetal___internal_drop_recording(crgpu_command_list_metal *cmd_list_metal) {
+	if (cmd_list_metal->_active_render_encoder) {
+		[cmd_list_metal->_active_render_encoder endEncoding];
+		[cmd_list_metal->_active_render_encoder release];
+		cmd_list_metal->_active_render_encoder = nil;
+	}
+	crgpumetal___internal_end_active_compute_encoder(cmd_list_metal);
+	crgpumetal___internal_end_active_blit_encoder(cmd_list_metal);
+	[cmd_list_metal->_command_buffer_mtl release];
+	cmd_list_metal->_command_buffer_mtl = nil;
+}
+
 // Pulls a fresh id<MTLCommandBuffer> for cmd_list_metal from its allocator's
-// queue, releasing whatever buffer it already held. Metal command buffers are
-// single-use - once committed they can't be reset and re-recorded the way a
-// VkCommandBuffer or ID3D12GraphicsCommandList can - so this is what backs
-// both crgpu_command_list_create's initial buffer and every subsequent
-// crgpu_command_list_begin call that reuses the same public handle across
-// frames. -commandBuffer returns an autoreleased object (unlike -newCommandQueue),
-// so it must be retained to survive past the current autorelease pool.
+// queue at crgpu_command_list_begin; the list holds none
+// (crgpumetal___internal_drop_recording). Metal command buffers are
+// single-use - once committed they can't be reset and re-recorded the way
+// a VkCommandBuffer or ID3D12GraphicsCommandList can. Taken at the begin,
+// not at the list's creation: an uncommitted buffer holds its place in the
+// queue, so a list that held one while idle would count against the
+// queue's fixed number for as long as it lived. -commandBuffer returns an
+// autoreleased object (unlike -newCommandQueue), so it is retained.
 //
 // The pool here is drained before this returns, which leaves the retain
-// above as the buffer's only reference. Without it the autoreleased
-// reference waits for a pool of the caller's, and a caller that is plain C
-// with no run loop has none that ever drains: a buffer released without
-// being committed (the initial one of every command list, replaced at its
-// first begin) would then never be deallocated, and a buffer that is never
-// committed only gives its place back to the queue when it is. A queue
-// hands out a fixed number at once, so after that many -commandBuffer
-// blocks for good.
+// as the buffer's only reference. Without it the autoreleased reference
+// waits for a pool of the caller's, and a caller that is plain C with no
+// run loop has none that ever drains: a buffer released without being
+// committed would then never be deallocated, and so never give its place
+// in the queue back (crgpumetal___internal_drop_recording).
 static void crgpumetal___internal_acquire_command_buffer(
     crgpu_command_list_metal *cmd_list_metal) {
 	crgpu_command_allocator_metal *allocator_metal = cmd_list_metal->_parent_allocator;
@@ -155,9 +179,6 @@ static void crgpumetal___internal_acquire_command_buffer(
 	if (!queue_mtl)
 		return;
 
-	if (cmd_list_metal->_command_buffer_mtl) {
-		[cmd_list_metal->_command_buffer_mtl release];
-	}
 	@autoreleasepool {
 		cmd_list_metal->_command_buffer_mtl = [[queue_mtl commandBuffer] retain];
 	}
@@ -222,10 +243,14 @@ CR_RESULT crgpu_command_allocator_reset(crgpu_command_allocator allocator) {
 	       "crgpu_command_allocator_reset: a list of this allocator is still open");
 #endif
 
-	// Nothing to reset: this allocator holds no pooled Metal object of its
-	// own (see crgpu_command_allocator_metal in crgpumetal.h) - every
-	// command list pulls a brand new id<MTLCommandBuffer> from the queue on
-	// creation and on every crgpu_command_list_begin instead.
+	// This allocator holds no pooled Metal object of its own (see
+	// crgpu_command_allocator_metal in crgpumetal.h). A recording made
+	// before the reset is never submitted after it (crgpu.h), so each of
+	// its lists lets go of its buffer, committed or not; its next begin
+	// takes a new one.
+	for (crgpu_command_list_metal *list = ((crgpu_command_allocator_metal *)allocator)->_first_list; list;
+	     list = list->_next_in_allocator)
+		crgpumetal___internal_drop_recording(list);
 
 	return CR_SUCCESS;
 }
@@ -278,7 +303,14 @@ CR_RESULT crgpu_command_list_create(
 		sr = CR_RESULT_OUT_OF_MEMORY;
 		goto failedattempt;
 	}
-	crgpumetal___internal_acquire_command_buffer(cmd_list_metal);
+	// No command buffer until the list is begun.
+	{
+		crgpu_command_allocator_metal *allocator_metal = cmd_list_metal->_parent_allocator;
+		cmd_list_metal->_next_in_allocator = allocator_metal->_first_list;
+		if (allocator_metal->_first_list)
+			allocator_metal->_first_list->_prev_in_allocator = cmd_list_metal;
+		allocator_metal->_first_list = cmd_list_metal;
+	}
 
 	CRGPU___LIVE_ADD(&cmd_list_metal->_parent_allocator->_parent_device->_live, CRGPU___OBJECT_COMMAND_LIST);
 	*out_cmd_list = (crgpu_command_list)cmd_list_metal;
@@ -294,8 +326,15 @@ void crgpu_command_list_destroy(crgpu_command_list cmd) {
 	if (cmd_list_metal) {
 		if (CR_STALE(cmd, "crgpu_command_list_destroy", "cmd"))
 			return;
-		if (cmd_list_metal->_command_buffer_mtl) {
-			[cmd_list_metal->_command_buffer_mtl release];
+		crgpumetal___internal_drop_recording(cmd_list_metal);
+		{
+			crgpu_command_allocator_metal *allocator_metal = cmd_list_metal->_parent_allocator;
+			if (cmd_list_metal->_prev_in_allocator)
+				cmd_list_metal->_prev_in_allocator->_next_in_allocator = cmd_list_metal->_next_in_allocator;
+			else
+				allocator_metal->_first_list = cmd_list_metal->_next_in_allocator;
+			if (cmd_list_metal->_next_in_allocator)
+				cmd_list_metal->_next_in_allocator->_prev_in_allocator = cmd_list_metal->_prev_in_allocator;
 		}
 		[cmd_list_metal->_pass_desc_mtl release];
 		[cmd_list_metal->_rq_top_desc_mtl release];
@@ -332,6 +371,9 @@ void crgpu_command_list_begin(crgpu_command_list cmd) {
 #endif
 	// A recording starts with nothing pushed, as a Vulkan command buffer does.
 	cmd_list_metal->_push_constants_pending_stages = 0;
+	// The last recording, submitted or not, is let go of, and a new
+	// buffer taken.
+	crgpumetal___internal_drop_recording(cmd_list_metal);
 	crgpumetal___internal_acquire_command_buffer(cmd_list_metal);
 }
 
@@ -429,8 +471,13 @@ static id<MTLComputeCommandEncoder> crgpumetal___internal_ensure_compute_encoder
 	}
 	crgpumetal___internal_end_active_blit_encoder(cmd_list_metal);
 
-	id<MTLComputeCommandEncoder> encoder = [cmd_list_metal->_command_buffer_mtl computeCommandEncoder];
-	cmd_list_metal->_active_compute_encoder = [encoder retain];
+	// Made in a pool of its own and retained inside it: the autoreleased
+	// reference (which keeps the encoder, and the encoder its command
+	// buffer) is gone when this returns, whether or not the caller has a
+	// pool that ever drains (crgpumetal___internal_drop_recording).
+	@autoreleasepool {
+		cmd_list_metal->_active_compute_encoder = [[cmd_list_metal->_command_buffer_mtl computeCommandEncoder] retain];
+	}
 	return cmd_list_metal->_active_compute_encoder;
 }
 
@@ -936,6 +983,46 @@ void crgpu_command_list_dispatch(
 	                                          threadsPerThreadgroup:threads_per_threadgroup];
 }
 
+// MTLDispatchThreadgroupsIndirectArguments is the 12 bytes the call reads.
+static_assert(sizeof(MTLDispatchThreadgroupsIndirectArguments) == sizeof(crgpu_dispatch_indirect_args),
+              "crgpu_dispatch_indirect_args is MTLDispatchThreadgroupsIndirectArguments");
+
+CR_RESULT crgpu_command_list_dispatch_indirect(
+    crgpu_command_list cmd,
+    crgpu_buffer buffer,
+    uint64_t offset) {
+	if (!cmd)
+		return CR_RESULT_GPU_INVALID_COMMAND_LIST;
+	if (CR_STALE(cmd, "crgpu_command_list_dispatch_indirect", "cmd"))
+		return CR_RESULT_GPU_INVALID_COMMAND_LIST;
+	if (!buffer)
+		return CR_RESULT_GPU_INVALID_BUFFER;
+	if (CR_STALE(buffer, "crgpu_command_list_dispatch_indirect", "buffer"))
+		return CR_RESULT_GPU_INVALID_BUFFER;
+	crgpu_command_list_metal *cmd_list_metal = (crgpu_command_list_metal *)cmd;
+	crgpu_buffer_metal *buffer_metal         = (crgpu_buffer_metal *)buffer;
+	const CR_RESULT checked                  = crgpu___internal_check_dispatch_indirect(
+	    cmd_list_metal->_parent_allocator->_desc.type, cmd_list_metal->_active_render_encoder != nil, &buffer_metal->_desc, offset);
+	if (checked != CR_SUCCESS)
+		return checked;
+
+	// The bound state the dispatch reads is crgpu.h's rule (at
+	// crgpu_command_list_dispatch()); with no encoder or no pipeline it is
+	// broken, and what the dispatch does is undefined: here, nothing.
+	crgpu_compute_pipeline_metal *pipeline_metal =
+	    (crgpu_compute_pipeline_metal *)cmd_list_metal->_bound_compute_pipeline;
+	if (!cmd_list_metal->_active_compute_encoder || !pipeline_metal)
+		return CR_SUCCESS;
+	// Metal takes the threadgroup's size at the call: the module's
+	// workgroup_size, which module creation refuses as 0.
+	const MTLSize threads_per_threadgroup =
+	    MTLSizeMake(pipeline_metal->_local_size_x, pipeline_metal->_local_size_y, pipeline_metal->_local_size_z);
+	[cmd_list_metal->_active_compute_encoder dispatchThreadgroupsWithIndirectBuffer:buffer_metal->_buffer_mtl
+	                                                         indirectBufferOffset:offset
+	                                                        threadsPerThreadgroup:threads_per_threadgroup];
+	return CR_SUCCESS;
+}
+
 #if CRGPU_EXT_MESH_SHADING
 void crgpu_command_list_dispatch_mesh(
     crgpu_command_list cmd,
@@ -1278,10 +1365,14 @@ void crgpu_command_queue_wait_idle(crgpu_command_queue queue) {
 	// empty buffer and block on it. Buffers committed to one queue execute in
 	// commit order, so this buffer's completion implies every buffer
 	// committed before it on this queue has also completed.
+	// The buffer is autoreleased; a pool of its own frees it here, as
+	// crgpumetal___internal_acquire_command_buffer's does.
 	crgpumetal___queue_enter(queue_metal);
-	id<MTLCommandBuffer> idle_buffer = [queue_metal->_command_queue_mtl commandBuffer];
-	[idle_buffer commit];
-	[idle_buffer waitUntilCompleted];
+	@autoreleasepool {
+		id<MTLCommandBuffer> idle_buffer = [queue_metal->_command_queue_mtl commandBuffer];
+		[idle_buffer commit];
+		[idle_buffer waitUntilCompleted];
+	}
 	crgpumetal___queue_leave(queue_metal);
 }
 

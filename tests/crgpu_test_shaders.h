@@ -16,6 +16,9 @@
 #include "crgpu_test_objects_draw_mesh.spv.inc"
 #include "crgpu_test_objects_double_comp.spv.inc"
 #include "crgpu_test_objects_first_use_comp.spv.inc"
+#include "crgpu_test_objects_dispatch_ids_comp.spv.inc"
+#include "crgpu_test_objects_dispatch_args_comp.spv.inc"
+#include "crgpu_test_objects_dispatch_count_comp.spv.inc"
 #include "crgpu_test_rq_trace.spv.inc"
 #include "crgpu_test_rq_shadow.spv.inc"
 #include "crgpu_test_rq_shadow_vert.spv.inc"
@@ -32,6 +35,26 @@
 #include "crgpu_test_bindings_extra_comp.spv.inc"
 #include "crgpu_test_bindings_type_comp.spv.inc"
 #include "crgpu_test_bindings_none_comp.spv.inc"
+#include "crgpu_test_objects_caps_load_float_comp.spv.inc"
+#include "crgpu_test_objects_caps_load_uint_comp.spv.inc"
+#include "crgpu_test_objects_caps_load_sint_comp.spv.inc"
+#include "crgpu_test_objects_caps_sample_comp.spv.inc"
+#include "crgpu_test_objects_caps_store_float_comp.spv.inc"
+#include "crgpu_test_objects_caps_store_uint_comp.spv.inc"
+#include "crgpu_test_objects_caps_store_sint_comp.spv.inc"
+#include "crgpu_test_objects_caps_rw_float_comp.spv.inc"
+#include "crgpu_test_objects_caps_rw_uint_comp.spv.inc"
+#include "crgpu_test_objects_caps_rw_sint_comp.spv.inc"
+#include "crgpu_test_objects_caps_vert.spv.inc"
+#include "crgpu_test_objects_caps_color_float_frag.spv.inc"
+#include "crgpu_test_objects_caps_color_uint_frag.spv.inc"
+#include "crgpu_test_objects_caps_color_sint_frag.spv.inc"
+#include "crgpu_test_objects_caps_vertex_float_vert.spv.inc"
+#include "crgpu_test_objects_caps_vertex_uint_vert.spv.inc"
+#include "crgpu_test_objects_caps_vertex_sint_vert.spv.inc"
+#include "crgpu_test_objects_caps_vertex_float_frag.spv.inc"
+#include "crgpu_test_objects_caps_vertex_uint_frag.spv.inc"
+#include "crgpu_test_objects_caps_vertex_sint_frag.spv.inc"
 #if CARROTTUS_TEST_SHADERS_DXIL
 #include "crgpu_test_objects_draw_vert.dxil.inc"
 #include "crgpu_test_objects_draw_frag.dxil.inc"
@@ -39,6 +62,9 @@
 #include "crgpu_test_objects_draw_mesh.dxil.inc"
 #include "crgpu_test_objects_double_comp.dxil.inc"
 #include "crgpu_test_objects_first_use_comp.dxil.inc"
+#include "crgpu_test_objects_dispatch_ids_comp.dxil.inc"
+#include "crgpu_test_objects_dispatch_args_comp.dxil.inc"
+#include "crgpu_test_objects_dispatch_count_comp.dxil.inc"
 #include "crgpu_test_rq_trace.dxil.inc"
 #include "crgpu_test_rq_shadow.dxil.inc"
 #include "crgpu_test_rq_shadow_vert.dxil.inc"
@@ -55,6 +81,26 @@
 #include "crgpu_test_bindings_extra_comp.dxil.inc"
 #include "crgpu_test_bindings_type_comp.dxil.inc"
 #include "crgpu_test_bindings_none_comp.dxil.inc"
+#include "crgpu_test_objects_caps_load_float_comp.dxil.inc"
+#include "crgpu_test_objects_caps_load_uint_comp.dxil.inc"
+#include "crgpu_test_objects_caps_load_sint_comp.dxil.inc"
+#include "crgpu_test_objects_caps_sample_comp.dxil.inc"
+#include "crgpu_test_objects_caps_store_float_comp.dxil.inc"
+#include "crgpu_test_objects_caps_store_uint_comp.dxil.inc"
+#include "crgpu_test_objects_caps_store_sint_comp.dxil.inc"
+#include "crgpu_test_objects_caps_rw_float_comp.dxil.inc"
+#include "crgpu_test_objects_caps_rw_uint_comp.dxil.inc"
+#include "crgpu_test_objects_caps_rw_sint_comp.dxil.inc"
+#include "crgpu_test_objects_caps_vert.dxil.inc"
+#include "crgpu_test_objects_caps_color_float_frag.dxil.inc"
+#include "crgpu_test_objects_caps_color_uint_frag.dxil.inc"
+#include "crgpu_test_objects_caps_color_sint_frag.dxil.inc"
+#include "crgpu_test_objects_caps_vertex_float_vert.dxil.inc"
+#include "crgpu_test_objects_caps_vertex_uint_vert.dxil.inc"
+#include "crgpu_test_objects_caps_vertex_sint_vert.dxil.inc"
+#include "crgpu_test_objects_caps_vertex_float_frag.dxil.inc"
+#include "crgpu_test_objects_caps_vertex_uint_frag.dxil.inc"
+#include "crgpu_test_objects_caps_vertex_sint_frag.dxil.inc"
 #define CRGPU_TEST_DXIL(name) name##_dxil, name##_dxil_size
 #else
 #define CRGPU_TEST_DXIL(name) NULL, 0
@@ -66,6 +112,9 @@
 #include "crgpu_test_objects_draw_mesh.metallib.inc"
 #include "crgpu_test_objects_double_comp.metallib.inc"
 #include "crgpu_test_objects_first_use_comp.metallib.inc"
+#include "crgpu_test_objects_dispatch_ids_comp.metallib.inc"
+#include "crgpu_test_objects_dispatch_args_comp.metallib.inc"
+#include "crgpu_test_objects_dispatch_count_comp.metallib.inc"
 #include "crgpu_test_rq_trace.metallib.inc"
 #include "crgpu_test_rq_shadow.metallib.inc"
 #include "crgpu_test_rq_shadow_vert.metallib.inc"
@@ -82,6 +131,26 @@
 #include "crgpu_test_bindings_extra_comp.metallib.inc"
 #include "crgpu_test_bindings_type_comp.metallib.inc"
 #include "crgpu_test_bindings_none_comp.metallib.inc"
+#include "crgpu_test_objects_caps_load_float_comp.metallib.inc"
+#include "crgpu_test_objects_caps_load_uint_comp.metallib.inc"
+#include "crgpu_test_objects_caps_load_sint_comp.metallib.inc"
+#include "crgpu_test_objects_caps_sample_comp.metallib.inc"
+#include "crgpu_test_objects_caps_store_float_comp.metallib.inc"
+#include "crgpu_test_objects_caps_store_uint_comp.metallib.inc"
+#include "crgpu_test_objects_caps_store_sint_comp.metallib.inc"
+#include "crgpu_test_objects_caps_rw_float_comp.metallib.inc"
+#include "crgpu_test_objects_caps_rw_uint_comp.metallib.inc"
+#include "crgpu_test_objects_caps_rw_sint_comp.metallib.inc"
+#include "crgpu_test_objects_caps_vert.metallib.inc"
+#include "crgpu_test_objects_caps_color_float_frag.metallib.inc"
+#include "crgpu_test_objects_caps_color_uint_frag.metallib.inc"
+#include "crgpu_test_objects_caps_color_sint_frag.metallib.inc"
+#include "crgpu_test_objects_caps_vertex_float_vert.metallib.inc"
+#include "crgpu_test_objects_caps_vertex_uint_vert.metallib.inc"
+#include "crgpu_test_objects_caps_vertex_sint_vert.metallib.inc"
+#include "crgpu_test_objects_caps_vertex_float_frag.metallib.inc"
+#include "crgpu_test_objects_caps_vertex_uint_frag.metallib.inc"
+#include "crgpu_test_objects_caps_vertex_sint_frag.metallib.inc"
 #define CRGPU_TEST_METALLIB(name) name##_metallib, name##_metallib_size
 #else
 #define CRGPU_TEST_METALLIB(name) NULL, 0
@@ -116,6 +185,12 @@ static const crgpu_test_shader crgpu_test_objects_double_comp =
     CRGPU_TEST_SHADER(crgpu_test_objects_double_comp, "objects_double_comp", CRGPU_SHADER_STAGE_COMPUTE, 64, 1, 1);
 static const crgpu_test_shader crgpu_test_objects_first_use_comp =
     CRGPU_TEST_SHADER(crgpu_test_objects_first_use_comp, "objects_first_use_comp", CRGPU_SHADER_STAGE_COMPUTE, 8, 8, 1);
+static const crgpu_test_shader crgpu_test_objects_dispatch_ids_comp =
+    CRGPU_TEST_SHADER(crgpu_test_objects_dispatch_ids_comp, "objects_dispatch_ids_comp", CRGPU_SHADER_STAGE_COMPUTE, 1, 1, 1);
+static const crgpu_test_shader crgpu_test_objects_dispatch_args_comp =
+    CRGPU_TEST_SHADER(crgpu_test_objects_dispatch_args_comp, "objects_dispatch_args_comp", CRGPU_SHADER_STAGE_COMPUTE, 1, 1, 1);
+static const crgpu_test_shader crgpu_test_objects_dispatch_count_comp =
+    CRGPU_TEST_SHADER(crgpu_test_objects_dispatch_count_comp, "objects_dispatch_count_comp", CRGPU_SHADER_STAGE_COMPUTE, 1, 1, 1);
 static const crgpu_test_shader crgpu_test_rq_trace =
     CRGPU_TEST_SHADER(crgpu_test_rq_trace, "rq_trace", CRGPU_SHADER_STAGE_COMPUTE, 8, 8, 1);
 static const crgpu_test_shader crgpu_test_rq_shadow =
@@ -149,6 +224,47 @@ static const crgpu_test_shader crgpu_test_bindings_type_comp =
     CRGPU_TEST_SHADER(crgpu_test_bindings_type_comp, "bindings_type_comp", CRGPU_SHADER_STAGE_COMPUTE, 1, 1, 1);
 static const crgpu_test_shader crgpu_test_bindings_none_comp =
     CRGPU_TEST_SHADER(crgpu_test_bindings_none_comp, "bindings_none_comp", CRGPU_SHADER_STAGE_COMPUTE, 1, 1, 1);
+// Each format capability an adapter reports, used (card S51): crgpu_objects_test's test_format_capabilities.
+static const crgpu_test_shader crgpu_test_objects_caps_load_float_comp =
+    CRGPU_TEST_SHADER(crgpu_test_objects_caps_load_float_comp, "objects_caps_load_float_comp", CRGPU_SHADER_STAGE_COMPUTE, 4, 4, 1);
+static const crgpu_test_shader crgpu_test_objects_caps_load_uint_comp =
+    CRGPU_TEST_SHADER(crgpu_test_objects_caps_load_uint_comp, "objects_caps_load_uint_comp", CRGPU_SHADER_STAGE_COMPUTE, 4, 4, 1);
+static const crgpu_test_shader crgpu_test_objects_caps_load_sint_comp =
+    CRGPU_TEST_SHADER(crgpu_test_objects_caps_load_sint_comp, "objects_caps_load_sint_comp", CRGPU_SHADER_STAGE_COMPUTE, 4, 4, 1);
+static const crgpu_test_shader crgpu_test_objects_caps_sample_comp =
+    CRGPU_TEST_SHADER(crgpu_test_objects_caps_sample_comp, "objects_caps_sample_comp", CRGPU_SHADER_STAGE_COMPUTE, 1, 1, 1);
+static const crgpu_test_shader crgpu_test_objects_caps_store_float_comp =
+    CRGPU_TEST_SHADER(crgpu_test_objects_caps_store_float_comp, "objects_caps_store_float_comp", CRGPU_SHADER_STAGE_COMPUTE, 4, 4, 1);
+static const crgpu_test_shader crgpu_test_objects_caps_store_uint_comp =
+    CRGPU_TEST_SHADER(crgpu_test_objects_caps_store_uint_comp, "objects_caps_store_uint_comp", CRGPU_SHADER_STAGE_COMPUTE, 4, 4, 1);
+static const crgpu_test_shader crgpu_test_objects_caps_store_sint_comp =
+    CRGPU_TEST_SHADER(crgpu_test_objects_caps_store_sint_comp, "objects_caps_store_sint_comp", CRGPU_SHADER_STAGE_COMPUTE, 4, 4, 1);
+static const crgpu_test_shader crgpu_test_objects_caps_rw_float_comp =
+    CRGPU_TEST_SHADER(crgpu_test_objects_caps_rw_float_comp, "objects_caps_rw_float_comp", CRGPU_SHADER_STAGE_COMPUTE, 4, 4, 1);
+static const crgpu_test_shader crgpu_test_objects_caps_rw_uint_comp =
+    CRGPU_TEST_SHADER(crgpu_test_objects_caps_rw_uint_comp, "objects_caps_rw_uint_comp", CRGPU_SHADER_STAGE_COMPUTE, 4, 4, 1);
+static const crgpu_test_shader crgpu_test_objects_caps_rw_sint_comp =
+    CRGPU_TEST_SHADER(crgpu_test_objects_caps_rw_sint_comp, "objects_caps_rw_sint_comp", CRGPU_SHADER_STAGE_COMPUTE, 4, 4, 1);
+static const crgpu_test_shader crgpu_test_objects_caps_vert =
+    CRGPU_TEST_SHADER(crgpu_test_objects_caps_vert, "objects_caps_vert", CRGPU_SHADER_STAGE_VERTEX, 0, 0, 0);
+static const crgpu_test_shader crgpu_test_objects_caps_color_float_frag =
+    CRGPU_TEST_SHADER(crgpu_test_objects_caps_color_float_frag, "objects_caps_color_float_frag", CRGPU_SHADER_STAGE_FRAGMENT, 0, 0, 0);
+static const crgpu_test_shader crgpu_test_objects_caps_color_uint_frag =
+    CRGPU_TEST_SHADER(crgpu_test_objects_caps_color_uint_frag, "objects_caps_color_uint_frag", CRGPU_SHADER_STAGE_FRAGMENT, 0, 0, 0);
+static const crgpu_test_shader crgpu_test_objects_caps_color_sint_frag =
+    CRGPU_TEST_SHADER(crgpu_test_objects_caps_color_sint_frag, "objects_caps_color_sint_frag", CRGPU_SHADER_STAGE_FRAGMENT, 0, 0, 0);
+static const crgpu_test_shader crgpu_test_objects_caps_vertex_float_vert =
+    CRGPU_TEST_SHADER(crgpu_test_objects_caps_vertex_float_vert, "objects_caps_vertex_float_vert", CRGPU_SHADER_STAGE_VERTEX, 0, 0, 0);
+static const crgpu_test_shader crgpu_test_objects_caps_vertex_uint_vert =
+    CRGPU_TEST_SHADER(crgpu_test_objects_caps_vertex_uint_vert, "objects_caps_vertex_uint_vert", CRGPU_SHADER_STAGE_VERTEX, 0, 0, 0);
+static const crgpu_test_shader crgpu_test_objects_caps_vertex_sint_vert =
+    CRGPU_TEST_SHADER(crgpu_test_objects_caps_vertex_sint_vert, "objects_caps_vertex_sint_vert", CRGPU_SHADER_STAGE_VERTEX, 0, 0, 0);
+static const crgpu_test_shader crgpu_test_objects_caps_vertex_float_frag =
+    CRGPU_TEST_SHADER(crgpu_test_objects_caps_vertex_float_frag, "objects_caps_vertex_float_frag", CRGPU_SHADER_STAGE_FRAGMENT, 0, 0, 0);
+static const crgpu_test_shader crgpu_test_objects_caps_vertex_uint_frag =
+    CRGPU_TEST_SHADER(crgpu_test_objects_caps_vertex_uint_frag, "objects_caps_vertex_uint_frag", CRGPU_SHADER_STAGE_FRAGMENT, 0, 0, 0);
+static const crgpu_test_shader crgpu_test_objects_caps_vertex_sint_frag =
+    CRGPU_TEST_SHADER(crgpu_test_objects_caps_vertex_sint_frag, "objects_caps_vertex_sint_frag", CRGPU_SHADER_STAGE_FRAGMENT, 0, 0, 0);
 
 // [shader]'s module desc in [format] (one of the adapter's shader_formats),
 // with [debug_name]. code is NULL when the build made no code in [format].

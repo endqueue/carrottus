@@ -73,6 +73,26 @@ inline DXGI_FORMAT crgpu_d3d12_get_dxgi_format(CRGPU_FORMAT fmt) {
 	return static_cast<DXGI_FORMAT>(fmt);
 }
 
+// The format a shader reads [aspect_mask] of an image of [format] in. A
+// depth format is not a shader resource format: each has a readable one in
+// its family, and a second for the stencil. Shared by the image views and
+// the adapter's format capabilities (card S51).
+inline DXGI_FORMAT crgpu_d3d12_srv_format(CRGPU_FORMAT format, uint64_t aspect_mask) {
+	const bool stencil = aspect_mask == CRGPU_IMAGE_ASPECT_STENCIL;
+	switch (format) {
+	case CRGPU_FORMAT_D16_UNORM:
+		return DXGI_FORMAT_R16_UNORM;
+	case CRGPU_FORMAT_D32_FLOAT:
+		return DXGI_FORMAT_R32_FLOAT;
+	case CRGPU_FORMAT_D24_UNORM_S8_UINT:
+		return stencil ? DXGI_FORMAT_X24_TYPELESS_G8_UINT : DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+	case CRGPU_FORMAT_D32_FLOAT_S8X24_UINT:
+		return stencil ? DXGI_FORMAT_X32_TYPELESS_G8X24_UINT : DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+	default:
+		return crgpu_d3d12_get_dxgi_format(format);
+	}
+}
+
 // The heap a buffer of [kind] is created in: what each CRGPU_MEMORY_KIND
 // documents in crgpu.h. crgpu_buffer_create has already refused a value
 // that is not a kind.
@@ -285,6 +305,9 @@ typedef struct crgpu_device_t {
 	// several threads.
 	ID3D12CommandSignature *_tight_draw_signature;
 	ID3D12CommandSignature *_tight_draw_indexed_signature;
+	// The one crgpu_command_list_dispatch_indirect executes with (one
+	// DISPATCH, tightly packed), made with the device and read with no lock.
+	ID3D12CommandSignature *_dispatch_signature;
 	crgpu_d3d12_indirect_signatures _indirect_signatures;
 	std::mutex _indirect_signature_mutex;
 
@@ -718,9 +741,10 @@ CR_RESULT crgpu_d3d12___create_shader_heaps(
     uint32_t max_samplers);
 CR_RESULT crgpu_d3d12___create_bindless_state(crgpu_device_d3d12 *device);
 // Defined in crgpud3d12command.cpp: a root-signature-less command
-// signature of one DRAW (or DRAW_INDEXED) every [stride] bytes, or null.
-ID3D12CommandSignature *crgpu_d3d12___create_draw_indirect_signature(
-    ID3D12Device *d3d_device, bool indexed, uint32_t stride);
+// signature of one argument of [type] (DRAW, DRAW_INDEXED or DISPATCH)
+// every [stride] bytes, or null.
+ID3D12CommandSignature *crgpu_d3d12___create_indirect_signature(
+    ID3D12Device *d3d_device, D3D12_INDIRECT_ARGUMENT_TYPE type, uint32_t stride);
 }
 
 #endif // CRGPU_COMPILE_D3D12_API

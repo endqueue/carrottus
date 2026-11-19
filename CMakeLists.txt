@@ -671,6 +671,11 @@ if(NOT TARGET carrottus)
             "crgpu_test_objects_double_comp|objects_double_comp|cs_6_0|"
             # An attachment image cleared first, then written by compute (card S38).
             "crgpu_test_objects_first_use_comp|objects_first_use_comp|cs_6_0|"
+            # Indirect dispatch (card A15): the group IDs, the arguments a
+            # dispatch writes, and a counter alone for the largest count.
+            "crgpu_test_objects_dispatch_ids_comp|objects_dispatch_ids_comp|cs_6_0|"
+            "crgpu_test_objects_dispatch_args_comp|objects_dispatch_args_comp|cs_6_0|"
+            "crgpu_test_objects_dispatch_count_comp|objects_dispatch_count_comp|cs_6_0|"
             # Every binding of a set (card S27): a set of a uniform buffer at
             # 0, a sampled image at 5 and a sampler at 8, declared whole and
             # read at 5 and 8 (the build pads 0); and on Metal the modules
@@ -686,7 +691,28 @@ if(NOT TARGET carrottus)
             "crgpu_test_bindings_part_comp|bindings_part_comp|cs_6_0|"
             "crgpu_test_bindings_extra_comp|bindings_extra_comp|cs_6_0|"
             "crgpu_test_bindings_type_comp|bindings_type_comp|cs_6_0|"
-            "crgpu_test_bindings_none_comp|bindings_none_comp|cs_6_0|")
+            "crgpu_test_bindings_none_comp|bindings_none_comp|cs_6_0|"
+            # Each format capability an adapter reports, used (card S51).
+            "crgpu_test_objects_caps_load_float_comp|objects_caps_load_float_comp|cs_6_0|"
+            "crgpu_test_objects_caps_load_uint_comp|objects_caps_load_uint_comp|cs_6_0|"
+            "crgpu_test_objects_caps_load_sint_comp|objects_caps_load_sint_comp|cs_6_0|"
+            "crgpu_test_objects_caps_sample_comp|objects_caps_sample_comp|cs_6_0|"
+            "crgpu_test_objects_caps_store_float_comp|objects_caps_store_float_comp|cs_6_0|"
+            "crgpu_test_objects_caps_store_uint_comp|objects_caps_store_uint_comp|cs_6_0|"
+            "crgpu_test_objects_caps_store_sint_comp|objects_caps_store_sint_comp|cs_6_0|"
+            "crgpu_test_objects_caps_rw_float_comp|objects_caps_rw_float_comp|cs_6_0|"
+            "crgpu_test_objects_caps_rw_uint_comp|objects_caps_rw_uint_comp|cs_6_0|"
+            "crgpu_test_objects_caps_rw_sint_comp|objects_caps_rw_sint_comp|cs_6_0|"
+            "crgpu_test_objects_caps_vert|objects_caps_vert|vs_6_0|"
+            "crgpu_test_objects_caps_color_float_frag|objects_caps_color_float_frag|ps_6_0|"
+            "crgpu_test_objects_caps_color_uint_frag|objects_caps_color_uint_frag|ps_6_0|"
+            "crgpu_test_objects_caps_color_sint_frag|objects_caps_color_sint_frag|ps_6_0|"
+            "crgpu_test_objects_caps_vertex_float_vert|objects_caps_vertex_float_vert|vs_6_0|"
+            "crgpu_test_objects_caps_vertex_uint_vert|objects_caps_vertex_uint_vert|vs_6_0|"
+            "crgpu_test_objects_caps_vertex_sint_vert|objects_caps_vertex_sint_vert|vs_6_0|"
+            "crgpu_test_objects_caps_vertex_float_frag|objects_caps_vertex_float_frag|ps_6_0|"
+            "crgpu_test_objects_caps_vertex_uint_frag|objects_caps_vertex_uint_frag|ps_6_0|"
+            "crgpu_test_objects_caps_vertex_sint_frag|objects_caps_vertex_sint_frag|ps_6_0|")
         set(CR_TEST_SHADER_OUTPUTS "")
         foreach(_shader IN LISTS CR_TEST_SHADERS)
             string(REPLACE "|" ";" _shader "${_shader}")
@@ -723,6 +749,13 @@ if(NOT TARGET carrottus)
         if(APPLE AND GRAPHICS_BACKEND STREQUAL "Metal")
             target_sources(crgpu_objects_test PRIVATE tests/crgpu_test_metal_layer.m)
             target_link_libraries(crgpu_objects_test PRIVATE "-framework QuartzCore" "-framework Foundation")
+        endif()
+        # The begun-again test's watchdog shares an atomic flag (C11's
+        # <stdatomic.h>, which MSVC's C compiler gives only from C11 and
+        # behind /experimental:c11atomics, as craudio_test's).
+        if(CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+            set_property(TARGET crgpu_objects_test PROPERTY C_STANDARD 11)
+            target_compile_options(crgpu_objects_test PRIVATE /experimental:c11atomics)
         endif()
         add_test(NAME crgpu_objects_test COMMAND crgpu_objects_test)
         set_tests_properties(crgpu_objects_test PROPERTIES SKIP_RETURN_CODE 77)

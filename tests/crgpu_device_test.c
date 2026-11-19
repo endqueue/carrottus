@@ -7,7 +7,9 @@
  * descriptor budget, one device per adapter, and a device made again after
  * one is destroyed. On every adapter: its image limits, and its two
  * block-format bits (card S48) against what the graphics API says, each
- * asked for at device creation. Everything goes through a checking allocator, which must
+ * asked for at device creation; and every format's capabilities (card S51),
+ * printed, with their refusals and the rules every API keeps, and on Metal
+ * each against Apple's feature set tables as transcribed here. Everything goes through a checking allocator, which must
  * end with nothing left.
  *
  * Needs a GPU but no window, nobody watching and nothing drawn, so it is a
@@ -300,6 +302,369 @@ static void test_dual_source_bit(
 	crgpu_device_destroy(device);
 }
 
+/* ---- Format capabilities (card S51) ----------------------------------------
+ *
+ * Every format CRGPU_FORMAT names, by name, for the table printed per
+ * adapter (CRGPU_DEVICE_TODO.md records it per machine). */
+typedef struct named_format {
+	const char *name;
+	CRGPU_FORMAT format;
+} named_format;
+
+#define F(x) {#x, CRGPU_FORMAT_##x}
+static const named_format all_formats[] = {
+    F(R32G32B32A32_TYPELESS), F(R32G32B32A32_FLOAT), F(R32G32B32A32_UINT), F(R32G32B32A32_SINT), F(R32G32B32_TYPELESS),
+    F(R32G32B32_FLOAT), F(R32G32B32_UINT), F(R32G32B32_SINT), F(R16G16B16A16_TYPELESS), F(R16G16B16A16_FLOAT),
+    F(R16G16B16A16_UNORM), F(R16G16B16A16_UINT), F(R16G16B16A16_SNORM), F(R16G16B16A16_SINT), F(R32G32_TYPELESS),
+    F(R32G32_FLOAT), F(R32G32_UINT), F(R32G32_SINT), F(R32G8X24_TYPELESS), F(D32_FLOAT_S8X24_UINT),
+    F(R32_FLOAT_X8X24_TYPELESS), F(X32_TYPELESS_G8X24_UINT), F(R10G10B10A2_TYPELESS), F(R10G10B10A2_UNORM),
+    F(R10G10B10A2_UINT), F(R11G11B10_FLOAT), F(R8G8B8A8_TYPELESS), F(R8G8B8A8_UNORM), F(R8G8B8A8_UNORM_SRGB),
+    F(R8G8B8A8_UINT), F(R8G8B8A8_SNORM), F(R8G8B8A8_SINT), F(R16G16_TYPELESS), F(R16G16_FLOAT), F(R16G16_UNORM),
+    F(R16G16_UINT), F(R16G16_SNORM), F(R16G16_SINT), F(R32_TYPELESS), F(D32_FLOAT), F(R32_FLOAT), F(R32_UINT),
+    F(R32_SINT), F(R24G8_TYPELESS), F(D24_UNORM_S8_UINT), F(R24_UNORM_X8_TYPELESS), F(X24_TYPELESS_G8_UINT),
+    F(R8G8_TYPELESS), F(R8G8_UNORM), F(R8G8_UINT), F(R8G8_SNORM), F(R8G8_SINT), F(R16_TYPELESS), F(R16_FLOAT),
+    F(D16_UNORM), F(R16_UNORM), F(R16_UINT), F(R16_SNORM), F(R16_SINT), F(R8_TYPELESS), F(R8_UNORM), F(R8_UINT),
+    F(R8_SNORM), F(R8_SINT), F(A8_UNORM), F(R1_UNORM), F(R9G9B9E5_SHAREDEXP), F(R8G8_B8G8_UNORM), F(G8R8_G8B8_UNORM),
+    F(BC1_TYPELESS), F(BC1_UNORM), F(BC1_UNORM_SRGB), F(BC2_TYPELESS), F(BC2_UNORM), F(BC2_UNORM_SRGB), F(BC3_TYPELESS),
+    F(BC3_UNORM), F(BC3_UNORM_SRGB), F(BC4_TYPELESS), F(BC4_UNORM), F(BC4_SNORM), F(BC5_TYPELESS), F(BC5_UNORM),
+    F(BC5_SNORM), F(B5G6R5_UNORM), F(B5G5R5A1_UNORM), F(B8G8R8A8_UNORM), F(B8G8R8X8_UNORM),
+    F(R10G10B10_XR_BIAS_A2_UNORM), F(B8G8R8A8_TYPELESS), F(B8G8R8A8_UNORM_SRGB), F(B8G8R8X8_TYPELESS),
+    F(B8G8R8X8_UNORM_SRGB), F(BC6H_TYPELESS), F(BC6H_UF16), F(BC6H_SF16), F(BC7_TYPELESS), F(BC7_UNORM),
+    F(BC7_UNORM_SRGB), F(AYUV), F(Y410), F(Y416), F(NV12), F(P010), F(P016), F(420_OPAQUE), F(YUY2), F(Y210), F(Y216),
+    F(NV11), F(AI44), F(IA44), F(P8), F(A8P8), F(B4G4R4A4_UNORM), F(P208), F(V208), F(V408), F(ASTC_4X4_UNORM),
+    F(ASTC_4X4_UNORM_SRGB), F(ASTC_5X4_UNORM), F(ASTC_5X4_UNORM_SRGB), F(ASTC_5X5_UNORM), F(ASTC_5X5_UNORM_SRGB),
+    F(ASTC_6X5_UNORM), F(ASTC_6X5_UNORM_SRGB), F(ASTC_6X6_UNORM), F(ASTC_6X6_UNORM_SRGB), F(ASTC_8X5_UNORM),
+    F(ASTC_8X5_UNORM_SRGB), F(ASTC_8X6_UNORM), F(ASTC_8X6_UNORM_SRGB), F(ASTC_8X8_UNORM), F(ASTC_8X8_UNORM_SRGB),
+    F(ASTC_10X5_UNORM), F(ASTC_10X5_UNORM_SRGB), F(ASTC_10X6_UNORM), F(ASTC_10X6_UNORM_SRGB), F(ASTC_10X8_UNORM),
+    F(ASTC_10X8_UNORM_SRGB), F(ASTC_10X10_UNORM), F(ASTC_10X10_UNORM_SRGB), F(ASTC_12X10_UNORM),
+    F(ASTC_12X10_UNORM_SRGB), F(ASTC_12X12_UNORM), F(ASTC_12X12_UNORM_SRGB),
+};
+#undef F
+#define FORMAT_COUNT (sizeof(all_formats) / sizeof(all_formats[0]))
+
+#define CAP_SAMPLED CRGPU_FORMAT_CAPABILITY_SAMPLED
+#define CAP_FILTERED CRGPU_FORMAT_CAPABILITY_FILTERED
+#define CAP_STORAGE CRGPU_FORMAT_CAPABILITY_STORAGE
+#define CAP_COLOR CRGPU_FORMAT_CAPABILITY_COLOR_ATTACHMENT
+#define CAP_BLEND CRGPU_FORMAT_CAPABILITY_BLEND
+#define CAP_DEPTH CRGPU_FORMAT_CAPABILITY_DEPTH_STENCIL_ATTACHMENT
+#define CAP_VERTEX CRGPU_FORMAT_CAPABILITY_VERTEX
+#define CAP_COPY CRGPU_FORMAT_CAPABILITY_COPY
+#define CAP_STORAGE_READ CRGPU_FORMAT_CAPABILITY_STORAGE_READ
+
+static bool name_has(const char *name, const char *part) {
+	return strstr(name, part) != NULL;
+}
+
+/* Q3's formats, as the draft lists them: every TYPELESS one (the depth
+ * view formats included), the formats a backend makes as another (A8_UNORM,
+ * B8G8R8X8_UNORM and _SRGB), and the video and palette formats (the packed
+ * 4:2:2 ones, the planar ones, AYUV, Y410, Y416, AI44, IA44, P8, A8P8). */
+static bool differs_by_backend(CRGPU_FORMAT f) {
+	switch (f) {
+	case CRGPU_FORMAT_A8_UNORM:
+	case CRGPU_FORMAT_B8G8R8X8_UNORM:
+	case CRGPU_FORMAT_B8G8R8X8_UNORM_SRGB:
+	case CRGPU_FORMAT_X32_TYPELESS_G8X24_UINT:
+	case CRGPU_FORMAT_R8G8_B8G8_UNORM:
+	case CRGPU_FORMAT_G8R8_G8B8_UNORM:
+	case CRGPU_FORMAT_YUY2:
+	case CRGPU_FORMAT_Y210:
+	case CRGPU_FORMAT_Y216:
+	case CRGPU_FORMAT_NV12:
+	case CRGPU_FORMAT_P010:
+	case CRGPU_FORMAT_P016:
+	case CRGPU_FORMAT_420_OPAQUE:
+	case CRGPU_FORMAT_NV11:
+	case CRGPU_FORMAT_P208:
+	case CRGPU_FORMAT_V208:
+	case CRGPU_FORMAT_V408:
+	case CRGPU_FORMAT_AYUV:
+	case CRGPU_FORMAT_Y410:
+	case CRGPU_FORMAT_Y416:
+	case CRGPU_FORMAT_AI44:
+	case CRGPU_FORMAT_IA44:
+	case CRGPU_FORMAT_P8:
+	case CRGPU_FORMAT_A8P8:
+		return true;
+	default:
+		break;
+	}
+	for (size_t i = 0; i < FORMAT_COUNT; ++i)
+		if (all_formats[i].format == f)
+			return name_has(all_formats[i].name, "TYPELESS");
+	return false;
+}
+
+static bool is_planar(CRGPU_FORMAT f) {
+	return f == CRGPU_FORMAT_NV12 || f == CRGPU_FORMAT_P010 || f == CRGPU_FORMAT_P016 || f == CRGPU_FORMAT_420_OPAQUE ||
+	       f == CRGPU_FORMAT_NV11 || f == CRGPU_FORMAT_P208 || f == CRGPU_FORMAT_V208 || f == CRGPU_FORMAT_V408;
+}
+
+static bool is_bc(CRGPU_FORMAT f) {
+	return (f >= CRGPU_FORMAT_BC1_TYPELESS && f <= CRGPU_FORMAT_BC5_SNORM) || (f >= CRGPU_FORMAT_BC6H_TYPELESS && f <= CRGPU_FORMAT_BC7_UNORM_SRGB);
+}
+
+static bool is_astc(CRGPU_FORMAT f) {
+	return f >= CRGPU_FORMAT_ASTC_4X4_UNORM && f <= CRGPU_FORMAT_ASTC_12X12_UNORM_SRGB;
+}
+
+/* An integer colour format: its name ends in _UINT or _SINT, and it isn't
+ * a depth format (D24_UNORM_S8_UINT, D32_FLOAT_S8X24_UINT). */
+static bool is_integer(const char *name) {
+	const size_t n = strlen(name);
+	return name[0] != 'D' && n > 5 && (strcmp(name + n - 5, "_UINT") == 0 || strcmp(name + n - 5, "_SINT") == 0);
+}
+
+#if CRGPU_COMPILE_METAL_API
+/* Apple's "Metal Feature Set Tables" (the edition dated October 23, 2026,
+ * pages 11 to 15, "Texture capabilities by pixel format"), transcribed here
+ * apart from the backend's copy: for each format the backend maps to a
+ * pixel format, its Filter, Write, Color and Blend in the Apple7 and Apple8
+ * columns (which every Metal 3 GPU has at least, the table's note 1) and in
+ * the Apple9 and Apple10 columns. "All" is all four. */
+#define MTL_F 1u
+#define MTL_W 2u
+#define MTL_C 4u
+#define MTL_B 8u
+#define MTL_ALL (MTL_F | MTL_W | MTL_C | MTL_B)
+typedef struct metal_expected {
+	CRGPU_FORMAT format;
+	uint8_t apple7_8;
+	uint8_t apple9_10;
+} metal_expected;
+static const metal_expected metal_table[] = {
+    {CRGPU_FORMAT_R8_UNORM, MTL_ALL, MTL_ALL},
+    {CRGPU_FORMAT_R8_SNORM, MTL_ALL, MTL_ALL},
+    {CRGPU_FORMAT_R8_UINT, MTL_W | MTL_C, MTL_W | MTL_C},
+    {CRGPU_FORMAT_R8_SINT, MTL_W | MTL_C, MTL_W | MTL_C},
+    {CRGPU_FORMAT_R8G8_UNORM, MTL_ALL, MTL_ALL},
+    {CRGPU_FORMAT_R8G8_SNORM, MTL_ALL, MTL_ALL},
+    {CRGPU_FORMAT_R8G8_UINT, MTL_W | MTL_C, MTL_W | MTL_C},
+    {CRGPU_FORMAT_R8G8_SINT, MTL_W | MTL_C, MTL_W | MTL_C},
+    {CRGPU_FORMAT_R8G8B8A8_UNORM, MTL_ALL, MTL_ALL},
+    {CRGPU_FORMAT_R8G8B8A8_UNORM_SRGB, MTL_ALL, MTL_ALL},
+    {CRGPU_FORMAT_R8G8B8A8_SNORM, MTL_ALL, MTL_ALL},
+    {CRGPU_FORMAT_R8G8B8A8_UINT, MTL_W | MTL_C, MTL_W | MTL_C},
+    {CRGPU_FORMAT_R8G8B8A8_SINT, MTL_W | MTL_C, MTL_W | MTL_C},
+    {CRGPU_FORMAT_B8G8R8A8_UNORM, MTL_ALL, MTL_ALL},
+    {CRGPU_FORMAT_B8G8R8A8_UNORM_SRGB, MTL_ALL, MTL_ALL},
+    {CRGPU_FORMAT_R16_FLOAT, MTL_ALL, MTL_ALL},
+    {CRGPU_FORMAT_R16_UNORM, MTL_ALL, MTL_ALL},
+    {CRGPU_FORMAT_R16_SNORM, MTL_ALL, MTL_ALL},
+    {CRGPU_FORMAT_R16_UINT, MTL_W | MTL_C, MTL_W | MTL_C},
+    {CRGPU_FORMAT_R16_SINT, MTL_W | MTL_C, MTL_W | MTL_C},
+    {CRGPU_FORMAT_R16G16_FLOAT, MTL_ALL, MTL_ALL},
+    {CRGPU_FORMAT_R16G16_UNORM, MTL_ALL, MTL_ALL},
+    {CRGPU_FORMAT_R16G16_SNORM, MTL_ALL, MTL_ALL},
+    {CRGPU_FORMAT_R16G16_UINT, MTL_W | MTL_C, MTL_W | MTL_C},
+    {CRGPU_FORMAT_R16G16_SINT, MTL_W | MTL_C, MTL_W | MTL_C},
+    {CRGPU_FORMAT_R16G16B16A16_FLOAT, MTL_ALL, MTL_ALL},
+    {CRGPU_FORMAT_R16G16B16A16_UNORM, MTL_ALL, MTL_ALL},
+    {CRGPU_FORMAT_R16G16B16A16_SNORM, MTL_ALL, MTL_ALL},
+    {CRGPU_FORMAT_R16G16B16A16_UINT, MTL_W | MTL_C, MTL_W | MTL_C},
+    {CRGPU_FORMAT_R16G16B16A16_SINT, MTL_W | MTL_C, MTL_W | MTL_C},
+    {CRGPU_FORMAT_R32_FLOAT, MTL_W | MTL_C | MTL_B, MTL_ALL},
+    {CRGPU_FORMAT_R32_UINT, MTL_W | MTL_C, MTL_W | MTL_C},
+    {CRGPU_FORMAT_R32_SINT, MTL_W | MTL_C, MTL_W | MTL_C},
+    {CRGPU_FORMAT_R32G32_FLOAT, MTL_W | MTL_C | MTL_B, MTL_ALL},
+    {CRGPU_FORMAT_R32G32_UINT, MTL_W | MTL_C, MTL_W | MTL_C},
+    {CRGPU_FORMAT_R32G32_SINT, MTL_W | MTL_C, MTL_W | MTL_C},
+    {CRGPU_FORMAT_R32G32B32A32_FLOAT, MTL_W | MTL_C | MTL_B, MTL_ALL},
+    {CRGPU_FORMAT_R32G32B32A32_UINT, MTL_W | MTL_C, MTL_W | MTL_C},
+    {CRGPU_FORMAT_R32G32B32A32_SINT, MTL_W | MTL_C, MTL_W | MTL_C},
+    {CRGPU_FORMAT_R10G10B10A2_UNORM, MTL_ALL, MTL_ALL},
+    {CRGPU_FORMAT_R10G10B10A2_UINT, MTL_W | MTL_C, MTL_W | MTL_C},
+    {CRGPU_FORMAT_R11G11B10_FLOAT, MTL_ALL, MTL_ALL},
+    {CRGPU_FORMAT_D16_UNORM, MTL_F, MTL_F},
+    {CRGPU_FORMAT_D32_FLOAT, 0, MTL_F},
+    {CRGPU_FORMAT_D32_FLOAT_S8X24_UINT, 0, MTL_F},
+};
+
+/* What the backend maps to an MTLVertexFormat. */
+static bool metal_vertex(CRGPU_FORMAT f) {
+	switch (f) {
+	case CRGPU_FORMAT_R8_UNORM: case CRGPU_FORMAT_R8_SNORM: case CRGPU_FORMAT_R8_UINT: case CRGPU_FORMAT_R8_SINT:
+	case CRGPU_FORMAT_R8G8_UNORM: case CRGPU_FORMAT_R8G8_SNORM: case CRGPU_FORMAT_R8G8_UINT: case CRGPU_FORMAT_R8G8_SINT:
+	case CRGPU_FORMAT_R8G8B8A8_UNORM: case CRGPU_FORMAT_R8G8B8A8_SNORM: case CRGPU_FORMAT_R8G8B8A8_UINT: case CRGPU_FORMAT_R8G8B8A8_SINT:
+	case CRGPU_FORMAT_R16_FLOAT: case CRGPU_FORMAT_R16_UNORM: case CRGPU_FORMAT_R16_SNORM: case CRGPU_FORMAT_R16_UINT: case CRGPU_FORMAT_R16_SINT:
+	case CRGPU_FORMAT_R16G16_FLOAT: case CRGPU_FORMAT_R16G16_UNORM: case CRGPU_FORMAT_R16G16_SNORM: case CRGPU_FORMAT_R16G16_UINT:
+	case CRGPU_FORMAT_R16G16_SINT:
+	case CRGPU_FORMAT_R16G16B16A16_FLOAT: case CRGPU_FORMAT_R16G16B16A16_UNORM: case CRGPU_FORMAT_R16G16B16A16_SNORM:
+	case CRGPU_FORMAT_R16G16B16A16_UINT: case CRGPU_FORMAT_R16G16B16A16_SINT:
+	case CRGPU_FORMAT_R32_FLOAT: case CRGPU_FORMAT_R32_UINT: case CRGPU_FORMAT_R32_SINT:
+	case CRGPU_FORMAT_R32G32_FLOAT: case CRGPU_FORMAT_R32G32_UINT: case CRGPU_FORMAT_R32G32_SINT:
+	case CRGPU_FORMAT_R32G32B32_FLOAT: case CRGPU_FORMAT_R32G32B32_UINT: case CRGPU_FORMAT_R32G32B32_SINT:
+	case CRGPU_FORMAT_R32G32B32A32_FLOAT: case CRGPU_FORMAT_R32G32B32A32_UINT: case CRGPU_FORMAT_R32G32B32A32_SINT:
+	case CRGPU_FORMAT_R10G10B10A2_UNORM:
+		return true;
+	default:
+		return false;
+	}
+}
+
+/* MTLReadWriteTextureTier1 and Tier2's pixel formats (Apple's
+ * MTLReadWriteTextureTier documentation), as CRGPU_FORMAT values. */
+static bool metal_read_write(CRGPU_FORMAT f, uint32_t tier) {
+	if (tier >= 1 && (f == CRGPU_FORMAT_R32_FLOAT || f == CRGPU_FORMAT_R32_UINT || f == CRGPU_FORMAT_R32_SINT))
+		return true;
+	if (tier < 2)
+		return false;
+	switch (f) {
+	case CRGPU_FORMAT_R32G32B32A32_FLOAT: case CRGPU_FORMAT_R32G32B32A32_UINT: case CRGPU_FORMAT_R32G32B32A32_SINT:
+	case CRGPU_FORMAT_R16G16B16A16_FLOAT: case CRGPU_FORMAT_R16G16B16A16_UINT: case CRGPU_FORMAT_R16G16B16A16_SINT:
+	case CRGPU_FORMAT_R8G8B8A8_UNORM: case CRGPU_FORMAT_R8G8B8A8_UINT: case CRGPU_FORMAT_R8G8B8A8_SINT:
+	case CRGPU_FORMAT_R16_FLOAT: case CRGPU_FORMAT_R16_UINT: case CRGPU_FORMAT_R16_SINT:
+	case CRGPU_FORMAT_R8_UNORM: case CRGPU_FORMAT_R8_UINT: case CRGPU_FORMAT_R8_SINT:
+		return true;
+	default:
+		return false;
+	}
+}
+
+/* The capabilities the test expects of [f] on a Metal GPU of [family] (7
+ * to 10, or 0 for a GPU in none of them, which has the Apple7 column),
+ * from the table above and the GPU's own answers. */
+static CRGPU_FORMAT_CAPABILITIES metal_expected_caps(CRGPU_FORMAT f, uint32_t family, bool float32_filtering, uint32_t tier, bool bc,
+                                                     bool astc) {
+	bool pixel     = false;
+	uint8_t letters = 0;
+	for (size_t i = 0; i < sizeof(metal_table) / sizeof(metal_table[0]); ++i)
+		if (metal_table[i].format == f) {
+			pixel   = true;
+			letters = family >= 9 ? metal_table[i].apple9_10 : metal_table[i].apple7_8;
+		}
+	// Every BC format but TYPELESS where the GPU samples BC, every ASTC LDR
+	// format where it is in Apple2: Filter in every column.
+	if ((is_bc(f) && bc && !differs_by_backend(f)) || (is_astc(f) && astc)) {
+		pixel   = true;
+		letters = MTL_F;
+	}
+	CRGPU_FORMAT_CAPABILITIES caps = 0;
+	if (pixel) {
+		caps |= CAP_SAMPLED;
+		if ((letters & MTL_F) || (float32_filtering && (f == CRGPU_FORMAT_R32_FLOAT || f == CRGPU_FORMAT_R32G32_FLOAT ||
+		                                                f == CRGPU_FORMAT_R32G32B32A32_FLOAT)))
+			caps |= CAP_FILTERED;
+		if (letters & MTL_W)
+			caps |= CAP_STORAGE;
+		if (letters & MTL_C)
+			caps |= CAP_COLOR;
+		if (letters & MTL_B)
+			caps |= CAP_BLEND;
+		if (f == CRGPU_FORMAT_D16_UNORM || f == CRGPU_FORMAT_D32_FLOAT || f == CRGPU_FORMAT_D32_FLOAT_S8X24_UINT)
+			caps |= CAP_DEPTH;
+		if (f != CRGPU_FORMAT_D32_FLOAT_S8X24_UINT)
+			caps |= CAP_COPY;
+		if ((letters & MTL_W) && metal_read_write(f, tier))
+			caps |= CAP_STORAGE_READ;
+	}
+	if (metal_vertex(f))
+		caps |= CAP_VERTEX;
+	return caps;
+}
+#endif
+
+/* crgpu_adapter_get_format_capabilities() on one adapter: every named
+ * format answered, the table printed; the refusals, nothing written; the
+ * invariants every API keeps; and on Metal each format against the
+ * transcribed table, with the draft's exact values on an Apple10 GPU. */
+static void test_format_capabilities(
+    uint32_t index,
+    crgpu_adapter adapter) {
+	const CRGPU_ADAPTER_PROPERTIES properties = properties_of(adapter);
+	const bool bc                             = (properties.supported_features & CRGPU_FEATURE_TEXTURE_COMPRESSION_BC) != 0;
+	const bool astc                           = (properties.supported_features & CRGPU_FEATURE_TEXTURE_COMPRESSION_ASTC_LDR) != 0;
+
+	// The refusals, the output's sentinel unchanged.
+	CRGPU_FORMAT_CAPABILITIES flags = 0xDEADBEEFu;
+	CHECK(crgpu_adapter_get_format_capabilities(NULL, CRGPU_FORMAT_R8G8B8A8_UNORM, &flags) == CR_RESULT_GPU_INVALID_ADAPTER);
+	CHECK(flags == 0xDEADBEEFu);
+	CHECK(crgpu_adapter_get_format_capabilities(adapter, CRGPU_FORMAT_R8G8B8A8_UNORM, NULL) == CR_RESULT_NULL_OUTPUT_PARAMETER);
+	const uint32_t unnamed[] = {0u, 116u, 129u, 133u, 999u, 1028u, UINT32_MAX};
+	for (size_t i = 0; i < sizeof(unnamed) / sizeof(unnamed[0]); ++i) {
+		flags = 0xDEADBEEFu;
+		CHECK(crgpu_adapter_get_format_capabilities(adapter, (CRGPU_FORMAT)unnamed[i], &flags) == CR_RESULT_GPU_INVALID_FORMAT);
+		CHECK(flags == 0xDEADBEEFu);
+	}
+	// The order, two arguments wrong at once.
+	flags = 0xDEADBEEFu;
+	CHECK(crgpu_adapter_get_format_capabilities(NULL, (CRGPU_FORMAT)116u, &flags) == CR_RESULT_GPU_INVALID_ADAPTER);
+	CHECK(flags == 0xDEADBEEFu);
+	CHECK(crgpu_adapter_get_format_capabilities(adapter, (CRGPU_FORMAT)116u, NULL) == CR_RESULT_GPU_INVALID_FORMAT);
+
+#if CRGPU_COMPILE_METAL_API
+	uint32_t family        = 0;
+	bool float32_filtering = false;
+	uint32_t tier          = 0;
+	CHECK(crgpu_test_metal_format_facts(properties.adapter_id, &family, &float32_filtering, &tier));
+	printf("crgpu_device_test: adapter %u: Metal Apple family %u, supports32BitFloatFiltering %s, read-write texture tier %u\n", index,
+	       family, float32_filtering ? "yes" : "no", tier);
+#endif
+
+	printf("crgpu_device_test: adapter %u (%s): format capabilities (SAMPLED 0x1, FILTERED 0x2, STORAGE 0x4, COLOR_ATTACHMENT 0x8, "
+	       "BLEND 0x10, DEPTH_STENCIL_ATTACHMENT 0x20, VERTEX 0x40, COPY 0x80, STORAGE_READ 0x100):\n",
+	       index, properties.description);
+	uint32_t answered = 0;
+	for (size_t i = 0; i < FORMAT_COUNT; ++i) {
+		const CRGPU_FORMAT f = all_formats[i].format;
+		const char *name     = all_formats[i].name;
+		flags                = 0xDEADBEEFu;
+		const CR_RESULT r    = crgpu_adapter_get_format_capabilities(adapter, f, &flags);
+		CHECK(r == CR_SUCCESS);
+		if (r != CR_SUCCESS)
+			continue;
+		++answered;
+		printf("  %4u %-28s 0x%03x\n", (unsigned)f, name, (unsigned)flags);
+		bool ok = (flags & ~0x1FFu) == 0;
+		// Every API keeps these.
+		ok = ok && (!(flags & CAP_FILTERED) || (flags & CAP_SAMPLED));
+		ok = ok && (!(flags & CAP_BLEND) || (flags & CAP_COLOR));
+		ok = ok && (!(flags & CAP_STORAGE_READ) || (flags & CAP_STORAGE));
+		if (differs_by_backend(f))
+			ok = ok && (flags & ~CAP_COPY) == 0;
+		if (f == CRGPU_FORMAT_R1_UNORM || is_planar(f) || f == CRGPU_FORMAT_D24_UNORM_S8_UINT || f == CRGPU_FORMAT_D32_FLOAT_S8X24_UINT)
+			ok = ok && !(flags & CAP_COPY);
+		if (is_bc(f) || is_astc(f)) {
+			ok = ok && (flags & ~(CAP_SAMPLED | CAP_FILTERED | CAP_COPY)) == 0;
+			if ((is_bc(f) && !bc) || (is_astc(f) && !astc))
+				ok = ok && flags == 0;
+		}
+		if (is_integer(name))
+			ok = ok && !(flags & (CAP_FILTERED | CAP_BLEND));
+#if CRGPU_COMPILE_METAL_API
+		const CRGPU_FORMAT_CAPABILITIES want = metal_expected_caps(f, family, float32_filtering, tier, bc, astc);
+		if (flags != want)
+			fprintf(stderr, "  %s: 0x%03x, the transcribed table says 0x%03x\n", name, (unsigned)flags, (unsigned)want);
+		ok = ok && flags == want;
+#endif
+		if (!ok)
+			fprintf(stderr, "  %s: 0x%03x breaks a rule\n", name, (unsigned)flags);
+		CHECK(ok);
+	}
+	CHECK(answered == FORMAT_COUNT);
+#if CRGPU_COMPILE_METAL_API
+	// Exact where the pixel format's kind fixes the answer (the draft's
+	// list), on the M5 Pro's family.
+	if (family >= 10) {
+		const struct {
+			CRGPU_FORMAT format;
+			CRGPU_FORMAT_CAPABILITIES caps;
+		} exact[] = {
+		    {CRGPU_FORMAT_R32G32B32_FLOAT, 0x40},  {CRGPU_FORMAT_R8G8B8A8_TYPELESS, 0}, {CRGPU_FORMAT_D24_UNORM_S8_UINT, 0},
+		    {CRGPU_FORMAT_BC7_UNORM, 0x83},        {CRGPU_FORMAT_ASTC_4X4_UNORM, 0x83}, {CRGPU_FORMAT_R32_UINT, 0x1CD},
+		};
+		for (size_t i = 0; i < sizeof(exact) / sizeof(exact[0]); ++i) {
+			flags = 0xDEADBEEFu;
+			CHECK(crgpu_adapter_get_format_capabilities(adapter, exact[i].format, &flags) == CR_SUCCESS);
+			if (flags != exact[i].caps)
+				fprintf(stderr, "  format %u: 0x%03x, expected 0x%03x\n", (unsigned)exact[i].format, (unsigned)flags, (unsigned)exact[i].caps);
+			CHECK(flags == exact[i].caps);
+		}
+	}
+#endif
+}
+
 static void test_device_desc_checks(crgpu_adapter adapter) {
 	const CRGPU_ADAPTER_PROPERTIES properties = properties_of(adapter);
 	crgpu_device device                       = (crgpu_device)(uintptr_t)1;
@@ -500,6 +865,7 @@ int main(void) {
 		test_image_limits(i, adapters[i]);
 		test_block_format_bits(i, adapters[i]);
 		test_dual_source_bit(i, adapters[i]);
+		test_format_capabilities(i, adapters[i]);
 	}
 	test_adapter_properties(adapter);
 	test_device_desc_checks(adapter);

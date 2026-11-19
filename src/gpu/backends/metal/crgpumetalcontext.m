@@ -172,6 +172,14 @@ static void crgpumetal___internal_read_adapter_facts(crgpu_adapter_metal *adapte
 	// Metal has no query for a mesh shader's output limits: its own limit is
 	// a pipeline's maxTotalThreadsPerMeshThreadgroup. These are the meshlet
 	// limits the mesh shading samples are written to, not a queried ceiling.
+	// Each format's capabilities (card S51), from Apple's feature set tables
+	// and the device's own answers (crgpumetalformat.m).
+	for (uint32_t value = 0; value <= CRGPU_FORMAT_ASTC_12X12_UNORM_SRGB; ++value) {
+		const int32_t slot = crgpu___internal_format_index((CRGPU_FORMAT)value);
+		if (slot >= 0)
+			facts->format_capabilities[slot] = (uint16_t)crgpumetal___format_capabilities(mtl, (CRGPU_FORMAT)value);
+	}
+
 	facts->mesh_max_output_vertices       = 256;
 	facts->mesh_max_output_primitives     = 256;
 	facts->mesh_max_workgroup_invocations = 1024;
@@ -303,6 +311,17 @@ CR_RESULT crgpu_adapter_get_properties(
 	if (CR_STALE(adapter, "crgpu_adapter_get_properties", "adapter"))
 		return CR_RESULT_GPU_INVALID_ADAPTER;
 	return crgpu___internal_get_adapter_properties(&adapter->_facts, out_properties);
+}
+
+CR_RESULT crgpu_adapter_get_format_capabilities(
+    crgpu_adapter adapter,
+    CRGPU_FORMAT format,
+    CRGPU_FORMAT_CAPABILITIES *out_flags) {
+	if (!adapter)
+		return CR_RESULT_GPU_INVALID_ADAPTER;
+	if (CR_STALE(adapter, "crgpu_adapter_get_format_capabilities", "adapter"))
+		return CR_RESULT_GPU_INVALID_ADAPTER;
+	return crgpu___internal_get_format_capabilities(&adapter->_facts, format, out_flags);
 }
 
 CR_RESULT crgpu_adapter_supports_surface(

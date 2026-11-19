@@ -45,6 +45,28 @@
  * be; and the copies' argument checks, each refused with nothing recorded
  * (test_block_formats).
  *
+ * And the format capabilities (card S51): a pipeline blending into a
+ * format without CRGPU_FORMAT_CAPABILITY_BLEND refused, every format tried,
+ * in order with the blend checks; then each capability the adapter reports
+ * of each format used once under the API's validation (a Load, a linear
+ * sample, a storage write and read, a draw, a blend, a depth test, a vertex
+ * fetch, a copy up and back), read back and compared where the value is
+ * exact; and a B5G6R5_UNORM texel's layout where the adapter renders it
+ * (test_format_capabilities).
+ *
+ * And a copy's buffer rows and images against its region (card S52): a row
+ * length or image height shorter than the region, and a 3D copy's taller
+ * slice pitch, each refused both ways with nothing recorded; the accepted
+ * neighbours round-tripped byte for byte; a 2 GiB row pitch refused; and
+ * the order behind the usages and before the offset (test_copy_rows).
+ *
+ * And indirect dispatch (card A15): a compute shader's group IDs and an
+ * atomic counter read back after a dispatch whose counts the CPU wrote,
+ * the same as a direct one's; counts written by a dispatch, on a DIRECT
+ * and a COMPUTE list; offsets; zeros; 65535 groups; and every refusal of
+ * crgpu_command_list_dispatch_indirect(), in order, each submitted and
+ * read back with nothing run (test_dispatch_indirect).
+ *
  * And, on every adapter, every ray query call (CRGPU_EXT_RAY_QUERY) refused
  * on the first device, made without CRGPU_FEATURE_RAY_QUERY; on an adapter
  * with it, a device made with it: bottom levels of a triangle and of an
@@ -71,12 +93,16 @@
 #include "crtest_allocator.h"
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #if defined(_WIN32)
 #include <windows.h>
+#else
+#include <pthread.h>
+#include <unistd.h>
 #endif
 
 #if CRGPU_COMPILE_METAL_API
@@ -913,6 +939,139 @@ static void run_once(crgpu_command_queue queue, crgpu_command_allocator allocato
 	crgpu_command_queue_wait_idle(queue);
 }
 
+// ---- A list begun again without a submit (card S53) ------------------------
+
+// A recording that is never submitted is dropped when its list is begun
+// again, its allocator reset or the list destroyed (crgpu_command_list_begin:
+// what is recorded is submitted once, or not at all). On Metal a command
+// buffer that is never committed keeps its place in its queue for as long
+// as anything references it, and a queue hands out a fixed number at once
+// (64 by default), after which the next recording's buffer is never given:
+// the call blocks for good. Each way of dropping a recording is run more
+// than three times that many times; a watchdog thread fails the test after
+// BEGUN_AGAIN_SECONDS rather than leave it blocked.
+#define BEGUN_AGAIN_ROUNDS 200u
+#define BEGUN_AGAIN_SECONDS 60u
+
+// Written by the test's thread and read by the watchdog's: an atomic, as
+// any flag two threads share is.
+typedef struct begun_again_watch {
+	const char *what;
+	atomic_int done;
+} begun_again_watch;
+
+#if defined(_WIN32)
+static DWORD WINAPI begun_again_watchdog(LPVOID context) {
+#else
+static void *begun_again_watchdog(void *context) {
+#endif
+	begun_again_watch *watch = (begun_again_watch *)context;
+	for (uint32_t tick = 0; tick < BEGUN_AGAIN_SECONDS * 100u; ++tick) {
+		if (atomic_load_explicit(&watch->done, memory_order_acquire))
+			return 0;
+#if defined(_WIN32)
+		Sleep(10);
+#else
+		usleep(10000);
+#endif
+	}
+	fprintf(stderr, "crgpu_objects_test: %s: still blocked after %u s: a list held on to a command buffer it had no use for\n",
+	        watch->what, BEGUN_AGAIN_SECONDS);
+	fflush(stderr);
+	_Exit(1);
+}
+
+// [record] records a whole recording; [record_open] (or [record] when
+// NULL) one stopped partway, as a refused recording is, which a list
+// destroyed open drops.
+static void begun_again_without_submit(crgpu_command_queue queue, crgpu_command_allocator allocator, crgpu_command_list cmd, record_fn record,
+                                       record_fn record_open,
+                                       void *context, const char *what) {
+	begun_again_watch watch;
+	watch.what = what;
+	atomic_init(&watch.done, 0);
+#if defined(_WIN32)
+	HANDLE thread = CreateThread(NULL, 0, begun_again_watchdog, &watch, 0, NULL);
+	CHECK(thread != NULL);
+#else
+	pthread_t thread;
+	const bool started = pthread_create(&thread, NULL, begun_again_watchdog, &watch) == 0;
+	CHECK(started);
+#endif
+	// Begun again after each end.
+	for (uint32_t i = 0; i < BEGUN_AGAIN_ROUNDS; ++i) {
+		crgpu_command_list_begin(cmd);
+		record(cmd, context);
+		crgpu_command_list_end(cmd);
+	}
+	// The allocator reset after each end.
+	for (uint32_t i = 0; i < BEGUN_AGAIN_ROUNDS; ++i) {
+		CHECK(crgpu_command_allocator_reset(allocator) == CR_SUCCESS);
+		crgpu_command_list_begin(cmd);
+		record(cmd, context);
+		crgpu_command_list_end(cmd);
+	}
+	CHECK(crgpu_command_allocator_reset(allocator) == CR_SUCCESS);
+	// A list of the allocator destroyed after each end.
+	for (uint32_t i = 0; i < BEGUN_AGAIN_ROUNDS; ++i) {
+		crgpu_command_list other = NULL;
+		CHECK(crgpu_command_list_create(allocator, &other) == CR_SUCCESS);
+		if (!other)
+			break;
+		crgpu_command_list_begin(other);
+		record(other, context);
+		crgpu_command_list_end(other);
+		crgpu_command_list_destroy(other);
+	}
+	// Many lists of the allocator alive at once, more than a Metal queue
+	// hands out: each submitted and waited for, the allocator reset, then
+	// each begun again and submitted. A list holds a command buffer only
+	// while it holds a recording, none for being created or reset.
+	{
+		crgpu_command_list *lists = (crgpu_command_list *)calloc(BEGUN_AGAIN_ROUNDS, sizeof(crgpu_command_list));
+		CHECK(lists != NULL);
+		uint32_t made = 0;
+		while (lists && made < BEGUN_AGAIN_ROUNDS && crgpu_command_list_create(allocator, &lists[made]) == CR_SUCCESS)
+			++made;
+		CHECK(made == BEGUN_AGAIN_ROUNDS);
+		for (uint32_t round = 0; round < 2; ++round) {
+			for (uint32_t i = 0; i < made; ++i) {
+				crgpu_command_list_begin(lists[i]);
+				record(lists[i], context);
+				crgpu_command_list_end(lists[i]);
+				CHECK(crgpu_command_queue_submit_lists(queue, &lists[i], 1) == CR_SUCCESS);
+				crgpu_command_queue_wait_idle(queue);
+			}
+			CHECK(crgpu_command_allocator_reset(allocator) == CR_SUCCESS);
+		}
+		for (uint32_t i = 0; i < made; ++i)
+			crgpu_command_list_destroy(lists[i]);
+		free(lists);
+	}
+	// A list of the allocator destroyed open, its recording stopped partway.
+	for (uint32_t i = 0; i < BEGUN_AGAIN_ROUNDS; ++i) {
+		crgpu_command_list other = NULL;
+		CHECK(crgpu_command_list_create(allocator, &other) == CR_SUCCESS);
+		if (!other)
+			break;
+		crgpu_command_list_begin(other);
+		(record_open ? record_open : record)(other, context);
+		crgpu_command_list_destroy(other);
+	}
+	atomic_store_explicit(&watch.done, 1, memory_order_release);
+#if defined(_WIN32)
+	if (thread) {
+		WaitForSingleObject(thread, INFINITE);
+		CloseHandle(thread);
+	}
+#else
+	if (started)
+		pthread_join(thread, NULL);
+#endif
+	printf("crgpu_objects_test: %s: begun again, reset, destroyed and destroyed open %u times each without a submit; %u lists alive at once\n", what,
+	       BEGUN_AGAIN_ROUNDS, BEGUN_AGAIN_ROUNDS);
+}
+
 typedef struct draw_frame {
 	CRGPU_FEATURES features;
 	crgpu_graphics_pipeline plain, depth_tested, depth_bounded, meshed;
@@ -1112,6 +1271,28 @@ static void record_frame(crgpu_command_list cmd, void *context) {
 	CHECK(crgpu_command_list_copy_image_to_buffer(cmd, f->target, f->readback_target, &copy) == CR_SUCCESS);
 	CHECK(crgpu_command_list_copy_image_to_buffer(cmd, f->copy, f->readback_copy, &copy) == CR_SUCCESS);
 	crgpu_command_list_end_debug_label(cmd);
+}
+
+// The frame stopped inside its pass, its viewport and scissor set: no
+// crgpu_command_list_end_rendering() and no crgpu_command_list_end(), as a
+// recording refused partway is left, for a list destroyed open.
+static void record_pass_left_open(crgpu_command_list cmd, void *context) {
+	draw_frame *f = (draw_frame *)context;
+	crgpu_command_list_image_barrier_view(cmd, f->target_view, CRGPU_IMAGE_LAYOUT_UNDEFINED, CRGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	crgpu_rendering_begin_desc pass;
+	memset(&pass, 0, sizeof(pass));
+	pass.base.type                       = CR_STRUCT_TYPE_GPU_RENDERING_BEGIN_DESC;
+	pass.color_attachments[0].image_view = f->target_view;
+	pass.color_attachments[0].load_op    = CRGPU_LOAD_OP_CLEAR;
+	pass.color_attachments[0].store_op   = CRGPU_STORE_OP_STORE;
+	pass.color_attachment_count          = 1;
+	pass.width                           = DRAW_SIZE;
+	pass.height                          = DRAW_SIZE;
+	crgpu_command_list_begin_rendering(cmd, &pass);
+	CRGPU_VIEWPORT viewport = {0.0f, 0.0f, (float)DRAW_SIZE, (float)DRAW_SIZE, 0.0f, 1.0f};
+	crgpu_command_list_set_viewports(cmd, 0, 1, &viewport);
+	CRGPU_SCISSOR_RECT scissor = {0.0f, 0.0f, (float)DRAW_SIZE, (float)DRAW_SIZE};
+	crgpu_command_list_set_scissor_rects(cmd, 0, 1, &scissor);
 }
 
 static void check_frame(const draw_frame *f, const uint8_t *pixels, const char *which) {
@@ -1396,6 +1577,9 @@ static void test_draw_frame(crgpu_device device, crgpu_command_queue queue, crgp
 	CHECK(ready);
 	if (ready) {
 		run_once(queue, allocator, cmd, record_uploads, &f);
+		// A frame's recordings dropped many times first (card S53); the
+		// frame submitted after them is still drawn and read back right.
+		begun_again_without_submit(queue, allocator, cmd, record_frame, record_pass_left_open, &f, "a frame");
 		run_once(queue, allocator, cmd, record_frame, &f);
 		read_back(&f, f.readback_target, total, "target");
 		read_back(&f, f.readback_copy, total, "blitted copy");
@@ -1569,6 +1753,8 @@ static void test_compute(crgpu_device device, crgpu_command_queue queue, crgpu_c
 		// and waited for through the fence rather than the queue.
 		crgpu_fence fence = NULL;
 		CHECK(crgpu_fence_create(device, CRGPU_FENCE_FLAG_NONE, 0, &fence) == CR_SUCCESS);
+		// Copies and a dispatch dropped many times first (card S53).
+		begun_again_without_submit(queue, allocator, cmd, record_compute, NULL, &c, "copies and a dispatch");
 		CHECK(crgpu_command_allocator_reset(allocator) == CR_SUCCESS);
 		crgpu_command_list_begin(cmd);
 		record_compute(cmd, &c);
@@ -2472,6 +2658,1234 @@ static void test_dual_source(crgpu_adapter adapter, CRGPU_FEATURES supported) {
 			test_dual_source_draws(device);
 		crgpu_device_destroy(device);
 	}
+}
+
+// ---- Format capabilities (card S51) -------------------------------------------
+
+// Every format CRGPU_FORMAT names, by name.
+typedef struct caps_named_format {
+	const char *name;
+	CRGPU_FORMAT format;
+} caps_named_format;
+
+#define F(x) {#x, CRGPU_FORMAT_##x}
+static const caps_named_format caps_formats[] = {
+    F(R32G32B32A32_TYPELESS), F(R32G32B32A32_FLOAT), F(R32G32B32A32_UINT), F(R32G32B32A32_SINT), F(R32G32B32_TYPELESS),
+    F(R32G32B32_FLOAT), F(R32G32B32_UINT), F(R32G32B32_SINT), F(R16G16B16A16_TYPELESS), F(R16G16B16A16_FLOAT),
+    F(R16G16B16A16_UNORM), F(R16G16B16A16_UINT), F(R16G16B16A16_SNORM), F(R16G16B16A16_SINT), F(R32G32_TYPELESS),
+    F(R32G32_FLOAT), F(R32G32_UINT), F(R32G32_SINT), F(R32G8X24_TYPELESS), F(D32_FLOAT_S8X24_UINT),
+    F(R32_FLOAT_X8X24_TYPELESS), F(X32_TYPELESS_G8X24_UINT), F(R10G10B10A2_TYPELESS), F(R10G10B10A2_UNORM),
+    F(R10G10B10A2_UINT), F(R11G11B10_FLOAT), F(R8G8B8A8_TYPELESS), F(R8G8B8A8_UNORM), F(R8G8B8A8_UNORM_SRGB),
+    F(R8G8B8A8_UINT), F(R8G8B8A8_SNORM), F(R8G8B8A8_SINT), F(R16G16_TYPELESS), F(R16G16_FLOAT), F(R16G16_UNORM),
+    F(R16G16_UINT), F(R16G16_SNORM), F(R16G16_SINT), F(R32_TYPELESS), F(D32_FLOAT), F(R32_FLOAT), F(R32_UINT),
+    F(R32_SINT), F(R24G8_TYPELESS), F(D24_UNORM_S8_UINT), F(R24_UNORM_X8_TYPELESS), F(X24_TYPELESS_G8_UINT),
+    F(R8G8_TYPELESS), F(R8G8_UNORM), F(R8G8_UINT), F(R8G8_SNORM), F(R8G8_SINT), F(R16_TYPELESS), F(R16_FLOAT),
+    F(D16_UNORM), F(R16_UNORM), F(R16_UINT), F(R16_SNORM), F(R16_SINT), F(R8_TYPELESS), F(R8_UNORM), F(R8_UINT),
+    F(R8_SNORM), F(R8_SINT), F(A8_UNORM), F(R1_UNORM), F(R9G9B9E5_SHAREDEXP), F(R8G8_B8G8_UNORM), F(G8R8_G8B8_UNORM),
+    F(BC1_TYPELESS), F(BC1_UNORM), F(BC1_UNORM_SRGB), F(BC2_TYPELESS), F(BC2_UNORM), F(BC2_UNORM_SRGB), F(BC3_TYPELESS),
+    F(BC3_UNORM), F(BC3_UNORM_SRGB), F(BC4_TYPELESS), F(BC4_UNORM), F(BC4_SNORM), F(BC5_TYPELESS), F(BC5_UNORM),
+    F(BC5_SNORM), F(B5G6R5_UNORM), F(B5G5R5A1_UNORM), F(B8G8R8A8_UNORM), F(B8G8R8X8_UNORM),
+    F(R10G10B10_XR_BIAS_A2_UNORM), F(B8G8R8A8_TYPELESS), F(B8G8R8A8_UNORM_SRGB), F(B8G8R8X8_TYPELESS),
+    F(B8G8R8X8_UNORM_SRGB), F(BC6H_TYPELESS), F(BC6H_UF16), F(BC6H_SF16), F(BC7_TYPELESS), F(BC7_UNORM),
+    F(BC7_UNORM_SRGB), F(AYUV), F(Y410), F(Y416), F(NV12), F(P010), F(P016), F(420_OPAQUE), F(YUY2), F(Y210), F(Y216),
+    F(NV11), F(AI44), F(IA44), F(P8), F(A8P8), F(B4G4R4A4_UNORM), F(P208), F(V208), F(V408), F(ASTC_4X4_UNORM),
+    F(ASTC_4X4_UNORM_SRGB), F(ASTC_5X4_UNORM), F(ASTC_5X4_UNORM_SRGB), F(ASTC_5X5_UNORM), F(ASTC_5X5_UNORM_SRGB),
+    F(ASTC_6X5_UNORM), F(ASTC_6X5_UNORM_SRGB), F(ASTC_6X6_UNORM), F(ASTC_6X6_UNORM_SRGB), F(ASTC_8X5_UNORM),
+    F(ASTC_8X5_UNORM_SRGB), F(ASTC_8X6_UNORM), F(ASTC_8X6_UNORM_SRGB), F(ASTC_8X8_UNORM), F(ASTC_8X8_UNORM_SRGB),
+    F(ASTC_10X5_UNORM), F(ASTC_10X5_UNORM_SRGB), F(ASTC_10X6_UNORM), F(ASTC_10X6_UNORM_SRGB), F(ASTC_10X8_UNORM),
+    F(ASTC_10X8_UNORM_SRGB), F(ASTC_10X10_UNORM), F(ASTC_10X10_UNORM_SRGB), F(ASTC_12X10_UNORM),
+    F(ASTC_12X10_UNORM_SRGB), F(ASTC_12X12_UNORM), F(ASTC_12X12_UNORM_SRGB),
+};
+#undef F
+#define CAPS_FORMAT_COUNT (sizeof(caps_formats) / sizeof(caps_formats[0]))
+
+#define CAPS_SIZE 4u
+
+typedef enum caps_class {
+	CAPS_FLOAT = 0,
+	CAPS_UINT  = 1,
+	CAPS_SINT  = 2,
+} caps_class;
+
+// A colour format's component class, by its name: _UINT and _SINT are
+// integers (the depth formats, whose names may end so, are not).
+static caps_class caps_class_of(const char *name) {
+	const size_t n = strlen(name);
+	if (name[0] != 'D' && n > 5 && strcmp(name + n - 5, "_UINT") == 0)
+		return CAPS_UINT;
+	if (name[0] != 'D' && n > 5 && strcmp(name + n - 5, "_SINT") == 0)
+		return CAPS_SINT;
+	return CAPS_FLOAT;
+}
+
+// The components a format's name lists before its first '_', each with its
+// bits, in the order the name gives them (the lowest bits first, DXGI's
+// order): R, G, B and A as 0 to 3, X (unused bits) as 4. False for a name
+// that isn't of that shape, or whose bits come to more than 128.
+typedef struct caps_layout {
+	uint32_t count;
+	uint32_t channel[4];
+	uint32_t bits[4];
+	uint32_t total_bits;
+} caps_layout;
+
+static bool caps_parse(const char *name, caps_layout *out) {
+	memset(out, 0, sizeof(*out));
+	const char *p = name;
+	while (*p && *p != '_') {
+		uint32_t channel = 0;
+		switch (*p) {
+		case 'R': channel = 0; break;
+		case 'G': channel = 1; break;
+		case 'B': channel = 2; break;
+		case 'A': channel = 3; break;
+		case 'X': channel = 4; break;
+		default: return false;
+		}
+		++p;
+		uint32_t bits = 0;
+		while (*p >= '0' && *p <= '9')
+			bits = bits * 10 + (uint32_t)(*p++ - '0');
+		if (bits == 0 || out->count == 4)
+			return false;
+		out->channel[out->count] = channel;
+		out->bits[out->count]    = bits;
+		out->total_bits += bits;
+		++out->count;
+	}
+	return out->count > 0 && out->total_bits <= 128;
+}
+
+// Whether a format's components can be compared after a load: one of the
+// plain formats the parser reads (R, G, B and A of 8, 16 or 32 bits; the
+// packed 10/10/10/2, 11/11/10 and 5/6/5 kinds), not a block, depth, shared
+// exponent or extended-range format.
+static bool caps_comparable(const char *name, caps_layout *layout) {
+	if (strstr(name, "XR_BIAS") || strstr(name, "SHAREDEXP") || name[0] == 'D' || strncmp(name, "BC", 2) == 0 ||
+	    strncmp(name, "ASTC", 4) == 0)
+		return false;
+	return caps_parse(name, layout);
+}
+
+// The test's two values: V, written by draws and storage, and K, the clear;
+// as raw bits of float4, uint4 or int4. V + K is what blending them gives.
+static void caps_values(caps_class c, uint32_t v[4], uint32_t k[4]) {
+	if (c == CAPS_FLOAT) {
+		const float fv[4] = {1.0f, 0.0f, 1.0f, 0.0f};
+		const float fk[4] = {0.0f, 1.0f, 0.0f, 0.0f};
+		memcpy(v, fv, sizeof(fv));
+		memcpy(k, fk, sizeof(fk));
+	} else {
+		const uint32_t iv[4] = {3u, 0u, 2u, 1u};
+		memcpy(v, iv, sizeof(iv));
+		memset(k, 0, 4 * sizeof(uint32_t));
+	}
+}
+
+// What a load of a texel holding [value] reads, for a format with
+// [layout]'s components: each listed one as written, a missing one 0 and a
+// missing alpha 1 (of the class's type).
+static void caps_expected(caps_class c, const caps_layout *layout, const uint32_t value[4], uint32_t out[4]) {
+	const float one_f = 1.0f;
+	uint32_t one      = 1u;
+	if (c == CAPS_FLOAT)
+		memcpy(&one, &one_f, sizeof(one));
+	out[0] = out[1] = out[2] = 0;
+	out[3]                   = one;
+	for (uint32_t i = 0; i < layout->count; ++i)
+		if (layout->channel[i] < 4)
+			out[layout->channel[i]] = value[layout->channel[i]];
+}
+
+static bool caps_component_is(caps_class c, uint32_t got, uint32_t want, float tolerance) {
+	if (c != CAPS_FLOAT)
+		return got == want;
+	float g, w;
+	memcpy(&g, &got, sizeof(g));
+	memcpy(&w, &want, sizeof(w));
+	return fabsf(g - w) <= tolerance;
+}
+
+// One half of IEEE 754 binary16, for the few values the encoder writes.
+static uint32_t caps_half(float v) {
+	return v == 1.0f ? 0x3C00u : 0u;
+}
+
+// [value]'s components packed as a vertex attribute of a format with
+// [layout] and kind [kind] (UNORM, SNORM, UINT, SINT or FLOAT), each
+// component's bits in the name's order from the lowest bit, into [bytes]
+// (16 of them). False for a kind the encoder doesn't write.
+static bool caps_encode(const caps_layout *layout, const char *kind, caps_class c, const uint32_t value[4], uint8_t bytes[16]) {
+	memset(bytes, 0, 16);
+	uint32_t at = 0;
+	for (uint32_t i = 0; i < layout->count; ++i) {
+		const uint32_t bits = layout->bits[i];
+		uint64_t field      = 0;
+		if (layout->channel[i] < 4) {
+			const uint32_t v = value[layout->channel[i]];
+			float fv         = 0.0f;
+			memcpy(&fv, &v, sizeof(fv));
+			if (strcmp(kind, "UNORM") == 0 && c == CAPS_FLOAT)
+				field = fv == 1.0f ? ((1ull << bits) - 1) : 0;
+			else if (strcmp(kind, "SNORM") == 0 && c == CAPS_FLOAT)
+				field = fv == 1.0f ? ((1ull << (bits - 1)) - 1) : 0;
+			else if ((strcmp(kind, "UINT") == 0 || strcmp(kind, "SINT") == 0) && c != CAPS_FLOAT)
+				field = v;
+			else if (strcmp(kind, "FLOAT") == 0 && bits == 32)
+				field = v;
+			else if (strcmp(kind, "FLOAT") == 0 && bits == 16)
+				field = caps_half(fv);
+			else
+				return false;
+		}
+		for (uint32_t b = 0; b < bits; ++b)
+			if (field & (1ull << b))
+				bytes[(at + b) / 8] |= (uint8_t)(1u << ((at + b) % 8));
+		at += bits;
+	}
+	return true;
+}
+
+typedef struct caps_run {
+	crgpu_device device;
+	crgpu_command_queue queue;
+	crgpu_command_allocator allocator;
+	crgpu_command_list cmd;
+	crgpu_shader_module load[3], store[3], rw[3], sample, vert, color[3], vertex_vert[3], vertex_frag[3];
+	crgpu_descriptor_set_layout load_layout, sample_layout, store_layout, rw_layout;
+	crgpu_compute_pipeline load_pipeline[3], store_pipeline[3], rw_pipeline[3], sample_pipeline;
+	crgpu_descriptor_pool pool;
+	crgpu_sampler sampler;
+	crgpu_buffer out, out_readback;
+	// What each use did, for the summary.
+	uint32_t formats, uses, compared;
+} caps_run;
+
+static void caps_begin(caps_run *r) {
+	CHECK(crgpu_command_allocator_reset(r->allocator) == CR_SUCCESS);
+	crgpu_command_list_begin(r->cmd);
+}
+
+static void caps_submit(caps_run *r) {
+	crgpu_command_list_end(r->cmd);
+	CHECK(crgpu_command_queue_submit_lists(r->queue, &r->cmd, 1) == CR_SUCCESS);
+	crgpu_command_queue_wait_idle(r->queue);
+}
+
+static crgpu_descriptor_set_layout caps_layout_of(crgpu_device device, const CRGPU_DESCRIPTOR_TYPE *types, uint32_t count) {
+	crgpu_descriptor_set_layout_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type = CR_STRUCT_TYPE_GPU_DESCRIPTOR_SET_LAYOUT_DESC;
+	for (uint32_t i = 0; i < count; ++i) {
+		desc.bindings[i].binding         = i;
+		desc.bindings[i].descriptor_type = types[i];
+		desc.bindings[i].count           = 1;
+		desc.bindings[i].stage_flags     = CRGPU_SHADER_STAGE_COMPUTE;
+	}
+	desc.binding_count                 = count;
+	crgpu_descriptor_set_layout layout = NULL;
+	CHECK(crgpu_descriptor_set_layout_create(device, &desc, &layout) == CR_SUCCESS);
+	return layout;
+}
+
+static crgpu_compute_pipeline caps_compute(crgpu_device device, crgpu_shader_module module, crgpu_descriptor_set_layout layout, uint32_t push,
+                                           const char *name) {
+	crgpu_compute_pipeline_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type                   = CR_STRUCT_TYPE_GPU_COMPUTE_PIPELINE_DESC;
+	desc.compute_module              = module;
+	desc.descriptor_set_layouts[0]   = layout;
+	desc.descriptor_set_layout_count = 1;
+	if (push) {
+		desc.push_constant_ranges[0].stage_flags = CRGPU_SHADER_STAGE_COMPUTE;
+		desc.push_constant_ranges[0].size        = push;
+		desc.push_constant_range_count           = 1;
+	}
+	desc.debug_name                   = name;
+	crgpu_compute_pipeline pipeline = NULL;
+	if (module && layout)
+		CHECK(crgpu_compute_pipeline_create(device, &desc, &pipeline) == CR_SUCCESS);
+	return pipeline;
+}
+
+// A set of [layout] from the run's pool (reset first), with [view] at
+// binding 0 as [type] in [image_layout], then the sampler at 1 when
+// [with_sampler], then the output buffer next when [with_out].
+static crgpu_descriptor_set caps_set(caps_run *r, crgpu_descriptor_set_layout layout, crgpu_image_view view, CRGPU_DESCRIPTOR_TYPE type,
+                                     CRGPU_IMAGE_LAYOUT image_layout, bool with_sampler, bool with_out) {
+	crgpu_descriptor_pool_reset(r->pool);
+	crgpu_descriptor_set_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type             = CR_STRUCT_TYPE_GPU_DESCRIPTOR_SET_DESC;
+	desc.pool                  = r->pool;
+	desc.set_layouts[0]        = layout;
+	desc.set_count             = 1;
+	crgpu_descriptor_set set = NULL;
+	CHECK(crgpu_descriptor_set_create(r->device, &desc, &set) == CR_SUCCESS);
+	if (!set)
+		return NULL;
+	crgpu_descriptor_image_info image  = {view, image_layout};
+	crgpu_descriptor_buffer_info out   = {r->out, 0, 256};
+	crgpu_write_descriptor_set writes[3];
+	memset(writes, 0, sizeof(writes));
+	uint32_t count = 0;
+	writes[count].descriptor_type = type;
+	writes[count].image_info      = &image;
+	++count;
+	if (with_sampler) {
+		writes[count].descriptor_type = CRGPU_DESCRIPTOR_TYPE_SAMPLER;
+		writes[count].sampler         = r->sampler;
+		++count;
+	}
+	if (with_out) {
+		writes[count].descriptor_type = CRGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		writes[count].buffer_info     = &out;
+		++count;
+	}
+	for (uint32_t i = 0; i < count; ++i) {
+		writes[i].base.type        = CR_STRUCT_TYPE_GPU_WRITE_DESCRIPTOR_SET;
+		writes[i].dst_set          = set;
+		writes[i].dst_binding      = i;
+		writes[i].descriptor_count = 1;
+	}
+	crgpu_device_update_descriptor_sets(r->device, writes, count);
+	return set;
+}
+
+static void caps_buffer_barrier(crgpu_command_list cmd, crgpu_buffer buffer, CRGPU_RESOURCE_STATE before, CRGPU_RESOURCE_STATE after) {
+	crgpu_buffer_barrier barrier;
+	memset(&barrier, 0, sizeof(barrier));
+	barrier.base.type    = CR_STRUCT_TYPE_GPU_BUFFER_BARRIER;
+	barrier.buffer       = buffer;
+	barrier.state_before = before;
+	barrier.state_after  = after;
+	crgpu_command_list_pipeline_barrier(cmd, &barrier, 1, NULL, 0);
+}
+
+// One image under test and the layout it is in now.
+typedef struct caps_image {
+	crgpu_image image;
+	crgpu_image_view view;   // every aspect: barriers, attachments, storage
+	crgpu_image_view sample; // what a shader reads (the depth of a depth format)
+	CRGPU_IMAGE_LAYOUT layout;
+	uint32_t width, height;
+} caps_image;
+
+static void caps_to(crgpu_command_list cmd, caps_image *image, CRGPU_IMAGE_LAYOUT layout) {
+	crgpu_command_list_image_barrier_view(cmd, image->view, image->layout, layout);
+	image->layout = layout;
+}
+
+// Dispatches [pipeline] over [set] (one 4 x 4 group, or one thread for
+// [single]) with [push], and reads the run's output buffer back into
+// [out] (256 bytes). The image is already in the layout the set names.
+static void caps_dispatch(caps_run *r, caps_image *image, CRGPU_IMAGE_LAYOUT layout, crgpu_compute_pipeline pipeline, crgpu_descriptor_set set,
+                          const void *push, uint32_t push_size, bool reads_back, uint8_t out[256]) {
+	caps_begin(r);
+	caps_to(r->cmd, image, layout);
+	if (reads_back)
+		caps_buffer_barrier(r->cmd, r->out, CRGPU_RESOURCE_STATE_COMMON, CRGPU_RESOURCE_STATE_UNORDERED_ACCESS);
+	crgpu_command_list_bind_compute_pipeline(r->cmd, pipeline);
+	crgpu_command_list_bind_compute_descriptor_sets(r->cmd, pipeline, 0, &set, 1);
+	if (push_size)
+		crgpu_command_list_push_compute_constants(r->cmd, pipeline, 0, push_size, push);
+	crgpu_command_list_dispatch(r->cmd, 1, 1, 1);
+	if (reads_back) {
+		caps_buffer_barrier(r->cmd, r->out, CRGPU_RESOURCE_STATE_UNORDERED_ACCESS, CRGPU_RESOURCE_STATE_COPY_SOURCE);
+		crgpu_command_list_copy_buffer(r->cmd, r->out, r->out_readback, 0, 0, 256);
+	}
+	caps_submit(r);
+	if (reads_back) {
+		void *mapped = NULL;
+		CHECK(crgpu_buffer_map(r->out_readback, 0, 256, &mapped) == CR_SUCCESS);
+		if (mapped) {
+			CHECK(crgpu_buffer_invalidate(r->out_readback, 0, 256) == CR_SUCCESS);
+			memcpy(out, mapped, 256);
+			crgpu_buffer_unmap(r->out_readback);
+		}
+	}
+}
+
+// What the image holds where the test knows it: the left two columns and
+// the right two, as raw bits of the class's type; or, for a depth format,
+// one depth everywhere.
+typedef struct caps_content {
+	bool known;
+	uint32_t left[4], right[4];
+	bool depth_known;
+	float depth;
+} caps_content;
+
+// Every texel read by Load (SAMPLED) and, where the content is known,
+// compared.
+static void caps_check_load(caps_run *r, caps_image *image, caps_class c, const char *name, const caps_content *content) {
+	crgpu_descriptor_set set =
+	    caps_set(r, r->load_layout, image->sample, CRGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE, CRGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, false, true);
+	if (!set || !r->load_pipeline[c])
+		return;
+	uint8_t out[256];
+	memset(out, 0, sizeof(out));
+	caps_dispatch(r, image, CRGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, r->load_pipeline[c], set, NULL, 0, true, out);
+	++r->uses;
+	caps_layout layout;
+	if (content->depth_known) {
+		uint32_t wrong = 0;
+		for (uint32_t t = 0; t < 16; ++t) {
+			float d;
+			memcpy(&d, out + t * 16, sizeof(d));
+			wrong += fabsf(d - content->depth) > 1e-3f;
+		}
+		if (wrong)
+			fprintf(stderr, "  %s: %u depths loaded wrong\n", name, wrong);
+		CHECK(wrong == 0);
+		++r->compared;
+		return;
+	}
+	if (!content->known || !caps_comparable(name, &layout))
+		return;
+	uint32_t wrong = 0;
+	for (uint32_t y = 0; y < CAPS_SIZE; ++y)
+		for (uint32_t x = 0; x < CAPS_SIZE; ++x) {
+			uint32_t want[4], got[4];
+			caps_expected(c, &layout, x < 2 ? content->left : content->right, want);
+			memcpy(got, out + (y * 4 + x) * 16, sizeof(got));
+			for (uint32_t i = 0; i < 4; ++i)
+				if (!caps_component_is(c, got[i], want[i], 1e-3f)) {
+					if (wrong < 4)
+						fprintf(stderr, "  %s: texel (%u, %u) component %u is 0x%08x, expected 0x%08x\n", name, x, y, i, got[i], want[i]);
+					++wrong;
+				}
+		}
+	CHECK(wrong == 0);
+	++r->compared;
+}
+
+// Stage COPY: known bytes up to the whole image and back, byte for byte.
+static void caps_copy(caps_run *r, caps_image *image, CRGPU_FORMAT format, const char *name) {
+	uint32_t block_w = 0, block_h = 0, block_bytes = 0;
+	CHECK(crgpu_format_get_texel_block(format, &block_w, &block_h, &block_bytes) == CR_SUCCESS);
+	uint64_t row_pitch = 0, total = 0;
+	crgpu_image_get_buffer_copy_size(image->image, 0, &row_pitch, &total);
+	if (!block_bytes || !row_pitch || !total) {
+		CHECK(false);
+		return;
+	}
+	const uint32_t blocks_wide = (image->width + block_w - 1) / block_w;
+	const uint32_t blocks_high = (image->height + block_h - 1) / block_h;
+	uint8_t *bytes             = (uint8_t *)calloc(1, (size_t)total);
+	if (!bytes)
+		return;
+	for (uint32_t by = 0; by < blocks_high; ++by)
+		for (uint32_t b = 0; b < blocks_wide * block_bytes; ++b) {
+			uint8_t v = (uint8_t)(by * 61u + b * 7u + 1u);
+			// A depth format holds depths: float ones in [0, 1].
+			if (format == CRGPU_FORMAT_D32_FLOAT && b % 4 == 3)
+				v = 0x3E;
+			bytes[(size_t)by * row_pitch + b] = v;
+		}
+	crgpu_buffer upload   = make_buffer(r->device, CRGPU_MEMORY_KIND_UPLOAD, CRGPU_BUFFER_USAGE_TRANSFER_SRC, total, bytes);
+	crgpu_buffer readback = make_buffer(r->device, CRGPU_MEMORY_KIND_READBACK, CRGPU_BUFFER_USAGE_TRANSFER_DST, total, NULL);
+	if (upload && readback) {
+		crgpu_image_buffer_copy_desc copy;
+		memset(&copy, 0, sizeof(copy));
+		copy.buffer_row_length = (uint32_t)(row_pitch / block_bytes * block_w);
+		copy.array_layer_count = 1;
+		copy.width             = image->width;
+		copy.height            = image->height;
+		copy.depth             = 1;
+		caps_begin(r);
+		caps_to(r->cmd, image, CRGPU_IMAGE_LAYOUT_TRANSFER_DST);
+		CHECK(crgpu_command_list_copy_buffer_to_image(r->cmd, upload, image->image, &copy) == CR_SUCCESS);
+		caps_to(r->cmd, image, CRGPU_IMAGE_LAYOUT_TRANSFER_SRC);
+		CHECK(crgpu_command_list_copy_image_to_buffer(r->cmd, image->image, readback, &copy) == CR_SUCCESS);
+		caps_submit(r);
+		++r->uses;
+		void *mapped = NULL;
+		CHECK(crgpu_buffer_map(readback, 0, total, &mapped) == CR_SUCCESS);
+		if (mapped) {
+			CHECK(crgpu_buffer_invalidate(readback, 0, total) == CR_SUCCESS);
+			uint32_t wrong = 0;
+			for (uint32_t by = 0; by < blocks_high; ++by)
+				wrong += memcmp((const uint8_t *)mapped + (size_t)by * row_pitch, bytes + (size_t)by * row_pitch,
+				                (size_t)blocks_wide * block_bytes) != 0;
+			if (wrong)
+				fprintf(stderr, "  %s: %u rows of the copy came back wrong\n", name, wrong);
+			CHECK(wrong == 0);
+			++r->compared;
+			crgpu_buffer_unmap(readback);
+		}
+	}
+	crgpu_buffer_destroy(readback);
+	crgpu_buffer_destroy(upload);
+	free(bytes);
+}
+
+// A graphics pipeline over [vertex] and [fragment] with one colour
+// attachment of [format] (blended ONE / ONE where [blend]) or none, and a
+// depth attachment of [depth_format] or none.
+static CR_RESULT caps_graphics(crgpu_device device, crgpu_shader_module vertex, crgpu_shader_module fragment, CRGPU_FORMAT format, bool blend,
+                               CRGPU_FORMAT depth_format, bool push, crgpu_graphics_pipeline *out_pipeline) {
+	crgpu_graphics_pipeline_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type          = CR_STRUCT_TYPE_GPU_GRAPHICS_PIPELINE_DESC;
+	desc.debug_name         = "format capabilities";
+	desc.vertex_module      = vertex;
+	desc.fragment_module    = fragment;
+	desc.primitive_topology = CRGPU_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	desc.cull_mode          = CRGPU_CULL_MODE_NONE;
+	if (format != CRGPU_FORMAT_UNKNOWN) {
+		desc.color_attachment_formats[0] = format;
+		desc.color_attachment_count      = 1;
+		if (blend) {
+			desc.blend_attachments[0].blend_enable           = true;
+			desc.blend_attachments[0].src_color_blend_factor = CRGPU_BLEND_FACTOR_ONE;
+			desc.blend_attachments[0].dst_color_blend_factor = CRGPU_BLEND_FACTOR_ONE;
+			desc.blend_attachments[0].color_blend_op         = CRGPU_BLEND_OP_ADD;
+			desc.blend_attachments[0].src_alpha_blend_factor = CRGPU_BLEND_FACTOR_ONE;
+			desc.blend_attachments[0].dst_alpha_blend_factor = CRGPU_BLEND_FACTOR_ONE;
+			desc.blend_attachments[0].alpha_blend_op         = CRGPU_BLEND_OP_ADD;
+		}
+	}
+	if (depth_format != CRGPU_FORMAT_UNKNOWN) {
+		desc.depth_format       = depth_format;
+		desc.depth_test_enable  = true;
+		desc.depth_write_enable = true;
+		desc.depth_compare_op   = CRGPU_COMPARE_OP_LESS;
+	}
+	if (push) {
+		desc.push_constant_ranges[0].stage_flags = CRGPU_SHADER_STAGE_VERTEX | CRGPU_SHADER_STAGE_FRAGMENT;
+		desc.push_constant_ranges[0].size        = 32;
+		desc.push_constant_range_count           = 1;
+	}
+	*out_pipeline = NULL;
+	return crgpu_graphics_pipeline_create(device, &desc, out_pipeline);
+}
+
+static void caps_viewport(crgpu_command_list cmd, uint32_t width, uint32_t height, uint32_t scissor_x) {
+	CRGPU_VIEWPORT viewport = {0.0f, 0.0f, (float)width, (float)height, 0.0f, 1.0f};
+	crgpu_command_list_set_viewports(cmd, 0, 1, &viewport);
+	CRGPU_SCISSOR_RECT scissor = {(float)scissor_x, 0.0f, (float)(width - scissor_x), (float)height};
+	crgpu_command_list_set_scissor_rects(cmd, 0, 1, &scissor);
+}
+
+// Stage COLOR_ATTACHMENT (and BLEND): cleared to K, then V drawn over the
+// right two columns, ONE / ONE where the format blends.
+static void caps_color(caps_run *r, caps_image *image, CRGPU_FORMAT format, caps_class c, bool blend, caps_content *content) {
+	crgpu_graphics_pipeline pipeline = NULL;
+	CHECK(caps_graphics(r->device, r->vert, r->color[c], format, blend, CRGPU_FORMAT_UNKNOWN, true, &pipeline) == CR_SUCCESS);
+	if (!pipeline)
+		return;
+	uint32_t v[4], k[4];
+	caps_values(c, v, k);
+	caps_begin(r);
+	caps_to(r->cmd, image, CRGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	crgpu_rendering_begin_desc pass;
+	memset(&pass, 0, sizeof(pass));
+	pass.base.type                       = CR_STRUCT_TYPE_GPU_RENDERING_BEGIN_DESC;
+	pass.color_attachments[0].image_view = image->view;
+	pass.color_attachments[0].load_op    = CRGPU_LOAD_OP_CLEAR;
+	pass.color_attachments[0].store_op   = CRGPU_STORE_OP_STORE;
+	if (c == CAPS_FLOAT)
+		memcpy(pass.color_attachments[0].clear_color, k, sizeof(k));
+	pass.color_attachment_count = 1;
+	pass.width                  = image->width;
+	pass.height                 = image->height;
+	crgpu_command_list_begin_rendering(r->cmd, &pass);
+	caps_viewport(r->cmd, image->width, image->height, 2);
+	crgpu_command_list_bind_graphics_pipeline(r->cmd, pipeline);
+	uint32_t push[8] = {v[0], v[1], v[2], v[3], 0, 0, 0, 0};
+	crgpu_command_list_push_graphics_constants(r->cmd, pipeline, 0, sizeof(push), push);
+	crgpu_command_list_draw(r->cmd, 3, 0);
+	crgpu_command_list_end_rendering(r->cmd);
+	caps_submit(r);
+	r->uses += blend ? 2 : 1;
+	content->known = true;
+	memcpy(content->left, k, sizeof(k));
+	for (uint32_t i = 0; i < 4; ++i) {
+		float fv, fk, sum;
+		memcpy(&fv, &v[i], sizeof(fv));
+		memcpy(&fk, &k[i], sizeof(fk));
+		sum                = fv + fk;
+		content->right[i] = v[i];
+		if (blend)
+			memcpy(&content->right[i], &sum, sizeof(sum));
+	}
+	crgpu_graphics_pipeline_destroy(pipeline);
+}
+
+// Stage STORAGE: V written to the left two columns, K to the right, by a
+// compute shader that doesn't name the format.
+static void caps_store(caps_run *r, caps_image *image, caps_class c, caps_content *content) {
+	crgpu_descriptor_set set =
+	    caps_set(r, r->store_layout, image->view, CRGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE, CRGPU_IMAGE_LAYOUT_GENERAL, false, false);
+	if (!set || !r->store_pipeline[c])
+		return;
+	uint32_t push[8];
+	caps_values(c, push, push + 4);
+	caps_dispatch(r, image, CRGPU_IMAGE_LAYOUT_GENERAL, r->store_pipeline[c], set, push, sizeof(push), false, NULL);
+	++r->uses;
+	content->known = true;
+	memcpy(content->left, push, 16);
+	memcpy(content->right, push + 4, 16);
+}
+
+// Stage STORAGE_READ: every texel read through the storage binding (and
+// written back as it was), compared with what the store left.
+static void caps_storage_read(caps_run *r, caps_image *image, caps_class c, const char *name, const caps_content *content) {
+	crgpu_descriptor_set set =
+	    caps_set(r, r->rw_layout, image->view, CRGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE, CRGPU_IMAGE_LAYOUT_GENERAL, false, true);
+	if (!set || !r->rw_pipeline[c])
+		return;
+	uint8_t out[256];
+	memset(out, 0, sizeof(out));
+	caps_dispatch(r, image, CRGPU_IMAGE_LAYOUT_GENERAL, r->rw_pipeline[c], set, NULL, 0, true, out);
+	++r->uses;
+	caps_layout layout;
+	if (!content->known || !caps_comparable(name, &layout))
+		return;
+	uint32_t wrong = 0;
+	for (uint32_t t = 0; t < 16; ++t) {
+		uint32_t want[4], got[4];
+		caps_expected(c, &layout, (t % 4) < 2 ? content->left : content->right, want);
+		memcpy(got, out + t * 16, sizeof(got));
+		for (uint32_t i = 0; i < 4; ++i)
+			wrong += !caps_component_is(c, got[i], want[i], 1e-3f);
+	}
+	if (wrong)
+		fprintf(stderr, "  %s: %u components read through storage wrong\n", name, wrong);
+	CHECK(wrong == 0);
+	++r->compared;
+}
+
+// Stage FILTERED: sampled linearly halfway between columns 1 and 2, which
+// is the mean of the left and right values.
+static void caps_filter(caps_run *r, caps_image *image, const char *name, const caps_content *content) {
+	crgpu_descriptor_set set =
+	    caps_set(r, r->sample_layout, image->sample, CRGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE, CRGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, true, true);
+	if (!set || !r->sample_pipeline)
+		return;
+	uint8_t out[256];
+	memset(out, 0, sizeof(out));
+	caps_dispatch(r, image, CRGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, r->sample_pipeline, set, NULL, 0, true, out);
+	++r->uses;
+	float got[4];
+	memcpy(got, out, sizeof(got));
+	if (content->depth_known) {
+		if (fabsf(got[0] - content->depth) > 1e-3f)
+			fprintf(stderr, "  %s: filtered depth %f, expected %f\n", name, got[0], content->depth);
+		CHECK(fabsf(got[0] - content->depth) <= 1e-3f);
+		++r->compared;
+		return;
+	}
+	caps_layout layout;
+	if (!content->known || !caps_comparable(name, &layout))
+		return;
+	uint32_t left[4], right[4];
+	caps_expected(CAPS_FLOAT, &layout, content->left, left);
+	caps_expected(CAPS_FLOAT, &layout, content->right, right);
+	for (uint32_t i = 0; i < 4; ++i) {
+		float l, rr;
+		memcpy(&l, &left[i], sizeof(l));
+		memcpy(&rr, &right[i], sizeof(rr));
+		const float want = (l + rr) * 0.5f;
+		if (fabsf(got[i] - want) > 0.02f)
+			fprintf(stderr, "  %s: filtered component %u is %f, expected %f\n", name, i, got[i], want);
+		CHECK(fabsf(got[i] - want) <= 0.02f);
+	}
+	++r->compared;
+}
+
+// Stage DEPTH_STENCIL_ATTACHMENT: cleared to 1, a draw at 0.5 passes
+// LESS and writes its colour, one at 0.75 fails and doesn't; the colour
+// read back is the first draw's everywhere, and the depth is 0.5.
+static void caps_depth(caps_run *r, caps_image *image, CRGPU_FORMAT format, const char *name, caps_content *content) {
+	crgpu_graphics_pipeline pipeline = NULL;
+	CHECK(caps_graphics(r->device, r->vert, r->color[CAPS_FLOAT], CRGPU_FORMAT_R8G8B8A8_UNORM, false, format, true, &pipeline) == CR_SUCCESS);
+	caps_image color;
+	memset(&color, 0, sizeof(color));
+	color.image  = make_image(r->device, NULL, CRGPU_IMAGE_USAGE_COLOR_ATTACHMENT | CRGPU_IMAGE_USAGE_TRANSFER_SRC, CRGPU_FORMAT_R8G8B8A8_UNORM,
+	                          image->width, image->height, "format capabilities depth colour");
+	color.view   = make_image_view(color.image, CRGPU_IMAGE_ASPECT_COLOR);
+	color.width  = image->width;
+	color.height = image->height;
+	uint64_t row_pitch = 0, total = 0;
+	if (color.image)
+		crgpu_image_get_buffer_copy_size(color.image, 0, &row_pitch, &total);
+	crgpu_buffer readback = total ? make_buffer(r->device, CRGPU_MEMORY_KIND_READBACK, CRGPU_BUFFER_USAGE_TRANSFER_DST, total, NULL) : NULL;
+	if (pipeline && color.view && readback) {
+		caps_begin(r);
+		caps_to(r->cmd, &color, CRGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+		caps_to(r->cmd, image, CRGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+		crgpu_rendering_begin_desc pass;
+		memset(&pass, 0, sizeof(pass));
+		pass.base.type                       = CR_STRUCT_TYPE_GPU_RENDERING_BEGIN_DESC;
+		pass.color_attachments[0].image_view = color.view;
+		pass.color_attachments[0].load_op    = CRGPU_LOAD_OP_CLEAR;
+		pass.color_attachments[0].store_op   = CRGPU_STORE_OP_STORE;
+		// make_image()'s clear value, which D3D12 was told of.
+		pass.color_attachments[0].clear_color[0] = 0.4f;
+		pass.color_attachments[0].clear_color[1] = 0.4f;
+		pass.color_attachments[0].clear_color[2] = 0.4f;
+		pass.color_attachments[0].clear_color[3] = 1.0f;
+		pass.color_attachment_count              = 1;
+		pass.depth_attachment.image_view         = image->view;
+		pass.depth_attachment.depth_load_op      = CRGPU_LOAD_OP_CLEAR;
+		pass.depth_attachment.depth_store_op     = CRGPU_STORE_OP_STORE;
+		pass.depth_attachment.stencil_load_op    = CRGPU_LOAD_OP_CLEAR;
+		pass.depth_attachment.stencil_store_op   = CRGPU_STORE_OP_STORE;
+		pass.depth_attachment.clear_depth        = 1.0f;
+		pass.width                               = image->width;
+		pass.height                              = image->height;
+		crgpu_command_list_begin_rendering(r->cmd, &pass);
+		caps_viewport(r->cmd, image->width, image->height, 0);
+		crgpu_command_list_bind_graphics_pipeline(r->cmd, pipeline);
+		const float first[8]  = {1.0f, 0.0f, 0.0f, 1.0f, 0.5f, 0.0f, 0.0f, 0.0f};
+		const float second[8] = {0.0f, 0.0f, 1.0f, 1.0f, 0.75f, 0.0f, 0.0f, 0.0f};
+		crgpu_command_list_push_graphics_constants(r->cmd, pipeline, 0, sizeof(first), first);
+		crgpu_command_list_draw(r->cmd, 3, 0);
+		crgpu_command_list_push_graphics_constants(r->cmd, pipeline, 0, sizeof(second), second);
+		crgpu_command_list_draw(r->cmd, 3, 0);
+		crgpu_command_list_end_rendering(r->cmd);
+		caps_to(r->cmd, &color, CRGPU_IMAGE_LAYOUT_TRANSFER_SRC);
+		crgpu_image_buffer_copy_desc copy;
+		memset(&copy, 0, sizeof(copy));
+		copy.buffer_row_length = (uint32_t)(row_pitch / 4);
+		copy.array_layer_count = 1;
+		copy.width             = image->width;
+		copy.height            = image->height;
+		copy.depth             = 1;
+		CHECK(crgpu_command_list_copy_image_to_buffer(r->cmd, color.image, readback, &copy) == CR_SUCCESS);
+		caps_submit(r);
+		++r->uses;
+		void *mapped = NULL;
+		CHECK(crgpu_buffer_map(readback, 0, total, &mapped) == CR_SUCCESS);
+		if (mapped) {
+			CHECK(crgpu_buffer_invalidate(readback, 0, total) == CR_SUCCESS);
+			uint32_t wrong = 0;
+			for (uint32_t y = 0; y < image->height; ++y)
+				for (uint32_t x = 0; x < image->width; ++x)
+					wrong += !pixel_is((const uint8_t *)mapped, (uint32_t)row_pitch, x, y, 255, 0, 0, 255);
+			if (wrong)
+				fprintf(stderr, "  %s: %u pixels of the depth-tested draws wrong\n", name, wrong);
+			CHECK(wrong == 0);
+			++r->compared;
+			crgpu_buffer_unmap(readback);
+		}
+		content->depth_known = true;
+		content->depth       = 0.5f;
+	}
+	crgpu_buffer_destroy(readback);
+	crgpu_image_view_destroy(color.view);
+	crgpu_image_destroy(color.image);
+	crgpu_graphics_pipeline_destroy(pipeline);
+}
+
+// Stage VERTEX: three vertices whose attribute at location 0 is V in
+// [format], fetched and drawn into one texel of a four-component target of
+// the class, read back.
+static void caps_vertex(caps_run *r, CRGPU_FORMAT format, const char *name) {
+	const caps_class c = caps_class_of(name);
+	const CRGPU_FORMAT target_formats[3] = {CRGPU_FORMAT_R32G32B32A32_FLOAT, CRGPU_FORMAT_R32G32B32A32_UINT, CRGPU_FORMAT_R32G32B32A32_SINT};
+	uint32_t v[4], k[4];
+	caps_values(c, v, k);
+	caps_layout layout;
+	uint8_t attribute[16];
+	memset(attribute, 0, sizeof(attribute));
+	const char *kind = strrchr(name, '_');
+	bool known       = caps_comparable(name, &layout) && kind && caps_encode(&layout, kind + 1, c, v, attribute);
+	if (!known)
+		memset(attribute, 0, sizeof(attribute));
+
+	crgpu_graphics_pipeline_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type                       = CR_STRUCT_TYPE_GPU_GRAPHICS_PIPELINE_DESC;
+	desc.debug_name                      = "format capabilities vertex";
+	desc.vertex_module                   = r->vertex_vert[c];
+	desc.fragment_module                 = r->vertex_frag[c];
+	desc.vertex_attributes[0].location   = 0;
+	desc.vertex_attributes[0].binding    = 0;
+	desc.vertex_attributes[0].format     = format;
+	desc.vertex_attribute_count          = 1;
+	desc.vertex_bindings[0].binding      = 0;
+	desc.vertex_bindings[0].stride       = 16;
+	desc.vertex_binding_count            = 1;
+	desc.primitive_topology              = CRGPU_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	desc.cull_mode                       = CRGPU_CULL_MODE_NONE;
+	desc.color_attachment_formats[0]     = target_formats[c];
+	desc.color_attachment_count          = 1;
+	crgpu_graphics_pipeline pipeline   = NULL;
+	CHECK(crgpu_graphics_pipeline_create(r->device, &desc, &pipeline) == CR_SUCCESS);
+
+	uint8_t vertices[48];
+	for (uint32_t i = 0; i < 3; ++i)
+		memcpy(vertices + i * 16, attribute, 16);
+	crgpu_buffer buffer    = make_buffer(r->device, CRGPU_MEMORY_KIND_UPLOAD, CRGPU_BUFFER_USAGE_VERTEX, sizeof(vertices), vertices);
+	crgpu_buffer_view view = make_view(buffer, 0, 16, sizeof(vertices));
+	caps_image target;
+	memset(&target, 0, sizeof(target));
+	crgpu_image_desc image_desc;
+	memset(&image_desc, 0, sizeof(image_desc));
+	image_desc.base.type          = CR_STRUCT_TYPE_GPU_IMAGE_DESC;
+	image_desc.usage              = CRGPU_IMAGE_USAGE_COLOR_ATTACHMENT | CRGPU_IMAGE_USAGE_TRANSFER_SRC;
+	image_desc.type               = CRGPU_IMAGE_TYPE_2D;
+	image_desc.format             = target_formats[c];
+	image_desc.clear_value.format = target_formats[c];
+	image_desc.width              = 1;
+	image_desc.height             = 1;
+	image_desc.depth              = 1;
+	image_desc.array_layers       = 1;
+	image_desc.mip_levels         = 1;
+	image_desc.debug_name         = "format capabilities vertex target";
+	CHECK(crgpu_image_create(r->device, &image_desc, &target.image) == CR_SUCCESS);
+	target.view   = make_image_view(target.image, CRGPU_IMAGE_ASPECT_COLOR);
+	target.width  = 1;
+	target.height = 1;
+	uint64_t row_pitch = 0, total = 0;
+	if (target.image)
+		crgpu_image_get_buffer_copy_size(target.image, 0, &row_pitch, &total);
+	crgpu_buffer readback = total ? make_buffer(r->device, CRGPU_MEMORY_KIND_READBACK, CRGPU_BUFFER_USAGE_TRANSFER_DST, total, NULL) : NULL;
+	if (pipeline && view && target.view && readback) {
+		caps_begin(r);
+		caps_to(r->cmd, &target, CRGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+		crgpu_rendering_begin_desc pass;
+		memset(&pass, 0, sizeof(pass));
+		pass.base.type                       = CR_STRUCT_TYPE_GPU_RENDERING_BEGIN_DESC;
+		pass.color_attachments[0].image_view = target.view;
+		pass.color_attachments[0].load_op    = CRGPU_LOAD_OP_CLEAR;
+		pass.color_attachments[0].store_op   = CRGPU_STORE_OP_STORE;
+		pass.color_attachment_count          = 1;
+		pass.width                           = 1;
+		pass.height                          = 1;
+		crgpu_command_list_begin_rendering(r->cmd, &pass);
+		caps_viewport(r->cmd, 1, 1, 0);
+		crgpu_command_list_bind_graphics_pipeline(r->cmd, pipeline);
+		crgpu_command_list_set_vertex_buffers(r->cmd, 0, 1, &view);
+		crgpu_command_list_draw(r->cmd, 3, 0);
+		crgpu_command_list_end_rendering(r->cmd);
+		caps_to(r->cmd, &target, CRGPU_IMAGE_LAYOUT_TRANSFER_SRC);
+		crgpu_image_buffer_copy_desc copy;
+		memset(&copy, 0, sizeof(copy));
+		copy.buffer_row_length = (uint32_t)(row_pitch / 16);
+		copy.array_layer_count = 1;
+		copy.width             = 1;
+		copy.height            = 1;
+		copy.depth             = 1;
+		CHECK(crgpu_command_list_copy_image_to_buffer(r->cmd, target.image, readback, &copy) == CR_SUCCESS);
+		caps_submit(r);
+		++r->uses;
+		void *mapped = NULL;
+		CHECK(crgpu_buffer_map(readback, 0, total, &mapped) == CR_SUCCESS);
+		if (mapped && known) {
+			CHECK(crgpu_buffer_invalidate(readback, 0, total) == CR_SUCCESS);
+			uint32_t want[4], got[4];
+			caps_expected(c, &layout, v, want);
+			memcpy(got, mapped, sizeof(got));
+			uint32_t wrong = 0;
+			for (uint32_t i = 0; i < 4; ++i)
+				wrong += !caps_component_is(c, got[i], want[i], 1e-3f);
+			if (wrong)
+				fprintf(stderr, "  %s: the vertex attribute fetched (0x%08x, 0x%08x, 0x%08x, 0x%08x), expected (0x%08x, 0x%08x, 0x%08x, 0x%08x)\n",
+				        name, got[0], got[1], got[2], got[3], want[0], want[1], want[2], want[3]);
+			CHECK(wrong == 0);
+			++r->compared;
+		}
+		if (mapped)
+			crgpu_buffer_unmap(readback);
+	}
+	crgpu_buffer_destroy(readback);
+	crgpu_image_view_destroy(target.view);
+	crgpu_image_destroy(target.image);
+	crgpu_buffer_view_destroy(view);
+	crgpu_buffer_destroy(buffer);
+	crgpu_graphics_pipeline_destroy(pipeline);
+}
+
+// Every use [caps] reports of [format], on the run's device.
+static void caps_use_format(caps_run *r, CRGPU_FORMAT format, const char *name, CRGPU_FORMAT_CAPABILITIES caps) {
+	const caps_class c = caps_class_of(name);
+	if (caps & CRGPU_FORMAT_CAPABILITY_VERTEX)
+		caps_vertex(r, format, name);
+	CRGPU_IMAGE_USAGE usage = 0;
+	if (caps & CRGPU_FORMAT_CAPABILITY_SAMPLED)
+		usage |= CRGPU_IMAGE_USAGE_SAMPLED;
+	if (caps & CRGPU_FORMAT_CAPABILITY_STORAGE)
+		usage |= CRGPU_IMAGE_USAGE_STORAGE;
+	if (caps & CRGPU_FORMAT_CAPABILITY_COLOR_ATTACHMENT)
+		usage |= CRGPU_IMAGE_USAGE_COLOR_ATTACHMENT;
+	if (caps & CRGPU_FORMAT_CAPABILITY_DEPTH_STENCIL_ATTACHMENT)
+		usage |= CRGPU_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT;
+	if (caps & CRGPU_FORMAT_CAPABILITY_COPY)
+		usage |= CRGPU_IMAGE_USAGE_TRANSFER_SRC | CRGPU_IMAGE_USAGE_TRANSFER_DST;
+	if (!usage)
+		return;
+
+	// 4 x 4, or one block where a block is bigger.
+	uint32_t block_w = 1, block_h = 1, block_bytes = 0;
+	crgpu_format_get_texel_block(format, &block_w, &block_h, &block_bytes);
+	caps_image image;
+	memset(&image, 0, sizeof(image));
+	image.width  = block_w > CAPS_SIZE ? block_w : CAPS_SIZE;
+	image.height = block_h > CAPS_SIZE ? block_h : CAPS_SIZE;
+	const bool depth = (caps & CRGPU_FORMAT_CAPABILITY_DEPTH_STENCIL_ATTACHMENT) != 0;
+	crgpu_image_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type          = CR_STRUCT_TYPE_GPU_IMAGE_DESC;
+	desc.usage              = usage;
+	desc.type               = CRGPU_IMAGE_TYPE_2D;
+	desc.format             = format;
+	desc.clear_value.format = format;
+	if (depth)
+		desc.clear_value.depth_stencil.depth = 1.0f;
+	else if (c == CAPS_FLOAT)
+		desc.clear_value.color[1] = 1.0f;
+	desc.width        = image.width;
+	desc.height       = image.height;
+	desc.depth        = 1;
+	desc.array_layers = 1;
+	desc.mip_levels   = 1;
+	desc.debug_name   = name;
+	CHECK(crgpu_image_create(r->device, &desc, &image.image) == CR_SUCCESS);
+	if (!image.image) {
+		fprintf(stderr, "  %s: no image of usage 0x%x\n", name, (unsigned)usage);
+		return;
+	}
+	const bool stencil = format == CRGPU_FORMAT_D24_UNORM_S8_UINT || format == CRGPU_FORMAT_D32_FLOAT_S8X24_UINT;
+	image.view   = make_image_view(image.image, depth ? (CRGPU_IMAGE_ASPECT_DEPTH | (stencil ? CRGPU_IMAGE_ASPECT_STENCIL : 0))
+	                                                  : CRGPU_IMAGE_ASPECT_COLOR);
+	image.sample = depth ? make_image_view(image.image, CRGPU_IMAGE_ASPECT_DEPTH) : NULL;
+	if (!depth)
+		image.sample = image.view;
+	image.layout = CRGPU_IMAGE_LAYOUT_UNDEFINED;
+	caps_content content;
+	memset(&content, 0, sizeof(content));
+	if (image.view && image.sample) {
+		if (caps & CRGPU_FORMAT_CAPABILITY_COPY)
+			caps_copy(r, &image, format, name);
+		if (depth)
+			caps_depth(r, &image, format, name, &content);
+		if (caps & CRGPU_FORMAT_CAPABILITY_COLOR_ATTACHMENT) {
+			caps_color(r, &image, format, c, (caps & CRGPU_FORMAT_CAPABILITY_BLEND) != 0, &content);
+			if (caps & CRGPU_FORMAT_CAPABILITY_SAMPLED)
+				caps_check_load(r, &image, c, name, &content);
+		}
+		if (caps & CRGPU_FORMAT_CAPABILITY_STORAGE) {
+			caps_store(r, &image, c, &content);
+			if (caps & CRGPU_FORMAT_CAPABILITY_SAMPLED)
+				caps_check_load(r, &image, c, name, &content);
+			if (caps & CRGPU_FORMAT_CAPABILITY_STORAGE_READ)
+				caps_storage_read(r, &image, c, name, &content);
+		}
+		// A format only copied and sampled (a block format), or a depth
+		// format: loaded once all the same.
+		if ((caps & CRGPU_FORMAT_CAPABILITY_SAMPLED) && !(caps & (CRGPU_FORMAT_CAPABILITY_COLOR_ATTACHMENT | CRGPU_FORMAT_CAPABILITY_STORAGE)))
+			caps_check_load(r, &image, c, name, &content);
+		if (caps & CRGPU_FORMAT_CAPABILITY_FILTERED)
+			caps_filter(r, &image, name, &content);
+	}
+	if (image.sample != image.view)
+		crgpu_image_view_destroy(image.sample);
+	crgpu_image_view_destroy(image.view);
+	crgpu_image_destroy(image.image);
+}
+
+// Fault 1 of the draft: a B5G6R5_UNORM texel cleared to red reads 0xF800
+// as a 16-bit word (red in the high bits, as DXGI lays it out), where the
+// adapter renders to and copies the format.
+static void caps_b5g6r5(caps_run *r, CRGPU_FORMAT_CAPABILITIES caps) {
+	const CRGPU_FORMAT_CAPABILITIES needed = CRGPU_FORMAT_CAPABILITY_COLOR_ATTACHMENT | CRGPU_FORMAT_CAPABILITY_COPY;
+	if ((caps & needed) != needed) {
+		printf("crgpu_objects_test: the adapter doesn't render to and copy B5G6R5_UNORM (0x%03x), its layout not checked\n", (unsigned)caps);
+		return;
+	}
+	caps_image image;
+	memset(&image, 0, sizeof(image));
+	crgpu_image_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type          = CR_STRUCT_TYPE_GPU_IMAGE_DESC;
+	desc.usage              = CRGPU_IMAGE_USAGE_COLOR_ATTACHMENT | CRGPU_IMAGE_USAGE_TRANSFER_SRC;
+	desc.type               = CRGPU_IMAGE_TYPE_2D;
+	desc.format             = CRGPU_FORMAT_B5G6R5_UNORM;
+	desc.clear_value.format = CRGPU_FORMAT_B5G6R5_UNORM;
+	desc.clear_value.color[0] = 1.0f;
+	desc.clear_value.color[3] = 1.0f;
+	desc.width = desc.height = desc.depth = desc.array_layers = desc.mip_levels = 1;
+	desc.debug_name                                                            = "B5G6R5";
+	CHECK(crgpu_image_create(r->device, &desc, &image.image) == CR_SUCCESS);
+	image.view  = make_image_view(image.image, CRGPU_IMAGE_ASPECT_COLOR);
+	image.width = image.height = 1;
+	uint64_t row_pitch = 0, total = 0;
+	if (image.image)
+		crgpu_image_get_buffer_copy_size(image.image, 0, &row_pitch, &total);
+	crgpu_buffer readback = total ? make_buffer(r->device, CRGPU_MEMORY_KIND_READBACK, CRGPU_BUFFER_USAGE_TRANSFER_DST, total, NULL) : NULL;
+	if (image.view && readback) {
+		caps_begin(r);
+		caps_to(r->cmd, &image, CRGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+		crgpu_command_list_clear_color_attachment(r->cmd, image.view, 1.0f, 0.0f, 0.0f, 1.0f, 1, 1);
+		caps_to(r->cmd, &image, CRGPU_IMAGE_LAYOUT_TRANSFER_SRC);
+		crgpu_image_buffer_copy_desc copy;
+		memset(&copy, 0, sizeof(copy));
+		copy.array_layer_count = 1;
+		copy.width = copy.height = copy.depth = 1;
+		CHECK(crgpu_command_list_copy_image_to_buffer(r->cmd, image.image, readback, &copy) == CR_SUCCESS);
+		caps_submit(r);
+		void *mapped = NULL;
+		CHECK(crgpu_buffer_map(readback, 0, total, &mapped) == CR_SUCCESS);
+		if (mapped) {
+			CHECK(crgpu_buffer_invalidate(readback, 0, total) == CR_SUCCESS);
+			uint16_t word = 0;
+			memcpy(&word, mapped, sizeof(word));
+			printf("crgpu_objects_test: a B5G6R5_UNORM texel cleared to red reads 0x%04x\n", word);
+			CHECK(word == 0xF800);
+			crgpu_buffer_unmap(readback);
+		}
+	}
+	crgpu_buffer_destroy(readback);
+	crgpu_image_view_destroy(image.view);
+	crgpu_image_destroy(image.image);
+}
+
+// The blend refusal on [device] (made with independent blend where the
+// adapter has it, never dual-source): the draft's cases, then every format
+// blended, accepted exactly where it has BLEND.
+static void caps_refusals(crgpu_device device, crgpu_adapter adapter, bool independent) {
+	crgpu_shader_module vertex   = make_module(device, &crgpu_test_objects_caps_vert, "caps refusals vertex");
+	crgpu_shader_module floats   = make_module(device, &crgpu_test_objects_caps_color_float_frag, "caps refusals float");
+	crgpu_shader_module uints    = make_module(device, &crgpu_test_objects_caps_color_uint_frag, "caps refusals uint");
+	crgpu_graphics_pipeline pipe = NULL;
+	if (!vertex || !floats || !uints) {
+		CHECK(false);
+		goto done;
+	}
+	// One R32_UINT attachment blended: no API blends an integer format.
+	pipe = NULL;
+	CHECK(caps_graphics(device, vertex, uints, CRGPU_FORMAT_R32_UINT, true, CRGPU_FORMAT_UNKNOWN, true, &pipe) == CR_RESULT_GPU_INVALID_FORMAT);
+	CHECK(pipe == NULL);
+	CHECK(caps_graphics(device, vertex, uints, CRGPU_FORMAT_R32_UINT, false, CRGPU_FORMAT_UNKNOWN, true, &pipe) == CR_SUCCESS);
+	CHECK(pipe != NULL);
+	crgpu_graphics_pipeline_destroy(pipe);
+
+	// UNKNOWN blended.
+	crgpu_graphics_pipeline_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type                                   = CR_STRUCT_TYPE_GPU_GRAPHICS_PIPELINE_DESC;
+	desc.vertex_module                               = vertex;
+	desc.fragment_module                             = floats;
+	desc.primitive_topology                          = CRGPU_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	desc.color_attachment_formats[0]                 = CRGPU_FORMAT_UNKNOWN;
+	desc.color_attachment_count                      = 1;
+	desc.blend_attachments[0].blend_enable           = true;
+	desc.blend_attachments[0].src_color_blend_factor = CRGPU_BLEND_FACTOR_ONE;
+	desc.blend_attachments[0].dst_color_blend_factor = CRGPU_BLEND_FACTOR_ONE;
+	desc.blend_attachments[0].src_alpha_blend_factor = CRGPU_BLEND_FACTOR_ONE;
+	desc.blend_attachments[0].dst_alpha_blend_factor = CRGPU_BLEND_FACTOR_ONE;
+	desc.push_constant_ranges[0].stage_flags         = CRGPU_SHADER_STAGE_VERTEX | CRGPU_SHADER_STAGE_FRAGMENT;
+	desc.push_constant_ranges[0].size                = 32;
+	desc.push_constant_range_count                   = 1;
+	pipe                                             = NULL;
+	CHECK(crgpu_graphics_pipeline_create(device, &desc, &pipe) == CR_RESULT_GPU_INVALID_FORMAT);
+	CHECK(pipe == NULL);
+
+	// Two attachments, R8G8B8A8_UNORM blended and R32_UINT not: accepted
+	// (independent blend, where the adapter has it).
+	if (independent) {
+		desc.color_attachment_formats[0] = CRGPU_FORMAT_R8G8B8A8_UNORM;
+		desc.color_attachment_formats[1] = CRGPU_FORMAT_R32_UINT;
+		desc.color_attachment_count      = 2;
+		CHECK(crgpu_graphics_pipeline_create(device, &desc, &pipe) == CR_SUCCESS);
+		CHECK(pipe != NULL);
+		crgpu_graphics_pipeline_destroy(pipe);
+		// And the other way round: attachment 1 blended, R32_UINT.
+		desc.color_attachment_formats[0] = CRGPU_FORMAT_R8G8B8A8_UNORM;
+		desc.blend_attachments[1]        = desc.blend_attachments[0];
+		memset(&desc.blend_attachments[0], 0, sizeof(desc.blend_attachments[0]));
+		pipe = NULL;
+		CHECK(crgpu_graphics_pipeline_create(device, &desc, &pipe) == CR_RESULT_GPU_INVALID_FORMAT);
+		CHECK(pipe == NULL);
+	} else {
+		printf("crgpu_objects_test: no independent blend, the two-attachment blend cases skipped\n");
+	}
+
+	// The order: the blend checks before the format's.
+	memset(&desc.blend_attachments, 0, sizeof(desc.blend_attachments));
+	desc.fragment_module                             = uints;
+	desc.color_attachment_formats[0]                 = CRGPU_FORMAT_R32_UINT;
+	desc.color_attachment_count                      = 1;
+	desc.blend_attachments[0].blend_enable           = true;
+	desc.blend_attachments[0].src_color_blend_factor = CRGPU_BLEND_FACTOR_ONE;
+	desc.blend_attachments[0].dst_color_blend_factor = 14u;
+	desc.blend_attachments[0].src_alpha_blend_factor = CRGPU_BLEND_FACTOR_ONE;
+	desc.blend_attachments[0].dst_alpha_blend_factor = CRGPU_BLEND_FACTOR_ONE;
+	pipe                                             = NULL;
+	CHECK(crgpu_graphics_pipeline_create(device, &desc, &pipe) == CR_RESULT_GPU_INVALID_BLEND_FACTOR);
+	CHECK(pipe == NULL);
+	desc.blend_attachments[0].dst_color_blend_factor = CRGPU_BLEND_FACTOR_SRC1_COLOR;
+	pipe                                             = NULL;
+	CHECK(crgpu_graphics_pipeline_create(device, &desc, &pipe) == CR_RESULT_GPU_FEATURE_NOT_SUPPORTED);
+	CHECK(pipe == NULL);
+
+	// Every format blended into: made exactly where the adapter blends it.
+	uint32_t made = 0, refused = 0;
+	for (size_t i = 0; i < CAPS_FORMAT_COUNT; ++i) {
+		CRGPU_FORMAT_CAPABILITIES caps = 0;
+		CHECK(crgpu_adapter_get_format_capabilities(adapter, caps_formats[i].format, &caps) == CR_SUCCESS);
+		const bool blends = (caps & CRGPU_FORMAT_CAPABILITY_BLEND) != 0;
+		pipe              = (crgpu_graphics_pipeline)(uintptr_t)1;
+		const CR_RESULT r = caps_graphics(device, vertex, floats, caps_formats[i].format, true, CRGPU_FORMAT_UNKNOWN, true, &pipe);
+		if ((r == CR_SUCCESS) != blends || (!blends && r != CR_RESULT_GPU_INVALID_FORMAT))
+			fprintf(stderr, "  %s blended: %s (BLEND %s)\n", caps_formats[i].name, cr_result_str(r), blends ? "yes" : "no");
+		CHECK(blends ? r == CR_SUCCESS : r == CR_RESULT_GPU_INVALID_FORMAT);
+		CHECK(blends ? pipe != NULL : pipe == NULL);
+		made += r == CR_SUCCESS;
+		refused += r == CR_RESULT_GPU_INVALID_FORMAT;
+		if (r == CR_SUCCESS)
+			crgpu_graphics_pipeline_destroy(pipe);
+	}
+	printf("crgpu_objects_test: a pipeline blending into each format: %u made, %u refused\n", made, refused);
+
+done:
+	crgpu_shader_module_destroy(uints);
+	crgpu_shader_module_destroy(floats);
+	crgpu_shader_module_destroy(vertex);
+}
+
+// Card S51 on one adapter: the blend refusal, then every capability each
+// format reports used once, under the API's validation, on a device made
+// with the block-format bits the adapter has.
+static void test_format_capabilities(crgpu_adapter adapter, CRGPU_FEATURES supported) {
+	caps_run r;
+	memset(&r, 0, sizeof(r));
+	crgpu_device_desc device_desc;
+	memset(&device_desc, 0, sizeof(device_desc));
+	device_desc.base.type          = CR_STRUCT_TYPE_GPU_DEVICE_DESC;
+	device_desc.required_features  = supported & (CRGPU_FEATURE_TEXTURE_COMPRESSION_BC | CRGPU_FEATURE_TEXTURE_COMPRESSION_ASTC_LDR |
+	                                             CRGPU_FEATURE_INDEPENDENT_BLEND);
+	device_desc.direct_queue_count = 1;
+	device_desc.max_descriptors    = 16;
+	device_desc.max_samplers       = 4;
+	device_desc.debug_name         = "crgpu_objects_test format capabilities";
+	CHECK(crgpu_device_create(adapter, &device_desc, &r.device) == CR_SUCCESS);
+	if (!r.device)
+		return;
+	caps_refusals(r.device, adapter, (supported & CRGPU_FEATURE_INDEPENDENT_BLEND) != 0);
+
+	CHECK(crgpu_command_queue_get(r.device, CRGPU_COMMAND_LIST_TYPE_DIRECT, 0, &r.queue) == CR_SUCCESS);
+	crgpu_command_allocator_desc allocator_desc;
+	memset(&allocator_desc, 0, sizeof(allocator_desc));
+	allocator_desc.base.type = CR_STRUCT_TYPE_GPU_COMMAND_ALLOCATOR_DESC;
+	allocator_desc.type      = CRGPU_COMMAND_LIST_TYPE_DIRECT;
+	CHECK(crgpu_command_allocator_create(r.device, &allocator_desc, &r.allocator) == CR_SUCCESS);
+	if (r.allocator)
+		CHECK(crgpu_command_list_create(r.allocator, &r.cmd) == CR_SUCCESS);
+
+	const crgpu_test_shader *loads[3]    = {&crgpu_test_objects_caps_load_float_comp, &crgpu_test_objects_caps_load_uint_comp,
+	                                        &crgpu_test_objects_caps_load_sint_comp};
+	const crgpu_test_shader *stores[3]   = {&crgpu_test_objects_caps_store_float_comp, &crgpu_test_objects_caps_store_uint_comp,
+	                                        &crgpu_test_objects_caps_store_sint_comp};
+	const crgpu_test_shader *rws[3]      = {&crgpu_test_objects_caps_rw_float_comp, &crgpu_test_objects_caps_rw_uint_comp,
+	                                        &crgpu_test_objects_caps_rw_sint_comp};
+	const crgpu_test_shader *colors[3]   = {&crgpu_test_objects_caps_color_float_frag, &crgpu_test_objects_caps_color_uint_frag,
+	                                        &crgpu_test_objects_caps_color_sint_frag};
+	const crgpu_test_shader *vverts[3]   = {&crgpu_test_objects_caps_vertex_float_vert, &crgpu_test_objects_caps_vertex_uint_vert,
+	                                        &crgpu_test_objects_caps_vertex_sint_vert};
+	const crgpu_test_shader *vfrags[3]   = {&crgpu_test_objects_caps_vertex_float_frag, &crgpu_test_objects_caps_vertex_uint_frag,
+	                                        &crgpu_test_objects_caps_vertex_sint_frag};
+	const CRGPU_DESCRIPTOR_TYPE load_types[2]   = {CRGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE, CRGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER};
+	const CRGPU_DESCRIPTOR_TYPE sample_types[3] = {CRGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE, CRGPU_DESCRIPTOR_TYPE_SAMPLER,
+	                                               CRGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER};
+	const CRGPU_DESCRIPTOR_TYPE store_types[1]  = {CRGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE};
+	const CRGPU_DESCRIPTOR_TYPE rw_types[2]     = {CRGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE, CRGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER};
+	r.load_layout   = caps_layout_of(r.device, load_types, 2);
+	r.sample_layout = caps_layout_of(r.device, sample_types, 3);
+	r.store_layout  = caps_layout_of(r.device, store_types, 1);
+	r.rw_layout     = caps_layout_of(r.device, rw_types, 2);
+	for (uint32_t c = 0; c < 3; ++c) {
+		r.load[c]              = make_module(r.device, loads[c], "caps load");
+		r.store[c]             = make_module(r.device, stores[c], "caps store");
+		r.rw[c]                = make_module(r.device, rws[c], "caps read-write");
+		r.color[c]             = make_module(r.device, colors[c], "caps colour");
+		r.vertex_vert[c]       = make_module(r.device, vverts[c], "caps vertex");
+		r.vertex_frag[c]       = make_module(r.device, vfrags[c], "caps vertex fragment");
+		r.load_pipeline[c]     = caps_compute(r.device, r.load[c], r.load_layout, 0, "caps load");
+		r.store_pipeline[c]    = caps_compute(r.device, r.store[c], r.store_layout, 32, "caps store");
+		r.rw_pipeline[c]       = caps_compute(r.device, r.rw[c], r.rw_layout, 0, "caps read-write");
+	}
+	r.sample          = make_module(r.device, &crgpu_test_objects_caps_sample_comp, "caps sample");
+	r.vert            = make_module(r.device, &crgpu_test_objects_caps_vert, "caps vertex");
+	r.sample_pipeline = caps_compute(r.device, r.sample, r.sample_layout, 0, "caps sample");
+
+	crgpu_descriptor_pool_desc pool_desc;
+	memset(&pool_desc, 0, sizeof(pool_desc));
+	pool_desc.base.type                     = CR_STRUCT_TYPE_GPU_DESCRIPTOR_POOL_DESC;
+	pool_desc.max_sets                      = 1;
+	pool_desc.pool_sizes[0].descriptor_type = CRGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+	pool_desc.pool_sizes[0].count           = 1;
+	pool_desc.pool_sizes[1].descriptor_type = CRGPU_DESCRIPTOR_TYPE_SAMPLER;
+	pool_desc.pool_sizes[1].count           = 1;
+	pool_desc.pool_sizes[2].descriptor_type = CRGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	pool_desc.pool_sizes[2].count           = 1;
+	pool_desc.pool_sizes[3].descriptor_type = CRGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	pool_desc.pool_sizes[3].count           = 1;
+	pool_desc.pool_size_count               = 4;
+	CHECK(crgpu_descriptor_pool_create(r.device, &pool_desc, &r.pool) == CR_SUCCESS);
+	crgpu_sampler_desc sampler_desc;
+	memset(&sampler_desc, 0, sizeof(sampler_desc));
+	sampler_desc.base.type      = CR_STRUCT_TYPE_GPU_SAMPLER_DESC;
+	sampler_desc.mag_filter     = CRGPU_FILTER_LINEAR;
+	sampler_desc.min_filter     = CRGPU_FILTER_LINEAR;
+	sampler_desc.mipmap_filter  = CRGPU_FILTER_NEAREST;
+	sampler_desc.address_mode_u = CRGPU_ADDRESS_MODE_CLAMP_TO_EDGE;
+	sampler_desc.address_mode_v = CRGPU_ADDRESS_MODE_CLAMP_TO_EDGE;
+	sampler_desc.address_mode_w = CRGPU_ADDRESS_MODE_CLAMP_TO_EDGE;
+	sampler_desc.max_lod        = 0.0f;
+	sampler_desc.max_anisotropy = 1.0f;
+	sampler_desc.debug_name     = "caps linear";
+	CHECK(crgpu_sampler_create(r.device, &sampler_desc, &r.sampler) == CR_SUCCESS);
+	r.out          = make_buffer(r.device, CRGPU_MEMORY_KIND_DEVICE, CRGPU_BUFFER_USAGE_STORAGE | CRGPU_BUFFER_USAGE_TRANSFER_SRC, 256, NULL);
+	r.out_readback = make_buffer(r.device, CRGPU_MEMORY_KIND_READBACK, CRGPU_BUFFER_USAGE_TRANSFER_DST, 256, NULL);
+
+	if (r.cmd && r.pool && r.sampler && r.out && r.out_readback && r.vert && r.sample_pipeline) {
+		for (size_t i = 0; i < CAPS_FORMAT_COUNT; ++i) {
+			CRGPU_FORMAT_CAPABILITIES caps = 0;
+			CHECK(crgpu_adapter_get_format_capabilities(adapter, caps_formats[i].format, &caps) == CR_SUCCESS);
+			if (!caps)
+				continue;
+			const uint32_t failures_before = (uint32_t)failures;
+			caps_use_format(&r, caps_formats[i].format, caps_formats[i].name, caps);
+			++r.formats;
+			if ((uint32_t)failures != failures_before)
+				fprintf(stderr, "  %s (0x%03x): a use failed\n", caps_formats[i].name, (unsigned)caps);
+		}
+		CRGPU_FORMAT_CAPABILITIES b5g6r5 = 0;
+		CHECK(crgpu_adapter_get_format_capabilities(adapter, CRGPU_FORMAT_B5G6R5_UNORM, &b5g6r5) == CR_SUCCESS);
+		caps_b5g6r5(&r, b5g6r5);
+		printf("crgpu_objects_test: format capabilities: %u formats with a use, %u uses made, %u compared\n", r.formats, r.uses, r.compared);
+	}
+
+	crgpu_buffer_destroy(r.out_readback);
+	crgpu_buffer_destroy(r.out);
+	crgpu_sampler_destroy(r.sampler);
+	crgpu_descriptor_pool_destroy(r.pool);
+	crgpu_compute_pipeline_destroy(r.sample_pipeline);
+	crgpu_shader_module_destroy(r.vert);
+	crgpu_shader_module_destroy(r.sample);
+	for (uint32_t c = 0; c < 3; ++c) {
+		crgpu_compute_pipeline_destroy(r.rw_pipeline[c]);
+		crgpu_compute_pipeline_destroy(r.store_pipeline[c]);
+		crgpu_compute_pipeline_destroy(r.load_pipeline[c]);
+		crgpu_shader_module_destroy(r.vertex_frag[c]);
+		crgpu_shader_module_destroy(r.vertex_vert[c]);
+		crgpu_shader_module_destroy(r.color[c]);
+		crgpu_shader_module_destroy(r.rw[c]);
+		crgpu_shader_module_destroy(r.store[c]);
+		crgpu_shader_module_destroy(r.load[c]);
+	}
+	crgpu_descriptor_set_layout_destroy(r.rw_layout);
+	crgpu_descriptor_set_layout_destroy(r.store_layout);
+	crgpu_descriptor_set_layout_destroy(r.sample_layout);
+	crgpu_descriptor_set_layout_destroy(r.load_layout);
+	crgpu_command_list_destroy(r.cmd);
+	crgpu_command_allocator_destroy(r.allocator);
+	crgpu_device_destroy(r.device);
 }
 
 // ---- Block formats (card S48) ---------------------------------------------
@@ -3568,6 +4982,977 @@ static void test_block_formats(
 		    (unsigned long long)r.blocks_compared);
 		CHECK(r.images == (bc ? 3u * 14u : 0u) + (astc ? 3u * 28u : 0u));
 	}
+	crgpu_command_list_destroy(r.cmd);
+	crgpu_command_allocator_destroy(r.allocator);
+	crgpu_device_destroy(r.device);
+}
+
+// ---- A copy's buffer rows and images against its region (card S52) ----------
+
+typedef struct rows_run {
+	crgpu_device device;
+	crgpu_command_queue queue;
+	crgpu_command_allocator allocator;
+	crgpu_command_list cmd;
+	uint32_t cases, refused, round_trips;
+} rows_run;
+
+// One image under test, the layout it is in, and its format's block.
+typedef struct rows_image {
+	crgpu_image image;
+	CRGPU_IMAGE_LAYOUT layout;
+	uint32_t bw, bh, bytes;
+	uint64_t row_alignment, offset_alignment;
+} rows_image;
+
+static bool rows_image_make(rows_run *r, rows_image *out, CRGPU_FORMAT format, CRGPU_IMAGE_TYPE type, uint32_t width, uint32_t height,
+                            uint32_t depth, uint32_t layers, uint32_t levels, CRGPU_IMAGE_USAGE usage, CR_RESULT *out_result) {
+	memset(out, 0, sizeof(*out));
+	crgpu_image_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type          = CR_STRUCT_TYPE_GPU_IMAGE_DESC;
+	desc.usage              = usage;
+	desc.type               = type;
+	desc.format             = format;
+	desc.clear_value.format = format;
+	desc.width              = width;
+	desc.height             = height;
+	desc.depth              = depth;
+	desc.array_layers       = layers;
+	desc.mip_levels         = levels;
+	desc.debug_name         = "copy rows";
+	const CR_RESULT result  = crgpu_image_create(r->device, &desc, &out->image);
+	if (out_result)
+		*out_result = result;
+	if (result != CR_SUCCESS)
+		return false;
+	out->layout = CRGPU_IMAGE_LAYOUT_UNDEFINED;
+	CHECK(crgpu_format_get_texel_block(format, &out->bw, &out->bh, &out->bytes) == CR_SUCCESS);
+	CHECK(crgpu_image_get_buffer_copy_row_pitch_alignment(out->image, &out->row_alignment) == CR_SUCCESS);
+	CHECK(crgpu_image_get_buffer_copy_offset_alignment(out->image, &out->offset_alignment) == CR_SUCCESS);
+	return true;
+}
+
+static void rows_to(rows_run *r, rows_image *image, CRGPU_IMAGE_LAYOUT layout) {
+	crgpu_command_list_image_barrier(r->cmd, image->image, image->layout, layout);
+	image->layout = layout;
+}
+
+// Where a copy of [c] puts its bytes in the buffer, as the checks lay it
+// out: the row pitch, the bytes a slice and a layer take, and the region in
+// blocks.
+typedef struct rows_layout {
+	uint64_t pitch, slice, layer, end;
+	uint32_t blocks_wide, blocks_high;
+} rows_layout;
+
+static rows_layout rows_layout_of(const rows_image *image, const crgpu_image_buffer_copy_desc *c) {
+	rows_layout l;
+	const uint32_t row_length   = c->buffer_row_length ? c->buffer_row_length : c->width;
+	const uint32_t image_height = c->buffer_image_height ? c->buffer_image_height : c->height;
+	l.pitch       = ((uint64_t)row_length + image->bw - 1) / image->bw * image->bytes;
+	l.slice       = l.pitch * (((uint64_t)image_height + image->bh - 1) / image->bh);
+	l.layer       = l.slice * c->depth;
+	l.blocks_wide = (c->width + image->bw - 1) / image->bw;
+	l.blocks_high = (c->height + image->bh - 1) / image->bh;
+	l.end = c->buffer_offset + (uint64_t)(c->array_layer_count - 1) * l.layer + (uint64_t)(c->depth - 1) * l.slice +
+	        (uint64_t)(l.blocks_high - 1) * l.pitch + (uint64_t)l.blocks_wide * image->bytes;
+	return l;
+}
+
+// The byte of block-row [y], byte [x] of a row, of slice [z] of layer [a]
+// at [l]'s layout from [offset].
+static uint64_t rows_at(const rows_layout *l, uint64_t offset, uint32_t a, uint32_t z, uint32_t y, uint64_t x) {
+	return offset + a * l->layer + z * l->slice + y * l->pitch + x;
+}
+
+static uint8_t rows_byte(uint64_t i, uint32_t seed) {
+	return (uint8_t)(i * 31u + seed * 101u + 7u);
+}
+
+// One case of [c] on [image], both ways. The region is first written from
+// a layout every backend takes ([image]'s pitch alignment, no image
+// height); then the copy into the image from a buffer laid out as [c], and
+// the copy out of it into a buffer filled with a sentinel, each expected to
+// return [want]; then the region read back in the first layout. Accepted:
+// the image holds the second buffer's bytes, and the copy out wrote them
+// at [c]'s layout, the gaps between its rows keeping the sentinel.
+// Refused: the image holds the first bytes and the sentinel is untouched,
+// nothing recorded either way.
+static void rows_case(rows_run *r, rows_image *image, crgpu_image_buffer_copy_desc c, CR_RESULT want, const char *what) {
+	crgpu_image_buffer_copy_desc plain = c;
+	const uint64_t tight              = (uint64_t)((c.width + image->bw - 1) / image->bw) * image->bytes;
+	const uint64_t pitch              = (tight + image->row_alignment - 1) / image->row_alignment * image->row_alignment;
+	plain.buffer_offset               = 0;
+	plain.buffer_row_length           = (uint32_t)(pitch / image->bytes * image->bw);
+	plain.buffer_image_height         = 0;
+	const rows_layout lp              = rows_layout_of(image, &plain);
+	const rows_layout lc              = rows_layout_of(image, &c);
+	const uint64_t case_size          = want == CR_SUCCESS ? lc.end : 65536;
+	uint8_t *first = (uint8_t *)malloc((size_t)lp.end), *second = (uint8_t *)malloc((size_t)case_size);
+	uint8_t *sentinel = (uint8_t *)malloc((size_t)case_size);
+	if (!first || !second || !sentinel) {
+		free(first);
+		free(second);
+		free(sentinel);
+		return;
+	}
+	for (uint64_t i = 0; i < lp.end; ++i)
+		first[i] = rows_byte(i, 1);
+	for (uint64_t i = 0; i < case_size; ++i)
+		second[i] = rows_byte(i, 2);
+	memset(sentinel, 0xC3, (size_t)case_size);
+	crgpu_buffer first_buffer  = make_buffer(r->device, CRGPU_MEMORY_KIND_UPLOAD, CRGPU_BUFFER_USAGE_TRANSFER_SRC, lp.end, first);
+	crgpu_buffer second_buffer = make_buffer(r->device, CRGPU_MEMORY_KIND_UPLOAD, CRGPU_BUFFER_USAGE_TRANSFER_SRC, case_size, second);
+	crgpu_buffer sentinel_up   = make_buffer(r->device, CRGPU_MEMORY_KIND_UPLOAD, CRGPU_BUFFER_USAGE_TRANSFER_SRC, case_size, sentinel);
+	crgpu_buffer out_case      = make_buffer(r->device, CRGPU_MEMORY_KIND_READBACK, CRGPU_BUFFER_USAGE_TRANSFER_DST, case_size, NULL);
+	crgpu_buffer out_plain     = make_buffer(r->device, CRGPU_MEMORY_KIND_READBACK, CRGPU_BUFFER_USAGE_TRANSFER_DST, lp.end, NULL);
+	if (first_buffer && second_buffer && sentinel_up && out_case && out_plain) {
+		// The sentinel into the buffer the copy out writes, on its own.
+		block_run run = {r->device, r->queue, r->allocator, r->cmd, 0, 0, 0};
+		block_begin(&run);
+		crgpu_command_list_copy_buffer(r->cmd, sentinel_up, out_case, 0, 0, case_size);
+		block_submit(&run);
+
+		block_begin(&run);
+		rows_to(r, image, CRGPU_IMAGE_LAYOUT_TRANSFER_DST);
+		CHECK(crgpu_command_list_copy_buffer_to_image(r->cmd, first_buffer, image->image, &plain) == CR_SUCCESS);
+		const CR_RESULT up = crgpu_command_list_copy_buffer_to_image(r->cmd, second_buffer, image->image, &c);
+		rows_to(r, image, CRGPU_IMAGE_LAYOUT_TRANSFER_SRC);
+		caps_buffer_barrier(r->cmd, out_case, CRGPU_RESOURCE_STATE_COMMON, CRGPU_RESOURCE_STATE_COPY_DEST);
+		const CR_RESULT down = crgpu_command_list_copy_image_to_buffer(r->cmd, image->image, out_case, &c);
+		CHECK(crgpu_command_list_copy_image_to_buffer(r->cmd, image->image, out_plain, &plain) == CR_SUCCESS);
+		block_submit(&run);
+		if (up != want || down != want)
+			fprintf(stderr, "  copy rows, %s: into the image %s, out of it %s, expected %s\n", what, cr_result_str(up), cr_result_str(down),
+			        cr_result_str(want));
+		CHECK(up == want);
+		CHECK(down == want);
+		++r->cases;
+		r->refused += want != CR_SUCCESS;
+
+		void *mapped_case = NULL, *mapped_plain = NULL;
+		CHECK(crgpu_buffer_map(out_case, 0, case_size, &mapped_case) == CR_SUCCESS);
+		CHECK(crgpu_buffer_map(out_plain, 0, lp.end, &mapped_plain) == CR_SUCCESS);
+		if (mapped_case && mapped_plain) {
+			CHECK(crgpu_buffer_invalidate(out_case, 0, case_size) == CR_SUCCESS);
+			CHECK(crgpu_buffer_invalidate(out_plain, 0, lp.end) == CR_SUCCESS);
+			const uint8_t *got_case  = (const uint8_t *)mapped_case;
+			const uint8_t *got_plain = (const uint8_t *)mapped_plain;
+			uint64_t wrong           = 0;
+			// The image's region, read back in the plain layout.
+			for (uint32_t a = 0; a < c.array_layer_count; ++a)
+				for (uint32_t z = 0; z < c.depth; ++z)
+					for (uint32_t y = 0; y < lp.blocks_high; ++y)
+						for (uint64_t x = 0; x < (uint64_t)lp.blocks_wide * image->bytes; ++x) {
+							const uint8_t was = want == CR_SUCCESS ? second[rows_at(&lc, c.buffer_offset, a, z, y, x)]
+							                                       : first[rows_at(&lp, 0, a, z, y, x)];
+							wrong += got_plain[rows_at(&lp, 0, a, z, y, x)] != was;
+						}
+			// The copy out: the region's bytes at [c]'s layout and the
+			// sentinel elsewhere, or the sentinel everywhere.
+			uint8_t *expected = (uint8_t *)malloc((size_t)case_size);
+			if (expected) {
+				memset(expected, 0xC3, (size_t)case_size);
+				if (want == CR_SUCCESS)
+					for (uint32_t a = 0; a < c.array_layer_count; ++a)
+						for (uint32_t z = 0; z < c.depth; ++z)
+							for (uint32_t y = 0; y < lc.blocks_high; ++y)
+								for (uint64_t x = 0; x < (uint64_t)lc.blocks_wide * image->bytes; ++x) {
+									const uint64_t at = rows_at(&lc, c.buffer_offset, a, z, y, x);
+									expected[at]      = second[at];
+								}
+				for (uint64_t i = 0; i < case_size; ++i)
+					wrong += got_case[i] != expected[i];
+				free(expected);
+			}
+			if (wrong)
+				fprintf(stderr, "  copy rows, %s: %llu bytes wrong\n", what, (unsigned long long)wrong);
+			CHECK(wrong == 0);
+			r->round_trips += want == CR_SUCCESS && wrong == 0;
+		}
+		if (mapped_case)
+			crgpu_buffer_unmap(out_case);
+		if (mapped_plain)
+			crgpu_buffer_unmap(out_plain);
+	}
+	crgpu_buffer_destroy(out_plain);
+	crgpu_buffer_destroy(out_case);
+	crgpu_buffer_destroy(sentinel_up);
+	crgpu_buffer_destroy(second_buffer);
+	crgpu_buffer_destroy(first_buffer);
+	free(sentinel);
+	free(second);
+	free(first);
+}
+
+static crgpu_image_buffer_copy_desc rows_region(uint32_t x, uint32_t y, uint32_t z, uint32_t width, uint32_t height, uint32_t depth,
+                                                uint32_t layers, uint32_t level, uint32_t row_length, uint32_t image_height) {
+	crgpu_image_buffer_copy_desc c;
+	memset(&c, 0, sizeof(c));
+	c.buffer_row_length   = row_length;
+	c.buffer_image_height = image_height;
+	c.mip_level           = level;
+	c.array_layer_count   = layers;
+	c.image_x             = x;
+	c.image_y             = y;
+	c.image_z             = z;
+	c.width               = width;
+	c.height              = height;
+	c.depth               = depth;
+	return c;
+}
+
+// A row length of [texels] where its pitch meets [image]'s alignment (an
+// accepted case uses it only then: D3D12's 256 bytes takes 64 texels of
+// R8G8B8A8_UNORM or BC7_UNORM, not 8).
+static bool rows_pitch_ok(const rows_image *image, uint32_t texels) {
+	const uint64_t pitch = (uint64_t)(texels ? texels : 0) / image->bw * image->bytes;
+	return texels == 0 || pitch % image->row_alignment == 0;
+}
+
+// Q3: a row pitch of 2^31 bytes, one row of R8G8B8A8_UNORM, where a buffer
+// of 2^31 + 256 bytes can be made; the copy out refused, the buffer's first
+// bytes keeping their sentinel.
+static void rows_huge_pitch(rows_run *r, rows_image *image) {
+	const uint64_t size = (1ull << 31) + 256;
+	crgpu_buffer_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type    = CR_STRUCT_TYPE_GPU_BUFFER_DESC;
+	desc.usage        = CRGPU_BUFFER_USAGE_TRANSFER_SRC | CRGPU_BUFFER_USAGE_TRANSFER_DST;
+	desc.memory_kind  = CRGPU_MEMORY_KIND_DEVICE;
+	desc.size         = size;
+	crgpu_buffer big  = NULL;
+	if (crgpu_buffer_create(r->device, &desc, &big) != CR_SUCCESS || !big) {
+		printf("crgpu_objects_test: copy rows: no device buffer of 2^31 + 256 bytes here, the 2 GiB row pitch skipped\n");
+		return;
+	}
+	uint8_t sentinel[256];
+	memset(sentinel, 0xC3, sizeof(sentinel));
+	crgpu_buffer up   = make_buffer(r->device, CRGPU_MEMORY_KIND_UPLOAD, CRGPU_BUFFER_USAGE_TRANSFER_SRC, sizeof(sentinel), sentinel);
+	crgpu_buffer back = make_buffer(r->device, CRGPU_MEMORY_KIND_READBACK, CRGPU_BUFFER_USAGE_TRANSFER_DST, sizeof(sentinel), NULL);
+	if (up && back) {
+		block_run run = {r->device, r->queue, r->allocator, r->cmd, 0, 0, 0};
+		block_begin(&run);
+		crgpu_command_list_copy_buffer(r->cmd, up, big, 0, 0, sizeof(sentinel));
+		block_submit(&run);
+		// 2^29 texels of 4 bytes: a pitch of 2^31, a multiple of every
+		// backend's alignment, the region one row.
+		crgpu_image_buffer_copy_desc c = rows_region(0, 0, 0, 8, 1, 1, 1, 0, 1u << 29, 0);
+		block_begin(&run);
+		rows_to(r, image, CRGPU_IMAGE_LAYOUT_TRANSFER_DST);
+		const CR_RESULT up = crgpu_command_list_copy_buffer_to_image(r->cmd, big, image->image, &c);
+		rows_to(r, image, CRGPU_IMAGE_LAYOUT_TRANSFER_SRC);
+		const CR_RESULT down = crgpu_command_list_copy_image_to_buffer(r->cmd, image->image, big, &c);
+		CHECK(up == CR_RESULT_DESC_INVALID_PARAMETERS);
+		CHECK(down == CR_RESULT_DESC_INVALID_PARAMETERS);
+		caps_buffer_barrier(r->cmd, big, CRGPU_RESOURCE_STATE_COMMON, CRGPU_RESOURCE_STATE_COPY_SOURCE);
+		crgpu_command_list_copy_buffer(r->cmd, big, back, 0, 0, sizeof(sentinel));
+		block_submit(&run);
+		void *mapped = NULL;
+		CHECK(crgpu_buffer_map(back, 0, sizeof(sentinel), &mapped) == CR_SUCCESS);
+		if (mapped) {
+			CHECK(crgpu_buffer_invalidate(back, 0, sizeof(sentinel)) == CR_SUCCESS);
+			CHECK(memcmp(mapped, sentinel, sizeof(sentinel)) == 0);
+			crgpu_buffer_unmap(back);
+		}
+		printf("crgpu_objects_test: copy rows: a row pitch of 2^31 bytes: into the image %s, out of it %s\n", cr_result_str(up),
+		       cr_result_str(down));
+		++r->cases;
+		++r->refused;
+	}
+	crgpu_buffer_destroy(back);
+	crgpu_buffer_destroy(up);
+	crgpu_buffer_destroy(big);
+}
+
+// Card S52 on one adapter: each refusal both ways with nothing recorded,
+// each accepted neighbour round-tripped byte for byte, and the order.
+static void test_copy_rows(crgpu_adapter adapter, CRGPU_FEATURES supported) {
+	rows_run r;
+	memset(&r, 0, sizeof(r));
+	crgpu_device_desc device_desc;
+	memset(&device_desc, 0, sizeof(device_desc));
+	device_desc.base.type          = CR_STRUCT_TYPE_GPU_DEVICE_DESC;
+	device_desc.required_features  = supported & CRGPU_FEATURE_TEXTURE_COMPRESSION_BC;
+	device_desc.direct_queue_count = 1;
+	device_desc.max_descriptors    = 16;
+	device_desc.max_samplers       = 4;
+	device_desc.debug_name         = "crgpu_objects_test copy rows";
+	CHECK(crgpu_device_create(adapter, &device_desc, &r.device) == CR_SUCCESS);
+	if (!r.device)
+		return;
+	CHECK(crgpu_command_queue_get(r.device, CRGPU_COMMAND_LIST_TYPE_DIRECT, 0, &r.queue) == CR_SUCCESS);
+	crgpu_command_allocator_desc allocator_desc;
+	memset(&allocator_desc, 0, sizeof(allocator_desc));
+	allocator_desc.base.type = CR_STRUCT_TYPE_GPU_COMMAND_ALLOCATOR_DESC;
+	allocator_desc.type      = CRGPU_COMMAND_LIST_TYPE_DIRECT;
+	CHECK(crgpu_command_allocator_create(r.device, &allocator_desc, &r.allocator) == CR_SUCCESS);
+	if (r.allocator)
+		CHECK(crgpu_command_list_create(r.allocator, &r.cmd) == CR_SUCCESS);
+	if (!r.cmd)
+		goto done;
+
+	const CRGPU_IMAGE_USAGE copies = CRGPU_IMAGE_USAGE_SAMPLED | CRGPU_IMAGE_USAGE_TRANSFER_SRC | CRGPU_IMAGE_USAGE_TRANSFER_DST;
+	{
+		// One texel: R8G8B8A8_UNORM 8 x 8.
+		rows_image rgba;
+		if (rows_image_make(&r, &rgba, CRGPU_FORMAT_R8G8B8A8_UNORM, CRGPU_IMAGE_TYPE_2D, 8, 8, 1, 1, 1, copies, NULL)) {
+			rows_case(&r, &rgba, rows_region(0, 0, 0, 8, 8, 1, 1, 0, 4, 0), CR_RESULT_GPU_COPY_ROW_LENGTH_TOO_SHORT, "row length 4 of 8");
+			rows_case(&r, &rgba, rows_region(0, 0, 0, 8, 8, 1, 1, 0, 7, 0), CR_RESULT_GPU_COPY_ROW_LENGTH_TOO_SHORT, "row length 7 of 8");
+			if (rows_pitch_ok(&rgba, 8))
+				rows_case(&r, &rgba, rows_region(0, 0, 0, 8, 8, 1, 1, 0, 8, 0), CR_SUCCESS, "row length 8 of 8");
+			if (rows_pitch_ok(&rgba, 8))
+				rows_case(&r, &rgba, rows_region(0, 0, 0, 8, 8, 1, 1, 0, 0, 0), CR_SUCCESS, "row length 0");
+			rows_case(&r, &rgba, rows_region(0, 0, 0, 8, 8, 1, 1, 0, 64, 0), CR_SUCCESS, "row length 64");
+			rows_case(&r, &rgba, rows_region(0, 0, 0, 8, 8, 1, 1, 0, 64, 4), CR_RESULT_GPU_COPY_IMAGE_HEIGHT_TOO_SHORT, "image height 4 of 8");
+			rows_case(&r, &rgba, rows_region(0, 0, 0, 8, 8, 1, 1, 0, 64, 8), CR_SUCCESS, "image height 8");
+			rows_case(&r, &rgba, rows_region(0, 0, 0, 8, 8, 1, 1, 0, 64, 0), CR_SUCCESS, "image height 0");
+			rows_case(&r, &rgba, rows_region(0, 0, 0, 8, 8, 1, 1, 0, 64, 12), CR_SUCCESS, "image height 12");
+			// The order: a short row length before a misaligned offset; two
+			// short, the row length's.
+			crgpu_image_buffer_copy_desc c = rows_region(0, 0, 0, 8, 8, 1, 1, 0, 4, 0);
+			if (rgba.offset_alignment > 1) {
+				c.buffer_offset = 1;
+				rows_case(&r, &rgba, c, CR_RESULT_GPU_COPY_ROW_LENGTH_TOO_SHORT, "a short row length and a misaligned offset");
+			}
+			rows_case(&r, &rgba, rows_region(0, 0, 0, 8, 8, 1, 1, 0, 4, 4), CR_RESULT_GPU_COPY_ROW_LENGTH_TOO_SHORT,
+			          "a short row length and a short image height");
+			rows_huge_pitch(&r, &rgba);
+			crgpu_image_destroy(rgba.image);
+		}
+		// The usage before the region: an image without the transfer usage
+		// the copy needs, with a short row length.
+		rows_image no_dst, no_src;
+		if (rows_image_make(&r, &no_dst, CRGPU_FORMAT_R8G8B8A8_UNORM, CRGPU_IMAGE_TYPE_2D, 8, 8, 1, 1, 1,
+		                    CRGPU_IMAGE_USAGE_SAMPLED | CRGPU_IMAGE_USAGE_TRANSFER_SRC, NULL) &&
+		    rows_image_make(&r, &no_src, CRGPU_FORMAT_R8G8B8A8_UNORM, CRGPU_IMAGE_TYPE_2D, 8, 8, 1, 1, 1,
+		                    CRGPU_IMAGE_USAGE_SAMPLED | CRGPU_IMAGE_USAGE_TRANSFER_DST, NULL)) {
+			crgpu_buffer up   = make_buffer(r.device, CRGPU_MEMORY_KIND_UPLOAD, CRGPU_BUFFER_USAGE_TRANSFER_SRC, 4096, NULL);
+			crgpu_buffer down = make_buffer(r.device, CRGPU_MEMORY_KIND_READBACK, CRGPU_BUFFER_USAGE_TRANSFER_DST, 4096, NULL);
+			const crgpu_image_buffer_copy_desc c = rows_region(0, 0, 0, 8, 8, 1, 1, 0, 4, 0);
+			if (up && down) {
+				block_run run = {r.device, r.queue, r.allocator, r.cmd, 0, 0, 0};
+				block_begin(&run);
+				CHECK(crgpu_command_list_copy_buffer_to_image(r.cmd, up, no_dst.image, &c) == CR_RESULT_GPU_INVALID_IMAGE_USAGE);
+				CHECK(crgpu_command_list_copy_image_to_buffer(r.cmd, no_src.image, down, &c) == CR_RESULT_GPU_INVALID_IMAGE_USAGE);
+				block_submit(&run);
+				r.cases += 2;
+				r.refused += 2;
+			}
+			crgpu_buffer_destroy(down);
+			crgpu_buffer_destroy(up);
+		}
+		crgpu_image_destroy(no_src.image);
+		crgpu_image_destroy(no_dst.image);
+	}
+	if (supported & CRGPU_FEATURE_TEXTURE_COMPRESSION_BC) {
+		// A BC block: BC7_UNORM 12 x 12, 2 levels; level 1 is 6 x 6, two
+		// blocks each way, the second partly past the edge.
+		rows_image bc;
+		if (rows_image_make(&r, &bc, CRGPU_FORMAT_BC7_UNORM, CRGPU_IMAGE_TYPE_2D, 12, 12, 1, 1, 2, copies, NULL)) {
+			rows_case(&r, &bc, rows_region(0, 0, 0, 6, 6, 1, 1, 1, 4, 0), CR_RESULT_GPU_COPY_ROW_LENGTH_TOO_SHORT, "BC7, row length 4 of 6");
+			rows_case(&r, &bc, rows_region(0, 0, 0, 6, 6, 1, 1, 1, 6, 0), CR_RESULT_DESC_INVALID_PARAMETERS, "BC7, row length 6 (not whole blocks)");
+			if (rows_pitch_ok(&bc, 8))
+				rows_case(&r, &bc, rows_region(0, 0, 0, 6, 6, 1, 1, 1, 8, 0), CR_SUCCESS, "BC7, row length 8");
+			rows_case(&r, &bc, rows_region(0, 0, 0, 6, 6, 1, 1, 1, 64, 0), CR_SUCCESS, "BC7, row length 64");
+			rows_case(&r, &bc, rows_region(0, 0, 0, 6, 6, 1, 1, 1, 64, 4), CR_RESULT_GPU_COPY_IMAGE_HEIGHT_TOO_SHORT, "BC7, image height 4 of 6");
+			rows_case(&r, &bc, rows_region(0, 0, 0, 6, 6, 1, 1, 1, 64, 8), CR_SUCCESS, "BC7, image height 8");
+			if (rows_pitch_ok(&bc, 4))
+				rows_case(&r, &bc, rows_region(4, 0, 0, 2, 6, 1, 1, 1, 4, 0), CR_SUCCESS, "BC7, the edge block alone, row length 4");
+			rows_case(&r, &bc, rows_region(4, 0, 0, 2, 6, 1, 1, 1, 64, 0), CR_SUCCESS, "BC7, the edge block alone, row length 64");
+			crgpu_image_destroy(bc.image);
+		}
+	} else {
+		printf("crgpu_objects_test: copy rows: no BC on the adapter, the BC7 cases skipped\n");
+	}
+	{
+		// A packed 2 x 1 block, where the image can be made.
+		rows_image pair;
+		CR_RESULT made = CR_SUCCESS;
+		if (rows_image_make(&r, &pair, CRGPU_FORMAT_G8R8_G8B8_UNORM, CRGPU_IMAGE_TYPE_2D, 4, 4, 1, 1, 1,
+		                    CRGPU_IMAGE_USAGE_TRANSFER_SRC | CRGPU_IMAGE_USAGE_TRANSFER_DST, &made)) {
+			rows_case(&r, &pair, rows_region(0, 0, 0, 4, 4, 1, 1, 0, 2, 0), CR_RESULT_GPU_COPY_ROW_LENGTH_TOO_SHORT, "G8R8_G8B8, row length 2 of 4");
+			crgpu_image_destroy(pair.image);
+		} else {
+			printf("crgpu_objects_test: copy rows: no G8R8_G8B8_UNORM image here (%s), the packed 2 x 1 case skipped\n", cr_result_str(made));
+		}
+	}
+	{
+		// The slice pitch: R8G8B8A8_UNORM 3D 4 x 4 x 4.
+		rows_image volume;
+		if (rows_image_make(&r, &volume, CRGPU_FORMAT_R8G8B8A8_UNORM, CRGPU_IMAGE_TYPE_3D, 4, 4, 4, 1, 1, copies, NULL)) {
+			const uint32_t row = rows_pitch_ok(&volume, 4) ? 4 : 64;
+			rows_case(&r, &volume, rows_region(0, 0, 0, 4, 4, 4, 1, 0, row, 8), CR_RESULT_GPU_COPY_SLICE_PITCH_NOT_SUPPORTED,
+			          "3D, depth 4, image height 8");
+			rows_case(&r, &volume, rows_region(0, 0, 0, 4, 4, 4, 1, 0, row, 4), CR_SUCCESS, "3D, depth 4, image height 4");
+			rows_case(&r, &volume, rows_region(0, 0, 0, 4, 4, 4, 1, 0, row, 0), CR_SUCCESS, "3D, depth 4, image height 0");
+			rows_case(&r, &volume, rows_region(0, 0, 2, 4, 4, 1, 1, 0, row, 8), CR_SUCCESS, "3D, depth 1 at z 2, image height 8");
+			rows_case(&r, &volume, rows_region(0, 0, 0, 4, 4, 4, 1, 0, row, 2), CR_RESULT_GPU_COPY_IMAGE_HEIGHT_TOO_SHORT,
+			          "3D, depth 4, image height 2 (short, not taller)");
+			crgpu_image_destroy(volume.image);
+		}
+		// A 2D array of 3 layers 4 x 4, image height 8, every layer.
+		rows_image array;
+		if (rows_image_make(&r, &array, CRGPU_FORMAT_R8G8B8A8_UNORM, CRGPU_IMAGE_TYPE_2D, 4, 4, 1, 3, 1, copies, NULL)) {
+			const uint32_t row = rows_pitch_ok(&array, 4) ? 4 : 64;
+			rows_case(&r, &array, rows_region(0, 0, 0, 4, 4, 1, 3, 0, row, 8), CR_SUCCESS, "2D array of 3, image height 8");
+			crgpu_image_destroy(array.image);
+		}
+	}
+	printf("crgpu_objects_test: copy rows: %u cases, %u refused with nothing recorded, %u round trips byte for byte\n", r.cases, r.refused,
+	       r.round_trips);
+
+done:
+	crgpu_command_list_destroy(r.cmd);
+	crgpu_command_allocator_destroy(r.allocator);
+	crgpu_device_destroy(r.device);
+}
+
+// ---- Indirect dispatch (card A15) -------------------------------------------
+
+// The words a dispatch writes: word 0 the counter, words 1 to 16 a slot
+// each (objects_dispatch_ids_comp.slang). Each run starts them at
+// di_start: the counter 0, every slot DI_SENTINEL.
+#define DI_SLOTS 16u
+#define DI_WORDS (1u + DI_SLOTS)
+#define DI_BYTES ((uint64_t)DI_WORDS * sizeof(uint32_t))
+#define DI_SENTINEL 0xFFFFFFFFu
+#define DI_ARGS_BYTES 64u
+#define DI_TARGET 4u
+
+typedef struct di_run {
+	crgpu_device device;
+	crgpu_command_queue queue, compute_queue;
+	crgpu_command_allocator allocator, compute_allocator, copy_allocator;
+	crgpu_command_list cmd, compute_cmd, copy_cmd;
+	crgpu_compute_pipeline ids, writer, count;
+	crgpu_descriptor_set sets[3]; // words[0], words[1], gpu_args
+	// start: UPLOAD, the words' starting values. words: DEVICE, written by
+	// the dispatches. args: UPLOAD of usage INDIRECT, written by the CPU.
+	// gpu_args: DEVICE of usage STORAGE | INDIRECT, written by a dispatch.
+	// storage: DEVICE of usage STORAGE alone, never an argument buffer.
+	crgpu_buffer start, words[2], readback[2], args, gpu_args, storage;
+	crgpu_image target;
+	crgpu_image_view target_view;
+} di_run;
+
+static void di_write_args(di_run *r, const uint32_t *values, uint32_t count) {
+	void *mapped = NULL;
+	CHECK(crgpu_buffer_map(r->args, 0, DI_ARGS_BYTES, &mapped) == CR_SUCCESS);
+	if (!mapped)
+		return;
+	memcpy(mapped, values, (size_t)count * sizeof(uint32_t));
+	CHECK(crgpu_buffer_flush(r->args, 0, DI_ARGS_BYTES) == CR_SUCCESS);
+	crgpu_buffer_unmap(r->args);
+}
+
+static void di_buffer_barrier(crgpu_command_list cmd, crgpu_buffer buffer, CRGPU_RESOURCE_STATE before, CRGPU_RESOURCE_STATE after) {
+	crgpu_buffer_barrier barrier;
+	memset(&barrier, 0, sizeof(barrier));
+	barrier.base.type    = CR_STRUCT_TYPE_GPU_BUFFER_BARRIER;
+	barrier.buffer       = buffer;
+	barrier.state_before = before;
+	barrier.state_after  = after;
+	crgpu_command_list_pipeline_barrier(cmd, &barrier, 1, NULL, 0);
+}
+
+// words[i] to its starting values, ready for the dispatches.
+static void di_begin_words(di_run *r, crgpu_command_list cmd, uint32_t i) {
+	di_buffer_barrier(cmd, r->words[i], CRGPU_RESOURCE_STATE_COMMON, CRGPU_RESOURCE_STATE_COPY_DEST);
+	crgpu_command_list_copy_buffer(cmd, r->start, r->words[i], 0, 0, DI_BYTES);
+	di_buffer_barrier(cmd, r->words[i], CRGPU_RESOURCE_STATE_COPY_DEST, CRGPU_RESOURCE_STATE_UNORDERED_ACCESS);
+}
+
+// words[i] after the dispatches, to its readback.
+static void di_end_words(di_run *r, crgpu_command_list cmd, uint32_t i) {
+	di_buffer_barrier(cmd, r->words[i], CRGPU_RESOURCE_STATE_UNORDERED_ACCESS, CRGPU_RESOURCE_STATE_COPY_SOURCE);
+	crgpu_command_list_copy_buffer(cmd, r->words[i], r->readback[i], 0, 0, DI_BYTES);
+}
+
+// [pipeline] with set [set], and for the ids shader the grid's X and Y.
+static void di_bind(crgpu_command_list cmd, crgpu_compute_pipeline pipeline, crgpu_descriptor_set set, uint32_t x, uint32_t y) {
+	crgpu_command_list_bind_compute_pipeline(cmd, pipeline);
+	crgpu_command_list_bind_compute_descriptor_sets(cmd, pipeline, 0, &set, 1);
+	if (x) {
+		const uint32_t push[2] = {x, y};
+		crgpu_command_list_push_compute_constants(cmd, pipeline, 0, sizeof(push), push);
+	}
+}
+
+static void di_submit(di_run *r, crgpu_command_queue queue, crgpu_command_list cmd) {
+	crgpu_command_list_end(cmd);
+	CHECK(crgpu_command_queue_submit_lists(queue, &cmd, 1) == CR_SUCCESS);
+	crgpu_command_queue_wait_idle(queue);
+}
+
+static crgpu_command_list di_begin(crgpu_command_allocator allocator, crgpu_command_list cmd) {
+	CHECK(crgpu_command_allocator_reset(allocator) == CR_SUCCESS);
+	crgpu_command_list_begin(cmd);
+	return cmd;
+}
+
+static void di_read(di_run *r, uint32_t i, uint32_t out[DI_WORDS]) {
+	memset(out, 0xA5, DI_BYTES);
+	void *mapped = NULL;
+	CHECK(crgpu_buffer_map(r->readback[i], 0, DI_BYTES, &mapped) == CR_SUCCESS);
+	if (!mapped)
+		return;
+	CHECK(crgpu_buffer_invalidate(r->readback[i], 0, DI_BYTES) == CR_SUCCESS);
+	memcpy(out, mapped, (size_t)DI_BYTES);
+	crgpu_buffer_unmap(r->readback[i]);
+}
+
+// The value the ids shader writes for group (x, y, z).
+static uint32_t di_id(uint32_t x, uint32_t y, uint32_t z) {
+	return (x | y << 8 | z << 16) + 1u;
+}
+
+// The words after a grid of X x Y x Z groups of the ids shader: the counter
+// X * Y * Z, each group's slot its value, every slot after them the
+// sentinel. Prints the first difference.
+static bool di_words_are_grid(const uint32_t words[DI_WORDS], uint32_t gx, uint32_t gy, uint32_t gz, const char *what) {
+	if (words[0] != gx * gy * gz) {
+		fprintf(stderr, "  %s: the counter is %u, expected %u\n", what, words[0], gx * gy * gz);
+		return false;
+	}
+	for (uint32_t slot = 1; slot < DI_WORDS; ++slot) {
+		const uint32_t i = slot - 1;
+		uint32_t want    = DI_SENTINEL;
+		if (i < gx * gy * gz)
+			want = di_id(i % gx, (i / gx) % gy, i / (gx * gy));
+		if (words[slot] != want) {
+			fprintf(stderr, "  %s: slot %u is 0x%08X, expected 0x%08X\n", what, slot, words[slot], want);
+			return false;
+		}
+	}
+	return true;
+}
+
+// The words after the counter shader: the counter [count], every slot the
+// sentinel. Prints the first difference.
+static bool di_words_are_count(const uint32_t words[DI_WORDS], uint32_t count, const char *what) {
+	if (words[0] != count) {
+		fprintf(stderr, "  %s: the counter is %u, expected %u\n", what, words[0], count);
+		return false;
+	}
+	for (uint32_t slot = 1; slot < DI_WORDS; ++slot) {
+		if (words[slot] != DI_SENTINEL) {
+			fprintf(stderr, "  %s: slot %u is 0x%08X, expected the sentinel\n", what, slot, words[slot]);
+			return false;
+		}
+	}
+	return true;
+}
+
+// Test 1: the ids shader's grid {3, 2, 2} read from an UPLOAD buffer the CPU
+// wrote, and the same grid dispatched directly into the second words, both
+// read back, equal byte for byte.
+static void di_test_group_ids(di_run *r) {
+	const uint32_t values[3] = {3, 2, 2};
+	di_write_args(r, values, 3);
+	crgpu_command_list cmd = di_begin(r->allocator, r->cmd);
+	di_begin_words(r, cmd, 0);
+	di_begin_words(r, cmd, 1);
+	di_bind(cmd, r->ids, r->sets[0], 3, 2);
+	CHECK(crgpu_command_list_dispatch_indirect(cmd, r->args, 0) == CR_SUCCESS);
+	di_bind(cmd, r->ids, r->sets[1], 3, 2);
+	crgpu_command_list_dispatch(cmd, 3, 2, 2);
+	di_end_words(r, cmd, 0);
+	di_end_words(r, cmd, 1);
+	di_submit(r, r->queue, cmd);
+	uint32_t indirect[DI_WORDS], direct[DI_WORDS];
+	di_read(r, 0, indirect);
+	di_read(r, 1, direct);
+	CHECK(di_words_are_grid(indirect, 3, 2, 2, "indirect {3, 2, 2}"));
+	CHECK(indirect[1] == 1u && indirect[12] == 65795u && indirect[13] == DI_SENTINEL);
+	CHECK(memcmp(indirect, direct, sizeof(direct)) == 0);
+	printf("crgpu_objects_test: indirect dispatch: {3, 2, 2} from the CPU ran 12 groups, each once, as the direct dispatch did\n");
+}
+
+// Test 2: the counts written by a dispatch, then read by the next one.
+static void di_test_gpu_written(di_run *r, crgpu_command_queue queue, crgpu_command_allocator allocator, crgpu_command_list list, const char *which) {
+	crgpu_command_list cmd = di_begin(allocator, list);
+	di_buffer_barrier(cmd, r->gpu_args, CRGPU_RESOURCE_STATE_COMMON, CRGPU_RESOURCE_STATE_UNORDERED_ACCESS);
+	di_begin_words(r, cmd, 0);
+	di_bind(cmd, r->writer, r->sets[2], 0, 0);
+	crgpu_command_list_dispatch(cmd, 1, 1, 1);
+	di_buffer_barrier(cmd, r->gpu_args, CRGPU_RESOURCE_STATE_UNORDERED_ACCESS, CRGPU_RESOURCE_STATE_INDIRECT_ARGUMENT);
+	di_bind(cmd, r->ids, r->sets[0], 4, 1);
+	CHECK(crgpu_command_list_dispatch_indirect(cmd, r->gpu_args, 0) == CR_SUCCESS);
+	di_end_words(r, cmd, 0);
+	di_submit(r, queue, cmd);
+	uint32_t words[DI_WORDS];
+	di_read(r, 0, words);
+	CHECK(di_words_are_grid(words, 4, 1, 1, which));
+	printf("crgpu_objects_test: indirect dispatch: {4, 1, 1} written by a dispatch ran 4 groups (%s)\n", which);
+}
+
+// One submission of the counter shader dispatched from the CPU's arguments
+// at [offset]; the counter it leaves.
+static uint32_t di_count_at(di_run *r, uint64_t offset) {
+	crgpu_command_list cmd = di_begin(r->allocator, r->cmd);
+	di_begin_words(r, cmd, 0);
+	di_bind(cmd, r->count, r->sets[0], 0, 0);
+	CHECK(crgpu_command_list_dispatch_indirect(cmd, r->args, offset) == CR_SUCCESS);
+	di_end_words(r, cmd, 0);
+	di_submit(r, r->queue, cmd);
+	uint32_t words[DI_WORDS];
+	di_read(r, 0, words);
+	return words[0];
+}
+
+// Test 3: the offset. {1000, 1000, 1000} at 0, {2, 1, 1} at 16, {1, 1, 1}
+// in the last 12 bytes (52).
+static void di_test_offsets(di_run *r) {
+	uint32_t values[DI_ARGS_BYTES / 4];
+	memset(values, 0, sizeof(values));
+	values[0]  = 1000;
+	values[1]  = 1000;
+	values[2]  = 1000;
+	values[4]  = 2;
+	values[5]  = 1;
+	values[6]  = 1;
+	values[13] = 1;
+	values[14] = 1;
+	values[15] = 1;
+	di_write_args(r, values, DI_ARGS_BYTES / 4);
+	CHECK(di_count_at(r, 16) == 2);
+	CHECK(di_count_at(r, 52) == 1);
+	printf("crgpu_objects_test: indirect dispatch: the arguments at offsets 16 and 52 read\n");
+}
+
+// Test 4: a 0 in any count dispatches nothing.
+static void di_test_zeros(di_run *r) {
+	const uint32_t values[9] = {0, 5, 5, 5, 0, 5, 5, 5, 0};
+	di_write_args(r, values, 9);
+	crgpu_command_list cmd = di_begin(r->allocator, r->cmd);
+	di_begin_words(r, cmd, 0);
+	di_bind(cmd, r->ids, r->sets[0], 5, 5);
+	for (uint64_t i = 0; i < 3; ++i)
+		CHECK(crgpu_command_list_dispatch_indirect(cmd, r->args, i * 12) == CR_SUCCESS);
+	di_end_words(r, cmd, 0);
+	di_submit(r, r->queue, cmd);
+	uint32_t words[DI_WORDS];
+	di_read(r, 0, words);
+	CHECK(di_words_are_grid(words, 0, 0, 0, "{0, 5, 5}, {5, 0, 5}, {5, 5, 0}"));
+	printf("crgpu_objects_test: indirect dispatch: {0, 5, 5}, {5, 0, 5} and {5, 5, 0} ran nothing\n");
+}
+
+// Test 5: the largest count the contract allows, 65535.
+static void di_test_limit(di_run *r) {
+	const uint32_t values[3] = {65535, 1, 1};
+	di_write_args(r, values, 3);
+	const uint32_t counted = di_count_at(r, 0);
+	CHECK(counted == 65535);
+	printf("crgpu_objects_test: indirect dispatch: {65535, 1, 1} ran %u groups\n", counted);
+}
+
+// Where a refused call is made.
+typedef enum di_where {
+	DI_DIRECT,      // a DIRECT list, outside a pass
+	DI_IN_PASS,     // a DIRECT list, inside a pass
+	DI_NULL_LIST,   // NULL in place of the list, the DIRECT list recording
+	DI_COPY,        // a COPY list
+} di_where;
+
+// One refused call, recorded where [where] says between the words' start
+// and their readback, with the counter shader bound where a list can bind
+// it (inside a pass, the pass's graphics state only), and after it a direct dispatch of one group of that shader (bound
+// again after a pass), which uses what was bound: submitted and read back,
+// the counter 1 (0 on a COPY list, which dispatches nothing) and every slot
+// the sentinel. A call that wasn't refused would add the {2, 1, 1} groups
+// its arguments hold.
+static void di_refused(di_run *r, di_where where, crgpu_buffer buffer, uint64_t offset, CR_RESULT want, const char *what) {
+	const bool copy                   = where == DI_COPY;
+	crgpu_command_allocator allocator = copy ? r->copy_allocator : r->allocator;
+	crgpu_command_list list           = copy ? r->copy_cmd : r->cmd;
+	crgpu_command_queue queue         = r->queue;
+	if (copy)
+		CHECK(crgpu_command_queue_get(r->device, CRGPU_COMMAND_LIST_TYPE_COPY, 0, &queue) == CR_SUCCESS);
+	crgpu_command_list cmd = di_begin(allocator, list);
+	di_buffer_barrier(cmd, r->words[0], CRGPU_RESOURCE_STATE_COMMON, CRGPU_RESOURCE_STATE_COPY_DEST);
+	crgpu_command_list_copy_buffer(cmd, r->start, r->words[0], 0, 0, DI_BYTES);
+	if (!copy) {
+		di_buffer_barrier(cmd, r->words[0], CRGPU_RESOURCE_STATE_COPY_DEST, CRGPU_RESOURCE_STATE_UNORDERED_ACCESS);
+		// Bound after the pass instead (Metal's validation refuses a compute
+		// encoder ended by the pass with no work in it).
+		if (where != DI_IN_PASS)
+			di_bind(cmd, r->count, r->sets[0], 0, 0);
+	}
+	if (where == DI_IN_PASS) {
+		crgpu_command_list_image_barrier_view(cmd, r->target_view, CRGPU_IMAGE_LAYOUT_UNDEFINED, CRGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+		crgpu_rendering_begin_desc pass;
+		memset(&pass, 0, sizeof(pass));
+		pass.base.type                       = CR_STRUCT_TYPE_GPU_RENDERING_BEGIN_DESC;
+		pass.color_attachments[0].image_view = r->target_view;
+		pass.color_attachments[0].load_op    = CRGPU_LOAD_OP_CLEAR;
+		pass.color_attachments[0].store_op   = CRGPU_STORE_OP_STORE;
+		pass.color_attachment_count          = 1;
+		pass.width                           = DI_TARGET;
+		pass.height                          = DI_TARGET;
+		crgpu_command_list_begin_rendering(cmd, &pass);
+	}
+	const CR_RESULT got = crgpu_command_list_dispatch_indirect(where == DI_NULL_LIST ? NULL : cmd, buffer, offset);
+	if (got != want)
+		fprintf(stderr, "  %s: %s, expected %s\n", what, cr_result_str(got), cr_result_str(want));
+	CHECK(got == want);
+	if (where == DI_IN_PASS) {
+		crgpu_command_list_end_rendering(cmd);
+		di_bind(cmd, r->count, r->sets[0], 0, 0);
+	}
+	if (!copy)
+		crgpu_command_list_dispatch(cmd, 1, 1, 1);
+	if (copy) {
+		di_buffer_barrier(cmd, r->words[0], CRGPU_RESOURCE_STATE_COPY_DEST, CRGPU_RESOURCE_STATE_COPY_SOURCE);
+		crgpu_command_list_copy_buffer(cmd, r->words[0], r->readback[0], 0, 0, DI_BYTES);
+	} else {
+		di_end_words(r, cmd, 0);
+	}
+	di_submit(r, queue, cmd);
+	uint32_t words[DI_WORDS];
+	di_read(r, 0, words);
+	CHECK(di_words_are_count(words, copy ? 0u : 1u, what));
+}
+
+// Tests 6 and 7: every refusal with its code, then two wrong at once, the
+// earlier check's code. The CPU's arguments are {2, 1, 1} at every offset
+// a refused call names that the buffer holds, so a call that wasn't refused
+// would show in the counter.
+static void di_test_refusals(di_run *r) {
+	uint32_t values[DI_ARGS_BYTES / 4];
+	for (uint32_t i = 0; i < DI_ARGS_BYTES / 4; ++i)
+		values[i] = i % 3 == 0 ? 2u : 1u;
+	di_write_args(r, values, DI_ARGS_BYTES / 4);
+	di_refused(r, DI_NULL_LIST, r->args, 0, CR_RESULT_GPU_INVALID_COMMAND_LIST, "cmd NULL");
+	di_refused(r, DI_DIRECT, NULL, 0, CR_RESULT_GPU_INVALID_BUFFER, "buffer NULL");
+	if (r->copy_cmd)
+		di_refused(r, DI_COPY, r->args, 0, CR_RESULT_GPU_INVALID_COMMAND_LIST_TYPE, "a COPY list");
+	di_refused(r, DI_IN_PASS, r->args, 0, CR_RESULT_GPU_COMMAND_INSIDE_RENDERING, "inside a pass");
+	di_refused(r, DI_DIRECT, r->storage, 0, CR_RESULT_GPU_INVALID_BUFFER_USAGE, "a buffer of usage STORAGE alone");
+	di_refused(r, DI_DIRECT, r->args, 2, CR_RESULT_GPU_INDIRECT_OFFSET_ALIGNMENT, "offset 2");
+	di_refused(r, DI_DIRECT, r->args, 6, CR_RESULT_GPU_INDIRECT_OFFSET_ALIGNMENT, "offset 6");
+	di_refused(r, DI_DIRECT, r->args, 56, CR_RESULT_GPU_INDIRECT_RANGE, "offset 56");
+	di_refused(r, DI_DIRECT, r->args, 64, CR_RESULT_GPU_INDIRECT_RANGE, "offset 64");
+	di_refused(r, DI_DIRECT, r->args, 68, CR_RESULT_GPU_INDIRECT_RANGE, "offset 68");
+	di_refused(r, DI_DIRECT, r->args, UINT64_MAX - 3, CR_RESULT_GPU_INDIRECT_RANGE, "offset UINT64_MAX - 3");
+#if _DEBUG
+	// A destroyed buffer, as a NULL one (the misuse harness destroys the
+	// list, the first handle, only).
+	crgpu_buffer destroyed = make_buffer(r->device, CRGPU_MEMORY_KIND_UPLOAD, CRGPU_BUFFER_USAGE_INDIRECT, DI_ARGS_BYTES, NULL);
+	crgpu_buffer_destroy(destroyed);
+	if (destroyed)
+		di_refused(r, DI_DIRECT, destroyed, 0, CR_RESULT_GPU_INVALID_BUFFER, "a destroyed buffer (Debug)");
+#endif
+	// The order.
+	di_refused(r, DI_NULL_LIST, NULL, 2, CR_RESULT_GPU_INVALID_COMMAND_LIST, "cmd and buffer NULL");
+	di_refused(r, DI_IN_PASS, r->args, 2, CR_RESULT_GPU_COMMAND_INSIDE_RENDERING, "inside a pass, offset 2");
+	di_refused(r, DI_DIRECT, r->storage, 2, CR_RESULT_GPU_INVALID_BUFFER_USAGE, "usage missing, offset 2");
+	di_refused(r, DI_DIRECT, r->args, 62, CR_RESULT_GPU_INDIRECT_OFFSET_ALIGNMENT, "offset 62, past the end");
+	if (r->copy_cmd) {
+		di_refused(r, DI_COPY, NULL, 0, CR_RESULT_GPU_INVALID_BUFFER, "a COPY list, buffer NULL");
+		di_refused(r, DI_COPY, r->storage, 2, CR_RESULT_GPU_INVALID_COMMAND_LIST_TYPE, "a COPY list, usage missing");
+	} else {
+		printf("crgpu_objects_test: indirect dispatch: the adapter has no room for a copy queue, the COPY list's refusals skipped\n");
+	}
+#if CRGPU_EXT_BUNDLES
+	// A bundle refuses before anything is recorded; it is never submitted,
+	// so nothing is read back.
+	crgpu_command_allocator_desc d;
+	memset(&d, 0, sizeof(d));
+	d.base.type                         = CR_STRUCT_TYPE_GPU_COMMAND_ALLOCATOR_DESC;
+	d.type                              = CRGPU_COMMAND_LIST_TYPE_BUNDLE;
+	crgpu_command_allocator bundles   = NULL;
+	crgpu_command_list bundle         = NULL;
+	CHECK(crgpu_command_allocator_create(r->device, &d, &bundles) == CR_SUCCESS);
+	if (bundles)
+		CHECK(crgpu_command_list_create(bundles, &bundle) == CR_SUCCESS);
+	if (bundle)
+		CHECK(crgpu_command_list_dispatch_indirect(bundle, r->args, 0) == CR_RESULT_GPU_INVALID_COMMAND_LIST_TYPE);
+	crgpu_command_list_destroy(bundle);
+	crgpu_command_allocator_destroy(bundles);
+#endif
+	printf("crgpu_objects_test: indirect dispatch: every refusal recorded nothing, in order\n");
+}
+
+static crgpu_compute_pipeline di_pipeline(crgpu_device device, crgpu_shader_module module, crgpu_descriptor_set_layout layout, uint32_t push,
+                                          const char *name) {
+	crgpu_compute_pipeline_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type                   = CR_STRUCT_TYPE_GPU_COMPUTE_PIPELINE_DESC;
+	desc.compute_module              = module;
+	desc.descriptor_set_layouts[0]   = layout;
+	desc.descriptor_set_layout_count = 1;
+	if (push) {
+		desc.push_constant_ranges[0].stage_flags = CRGPU_SHADER_STAGE_COMPUTE;
+		desc.push_constant_ranges[0].size        = push;
+		desc.push_constant_range_count           = 1;
+	}
+	desc.debug_name                = name;
+	crgpu_compute_pipeline pipeline = NULL;
+	if (module && layout)
+		CHECK(crgpu_compute_pipeline_create(device, &desc, &pipeline) == CR_SUCCESS);
+	return pipeline;
+}
+
+static void di_make_list(crgpu_device device, CRGPU_COMMAND_LIST_TYPE type, crgpu_command_allocator *allocator, crgpu_command_list *cmd) {
+	crgpu_command_allocator_desc d;
+	memset(&d, 0, sizeof(d));
+	d.base.type = CR_STRUCT_TYPE_GPU_COMMAND_ALLOCATOR_DESC;
+	d.type      = type;
+	CHECK(crgpu_command_allocator_create(device, &d, allocator) == CR_SUCCESS);
+	if (*allocator)
+		CHECK(crgpu_command_list_create(*allocator, cmd) == CR_SUCCESS);
+}
+
+/* crgpu_command_list_dispatch_indirect() (card A15,
+ * crgpu_dispatch_indirect_draft.h's tests 1 to 7): on a device of one
+ * direct queue and, where the adapter's pools hold them, a compute and a
+ * copy queue. */
+static void test_dispatch_indirect(crgpu_adapter adapter) {
+	di_run r;
+	memset(&r, 0, sizeof(r));
+	CRGPU_ADAPTER_PROPERTIES properties;
+	memset(&properties, 0, sizeof(properties));
+	properties.base.type = CR_STRUCT_TYPE_GPU_ADAPTER_PROPERTIES;
+	CHECK(crgpu_adapter_get_properties(adapter, &properties) == CR_SUCCESS);
+	// A compute queue and a copy queue where each pool serving them holds
+	// one more.
+	bool fits = true;
+	for (uint32_t i = 0; i < properties.queue_pool_count; ++i) {
+		const CRGPU_QUEUE_POOL *pool = &properties.queue_pools[i];
+		uint64_t asked               = 0;
+		if (pool->kinds & CRGPU_QUEUE_KIND_DIRECT)
+			asked += 1;
+		if (pool->kinds & CRGPU_QUEUE_KIND_COMPUTE)
+			asked += 1;
+		if (pool->kinds & CRGPU_QUEUE_KIND_COPY)
+			asked += 1;
+		fits = fits && asked <= pool->max_queues;
+	}
+	crgpu_device_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type           = CR_STRUCT_TYPE_GPU_DEVICE_DESC;
+	desc.direct_queue_count  = 1;
+	desc.compute_queue_count = fits ? 1 : 0;
+	desc.copy_queue_count    = fits ? 1 : 0;
+	desc.max_descriptors     = 16;
+	desc.max_samplers        = 4;
+	desc.debug_name          = "crgpu_objects_test indirect dispatch";
+	CHECK(crgpu_device_create(adapter, &desc, &r.device) == CR_SUCCESS);
+	if (!r.device)
+		return;
+	CHECK(crgpu_command_queue_get(r.device, CRGPU_COMMAND_LIST_TYPE_DIRECT, 0, &r.queue) == CR_SUCCESS);
+	di_make_list(r.device, CRGPU_COMMAND_LIST_TYPE_DIRECT, &r.allocator, &r.cmd);
+	if (fits) {
+		CHECK(crgpu_command_queue_get(r.device, CRGPU_COMMAND_LIST_TYPE_COMPUTE, 0, &r.compute_queue) == CR_SUCCESS);
+		di_make_list(r.device, CRGPU_COMMAND_LIST_TYPE_COMPUTE, &r.compute_allocator, &r.compute_cmd);
+		di_make_list(r.device, CRGPU_COMMAND_LIST_TYPE_COPY, &r.copy_allocator, &r.copy_cmd);
+	}
+
+	crgpu_descriptor_set_layout_desc layout_desc;
+	memset(&layout_desc, 0, sizeof(layout_desc));
+	layout_desc.base.type                      = CR_STRUCT_TYPE_GPU_DESCRIPTOR_SET_LAYOUT_DESC;
+	layout_desc.bindings[0].binding            = 0;
+	layout_desc.bindings[0].descriptor_type    = CRGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	layout_desc.bindings[0].count              = 1;
+	layout_desc.bindings[0].stage_flags        = CRGPU_SHADER_STAGE_COMPUTE;
+	layout_desc.binding_count                  = 1;
+	crgpu_descriptor_set_layout layout       = NULL;
+	CHECK(crgpu_descriptor_set_layout_create(r.device, &layout_desc, &layout) == CR_SUCCESS);
+	crgpu_shader_module ids   = make_module(r.device, &crgpu_test_objects_dispatch_ids_comp, "dispatch ids");
+	crgpu_shader_module args  = make_module(r.device, &crgpu_test_objects_dispatch_args_comp, "dispatch args");
+	crgpu_shader_module count = make_module(r.device, &crgpu_test_objects_dispatch_count_comp, "dispatch count");
+	r.ids    = di_pipeline(r.device, ids, layout, 2 * sizeof(uint32_t), "dispatch ids");
+	r.writer = di_pipeline(r.device, args, layout, 0, "dispatch args");
+	r.count  = di_pipeline(r.device, count, layout, 0, "dispatch count");
+
+	crgpu_descriptor_pool_desc pool_desc;
+	memset(&pool_desc, 0, sizeof(pool_desc));
+	pool_desc.base.type                     = CR_STRUCT_TYPE_GPU_DESCRIPTOR_POOL_DESC;
+	pool_desc.max_sets                      = 3;
+	pool_desc.pool_sizes[0].descriptor_type = CRGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	pool_desc.pool_sizes[0].count           = 3;
+	pool_desc.pool_size_count               = 1;
+	crgpu_descriptor_pool pool            = NULL;
+	CHECK(crgpu_descriptor_pool_create(r.device, &pool_desc, &pool) == CR_SUCCESS);
+
+	uint32_t start[DI_WORDS];
+	start[0] = 0;
+	for (uint32_t i = 1; i < DI_WORDS; ++i)
+		start[i] = DI_SENTINEL;
+	r.start = make_buffer(r.device, CRGPU_MEMORY_KIND_UPLOAD, CRGPU_BUFFER_USAGE_TRANSFER_SRC, DI_BYTES, start);
+	for (uint32_t i = 0; i < 2; ++i) {
+		r.words[i] = make_buffer(r.device, CRGPU_MEMORY_KIND_DEVICE,
+		                         CRGPU_BUFFER_USAGE_STORAGE | CRGPU_BUFFER_USAGE_TRANSFER_SRC | CRGPU_BUFFER_USAGE_TRANSFER_DST, DI_BYTES, NULL);
+		r.readback[i] = make_buffer(r.device, CRGPU_MEMORY_KIND_READBACK, CRGPU_BUFFER_USAGE_TRANSFER_DST, DI_BYTES, NULL);
+	}
+	r.args        = make_buffer(r.device, CRGPU_MEMORY_KIND_UPLOAD, CRGPU_BUFFER_USAGE_INDIRECT, DI_ARGS_BYTES, NULL);
+	r.gpu_args    = make_buffer(r.device, CRGPU_MEMORY_KIND_DEVICE, CRGPU_BUFFER_USAGE_STORAGE | CRGPU_BUFFER_USAGE_INDIRECT, 16, NULL);
+	r.storage     = make_buffer(r.device, CRGPU_MEMORY_KIND_DEVICE, CRGPU_BUFFER_USAGE_STORAGE, DI_ARGS_BYTES, NULL);
+	r.target      = make_image(r.device, NULL, CRGPU_IMAGE_USAGE_COLOR_ATTACHMENT, CRGPU_FORMAT_R8G8B8A8_UNORM, DI_TARGET, DI_TARGET, "dispatch target");
+	r.target_view = make_image_view(r.target, CRGPU_IMAGE_ASPECT_COLOR);
+
+	crgpu_buffer set_buffers[3] = {r.words[0], r.words[1], r.gpu_args};
+	const uint64_t set_sizes[3] = {DI_BYTES, DI_BYTES, 16};
+	for (uint32_t i = 0; i < 3 && pool && layout; ++i) {
+		crgpu_descriptor_set_desc set_desc;
+		memset(&set_desc, 0, sizeof(set_desc));
+		set_desc.base.type      = CR_STRUCT_TYPE_GPU_DESCRIPTOR_SET_DESC;
+		set_desc.pool           = pool;
+		set_desc.set_layouts[0] = layout;
+		set_desc.set_count      = 1;
+		CHECK(crgpu_descriptor_set_create(r.device, &set_desc, &r.sets[i]) == CR_SUCCESS);
+		if (!r.sets[i] || !set_buffers[i])
+			continue;
+		crgpu_descriptor_buffer_info info = {set_buffers[i], 0, set_sizes[i]};
+		crgpu_write_descriptor_set write;
+		memset(&write, 0, sizeof(write));
+		write.base.type        = CR_STRUCT_TYPE_GPU_WRITE_DESCRIPTOR_SET;
+		write.dst_set          = r.sets[i];
+		write.dst_binding      = 0;
+		write.descriptor_count = 1;
+		write.descriptor_type  = CRGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		write.buffer_info      = &info;
+		crgpu_device_update_descriptor_sets(r.device, &write, 1);
+	}
+
+	if (r.cmd && r.ids && r.writer && r.count && r.sets[0] && r.sets[1] && r.sets[2] && r.start && r.words[0] && r.words[1] && r.readback[0] &&
+	    r.readback[1] && r.args && r.gpu_args && r.storage && r.target_view) {
+		di_test_group_ids(&r);
+		di_test_gpu_written(&r, r.queue, r.allocator, r.cmd, "a DIRECT list");
+		if (r.compute_cmd)
+			di_test_gpu_written(&r, r.compute_queue, r.compute_allocator, r.compute_cmd, "a COMPUTE list");
+		else
+			printf("crgpu_objects_test: indirect dispatch: the adapter has no room for a compute queue, the COMPUTE list's run skipped\n");
+		di_test_offsets(&r);
+		di_test_zeros(&r);
+		di_test_limit(&r);
+		di_test_refusals(&r);
+	}
+
+	crgpu_image_view_destroy(r.target_view);
+	crgpu_image_destroy(r.target);
+	crgpu_buffer_destroy(r.storage);
+	crgpu_buffer_destroy(r.gpu_args);
+	crgpu_buffer_destroy(r.args);
+	for (uint32_t i = 0; i < 2; ++i) {
+		crgpu_buffer_destroy(r.readback[i]);
+		crgpu_buffer_destroy(r.words[i]);
+	}
+	crgpu_buffer_destroy(r.start);
+	crgpu_descriptor_pool_destroy(pool);
+	crgpu_compute_pipeline_destroy(r.count);
+	crgpu_compute_pipeline_destroy(r.writer);
+	crgpu_compute_pipeline_destroy(r.ids);
+	crgpu_shader_module_destroy(count);
+	crgpu_shader_module_destroy(args);
+	crgpu_shader_module_destroy(ids);
+	crgpu_descriptor_set_layout_destroy(layout);
+	crgpu_command_list_destroy(r.copy_cmd);
+	crgpu_command_allocator_destroy(r.copy_allocator);
+	crgpu_command_list_destroy(r.compute_cmd);
+	crgpu_command_allocator_destroy(r.compute_allocator);
 	crgpu_command_list_destroy(r.cmd);
 	crgpu_command_allocator_destroy(r.allocator);
 	crgpu_device_destroy(r.device);
@@ -5627,6 +8012,9 @@ int main(int argc, char **argv) {
 	test_drawing(adapter, properties.supported_features);
 	test_block_formats(adapter, properties.supported_features, &properties);
 	test_dual_source(adapter, properties.supported_features);
+	test_format_capabilities(adapter, properties.supported_features);
+	test_copy_rows(adapter, properties.supported_features);
+	test_dispatch_indirect(adapter);
 #if CRGPU_EXT_RAY_QUERY
 	test_ray_queries(adapter, properties.supported_features);
 #endif

@@ -3,6 +3,7 @@
 #include "../crallocator.h"
 #include "../crstructbase.h"
 #include <assert.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -94,7 +95,8 @@ CR_RESULT crgpu___internal_check_shader_module_desc(
 
 CR_RESULT crgpu___internal_check_pipeline_outputs(
     const crgpu_graphics_pipeline_desc *desc,
-    CRGPU_FEATURES features) {
+    CRGPU_FEATURES features,
+    const crgpu___adapter_facts *adapter) {
 	if (desc->geometry_module && !(features & CRGPU_FEATURE_GEOMETRY_SHADER))
 		return CR_RESULT_GPU_EXT_GEOMETRY_SHADER_NOT_SUPPORTED;
 	if ((desc->tess_control_module || desc->tess_eval_module) && !(features & CRGPU_FEATURE_TESSELLATION))
@@ -153,12 +155,49 @@ CR_RESULT crgpu___internal_check_pipeline_outputs(
 		return CR_RESULT_GPU_FEATURE_NOT_SUPPORTED;
 	if (dual_source && desc->color_attachment_count > 1)
 		return CR_RESULT_GPU_TOO_MANY_COLOR_ATTACHMENTS;
+	// Card S51: blending into a format the adapter can't blend, last, so
+	// every refusal above keeps its place. Vulkan forbids it
+	// (VUID-VkGraphicsPipelineCreateInfo-renderPass-06062), Metal's
+	// validation ends the process, D3D12's debug layer reports it.
+	for (uint32_t i = 0; i < desc->color_attachment_count; ++i)
+		if (desc->blend_attachments[i].blend_enable &&
+		    !(crgpu___internal_format_capabilities(adapter, desc->color_attachment_formats[i]) & CRGPU_FORMAT_CAPABILITY_BLEND))
+			return CR_RESULT_GPU_INVALID_FORMAT;
 	return CR_SUCCESS;
 }
 
 // ---------------------------------------------------------------------------
 // Adapters and devices
 // ---------------------------------------------------------------------------
+
+CRGPU_FORMAT_CAPABILITIES crgpu___internal_format_capabilities(
+    const crgpu___adapter_facts *facts,
+    CRGPU_FORMAT fmt) {
+	const int32_t index = crgpu___internal_format_index(fmt);
+	if (index < 0)
+		return 0;
+	CRGPU_FORMAT_CAPABILITIES caps = facts->format_capabilities[index];
+	// Q3: what such a format is used as differs by backend; its bytes copy
+	// the same through whatever the backend makes.
+	if (crgpu___internal_format_differs_by_backend(fmt))
+		caps &= CRGPU_FORMAT_CAPABILITY_COPY;
+	// A copy needs a texel block, and one aspect: a copy desc names none.
+	if (crgpu___internal_texel_block(fmt).bytes == 0 || crgpu___internal_format_two_aspects(fmt))
+		caps &= ~(CRGPU_FORMAT_CAPABILITIES)CRGPU_FORMAT_CAPABILITY_COPY;
+	return caps;
+}
+
+CR_RESULT crgpu___internal_get_format_capabilities(
+    const crgpu___adapter_facts *facts,
+    CRGPU_FORMAT format,
+    CRGPU_FORMAT_CAPABILITIES *out_flags) {
+	if (crgpu___internal_format_index(format) < 0)
+		return CR_RESULT_GPU_INVALID_FORMAT;
+	if (!out_flags)
+		return CR_RESULT_NULL_OUTPUT_PARAMETER;
+	*out_flags = crgpu___internal_format_capabilities(facts, format);
+	return CR_SUCCESS;
+}
 
 CR_RESULT crgpu___internal_get_adapter_properties(
     const crgpu___adapter_facts *facts,
@@ -674,6 +713,33 @@ CR_RESULT crgpu___internal_check_acceleration_structure_list(CRGPU_COMMAND_LIST_
 		return CR_RESULT_GPU_ACCELERATION_STRUCTURE_COMMAND_LIST_TYPE;
 	if (rendering)
 		return CR_RESULT_GPU_ACCELERATION_STRUCTURE_INSIDE_RENDERING;
+	return CR_SUCCESS;
+}
+
+// The arguments' 12 bytes, as every backend's API reads them.
+static_assert(sizeof(crgpu_dispatch_indirect_args) == 12, "crgpu_dispatch_indirect_args is the APIs' 12 bytes");
+static_assert(offsetof(crgpu_dispatch_indirect_args, group_count_x) == 0, "group_count_x at 0");
+static_assert(offsetof(crgpu_dispatch_indirect_args, group_count_y) == 4, "group_count_y at 4");
+static_assert(offsetof(crgpu_dispatch_indirect_args, group_count_z) == 8, "group_count_z at 8");
+
+CR_RESULT crgpu___internal_check_dispatch_indirect(
+    CRGPU_COMMAND_LIST_TYPE type,
+    bool rendering,
+    const crgpu_buffer_desc *buffer,
+    uint64_t offset) {
+	// Direct and compute queues dispatch on every API; a copy queue on none,
+	// and a bundle records no dispatch here.
+	if (type != CRGPU_COMMAND_LIST_TYPE_DIRECT && type != CRGPU_COMMAND_LIST_TYPE_COMPUTE)
+		return CR_RESULT_GPU_INVALID_COMMAND_LIST_TYPE;
+	if (rendering)
+		return CR_RESULT_GPU_COMMAND_INSIDE_RENDERING;
+	if (!(buffer->usage & CRGPU_BUFFER_USAGE_INDIRECT))
+		return CR_RESULT_GPU_INVALID_BUFFER_USAGE;
+	if (offset % 4 != 0)
+		return CR_RESULT_GPU_INDIRECT_OFFSET_ALIGNMENT;
+	// offset past the size: stops there, so the subtraction can't wrap.
+	if (offset > buffer->size || buffer->size - offset < sizeof(crgpu_dispatch_indirect_args))
+		return CR_RESULT_GPU_INDIRECT_RANGE;
 	return CR_SUCCESS;
 }
 
@@ -1202,6 +1268,21 @@ CR_RESULT crgpu___internal_check_buffer_image_copy(
 	if (desc->buffer_row_length % block.width != 0 || desc->buffer_image_height % block.height != 0)
 		return CR_RESULT_DESC_INVALID_PARAMETERS;
 
+	// The buffer's rows and images against the region (card S52), in
+	// blocks: rows or images that overlap reach no API, and a 3D copy's
+	// slices follow each other with no rows between them, the one layout
+	// D3D12, which has no slice pitch, lays out as Vulkan and Metal do. A
+	// block taller than one texel is 2D only, so the last comparison is in
+	// texels and rows of blocks at once.
+	const uint32_t blocks_wide = (uint32_t)(((uint64_t)desc->width + block.width - 1) / block.width);
+	const uint32_t blocks_high = (uint32_t)(((uint64_t)desc->height + block.height - 1) / block.height);
+	if (desc->buffer_row_length != 0 && desc->buffer_row_length / block.width < blocks_wide)
+		return CR_RESULT_GPU_COPY_ROW_LENGTH_TOO_SHORT;
+	if (desc->buffer_image_height != 0 && desc->buffer_image_height / block.height < blocks_high)
+		return CR_RESULT_GPU_COPY_IMAGE_HEIGHT_TOO_SHORT;
+	if (desc->depth > 1 && desc->buffer_image_height > desc->height)
+		return CR_RESULT_GPU_COPY_SLICE_PITCH_NOT_SUPPORTED;
+
 	if (desc->buffer_offset % offset_alignment != 0)
 		return CR_RESULT_DESC_INVALID_PARAMETERS;
 
@@ -1211,6 +1292,10 @@ CR_RESULT crgpu___internal_check_buffer_image_copy(
 	const uint64_t row_pitch    = ((uint64_t)row_length + block.width - 1) / block.width * block.bytes;
 	if (row_pitch % row_pitch_alignment != 0)
 		return CR_RESULT_DESC_INVALID_PARAMETERS;
+	// Vulkan's bound (VUID-vkCmdCopyBufferToImage-bufferRowLength-09108),
+	// and D3D12's footprint holds the pitch in a UINT (card S52, Q3).
+	if (row_pitch > INT32_MAX)
+		return CR_RESULT_DESC_INVALID_PARAMETERS;
 	const uint64_t image_rows  = ((uint64_t)image_height + block.height - 1) / block.height;
 	const uint64_t slice_bytes = crgpu___saturating_mul(row_pitch, image_rows);
 	const uint64_t layer_bytes = crgpu___saturating_mul(slice_bytes, desc->depth);
@@ -1219,8 +1304,6 @@ CR_RESULT crgpu___internal_check_buffer_image_copy(
 
 	// The bytes the region covers: to the end of its last row of blocks of
 	// its last slice of its last layer.
-	const uint32_t blocks_wide = (uint32_t)(((uint64_t)desc->width + block.width - 1) / block.width);
-	const uint32_t blocks_high = (uint32_t)(((uint64_t)desc->height + block.height - 1) / block.height);
 	uint64_t end               = desc->buffer_offset;
 	end                        = crgpu___saturating_add(end, crgpu___saturating_mul(desc->array_layer_count - 1, layer_bytes));
 	end                        = crgpu___saturating_add(end, crgpu___saturating_mul(desc->depth - 1, slice_bytes));

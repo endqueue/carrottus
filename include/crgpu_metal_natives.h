@@ -83,9 +83,16 @@ id<MTLCommandQueue> crgpu_get_mtl_command_queue(crgpu_command_queue queue);
 /**
  * @brief Returns the id<MTLCommandBuffer> behind @p cmd.
  *
+ * A list takes a new command buffer each time it is opened
+ * (crgpu_command_list_begin()) and lets go of it when it is opened again,
+ * its allocator reset or the list destroyed, so the buffer returned is the
+ * current recording's: nil before the list is first opened and after its
+ * allocator's reset.
+ *
  * @param[in] cmd The Carrottus GPU command list.
  *
- * @return Its id<MTLCommandBuffer>, or nil if @p cmd is NULL.
+ * @return Its id<MTLCommandBuffer>, or nil if @p cmd is NULL or holds no
+ *         recording.
  */
 id<MTLCommandBuffer> crgpu_get_mtl_command_buffer(crgpu_command_list cmd);
 

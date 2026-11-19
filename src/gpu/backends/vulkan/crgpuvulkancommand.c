@@ -694,6 +694,25 @@ void crgpu_command_list_dispatch(
     vkCmdDispatch(cmd->_command_buffer_vk, group_count_x, group_count_y, group_count_z);
 }
 
+// VkDispatchIndirectCommand is the 12 bytes the call reads.
+static_assert(sizeof(VkDispatchIndirectCommand) == sizeof(crgpu_dispatch_indirect_args),
+              "crgpu_dispatch_indirect_args is VkDispatchIndirectCommand");
+
+CR_RESULT crgpu_command_list_dispatch_indirect(
+    crgpu_command_list cmd,
+    crgpu_buffer buffer,
+    uint64_t offset) {
+    if (!cmd) return CR_RESULT_GPU_INVALID_COMMAND_LIST;
+    if (CR_STALE(cmd, "crgpu_command_list_dispatch_indirect", "cmd")) return CR_RESULT_GPU_INVALID_COMMAND_LIST;
+    if (!buffer) return CR_RESULT_GPU_INVALID_BUFFER;
+    if (CR_STALE(buffer, "crgpu_command_list_dispatch_indirect", "buffer")) return CR_RESULT_GPU_INVALID_BUFFER;
+    const CR_RESULT checked =
+        crgpu___internal_check_dispatch_indirect(cmd->_allocator._type, cmd->_rendering_active, &buffer->_desc, offset);
+    if (checked != CR_SUCCESS) return checked;
+    vkCmdDispatchIndirect(cmd->_command_buffer_vk, buffer->_buffer_vk, (VkDeviceSize) offset);
+    return CR_SUCCESS;
+}
+
 void crgpu_command_list_draw_indirect(
     crgpu_command_list cmd,
     crgpu_buffer buffer,

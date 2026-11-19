@@ -205,14 +205,16 @@ typedef enum CR_RESULT {
 	/** A surface argument, or a desc's surface, is NULL. */
 	CR_RESULT_GPU_INVALID_SURFACE                             = 206,
 	/** A format is CRGPU_FORMAT_UNKNOWN, or one the call or the backend
-	 * can't use there. */
+	 * can't use there, or one the adapter can't use that way
+	 * (crgpu_adapter_get_format_capabilities()). */
 	CR_RESULT_GPU_INVALID_FORMAT                              = 207,
 	/** A surface's window handle is NULL. */
 	CR_RESULT_GPU_INVALID_WINDOW_HANDLE                       = 208,
 	/** A surface's display handle is NULL where the platform needs one. */
 	CR_RESULT_GPU_INVALID_DISPLAY_HANDLE                      = 209,
 	/** A command list type the call can't take there: a bundle submitted to
-	 * a queue, or a type no queue of the device runs. */
+	 * a queue, a type no queue of the device runs, or a list of a type that
+	 * can't record the command (an indirect dispatch's). */
 	CR_RESULT_GPU_INVALID_COMMAND_LIST_TYPE                   = 210,
 	/** An adapter argument is NULL. */
 	CR_RESULT_GPU_INVALID_ADAPTER                             = 211,
@@ -475,6 +477,27 @@ typedef enum CR_RESULT {
 	/** An image's size or layer count is past its adapter's limit
 	 * (CRGPU_ADAPTER_PROPERTIES::max_image_*). Since 0.4.0. */
 	CR_RESULT_GPU_IMAGE_TOO_LARGE                             = 370,
+	/** A buffer-image copy's buffer_row_length is not 0 and is shorter than
+	 * the copied region's width in whole blocks: its rows would overlap.
+	 * Since 0.4.0. */
+	CR_RESULT_GPU_COPY_ROW_LENGTH_TOO_SHORT                   = 372,
+	/** A buffer-image copy's buffer_image_height is not 0 and is shorter
+	 * than the copied region's height in whole blocks: its images would
+	 * overlap. Since 0.4.0. */
+	CR_RESULT_GPU_COPY_IMAGE_HEIGHT_TOO_SHORT                 = 373,
+	/** A buffer-image copy of depth above 1 has a buffer_image_height above
+	 * its height: a slice pitch not every backend lays out (D3D12 has none
+	 * of its own). Since 0.4.0. */
+	CR_RESULT_GPU_COPY_SLICE_PITCH_NOT_SUPPORTED              = 374,
+	/** A command recorded between crgpu_command_list_begin_rendering() and
+	 * crgpu_command_list_end_rendering() that a rendering pass can't hold.
+	 * Since 0.4.0. */
+	CR_RESULT_GPU_COMMAND_INSIDE_RENDERING                    = 375,
+	/** An indirect command's offset is not a multiple of 4. Since 0.4.0. */
+	CR_RESULT_GPU_INDIRECT_OFFSET_ALIGNMENT                   = 377,
+	/** An indirect command's arguments run past the end of their buffer.
+	 * Since 0.4.0. */
+	CR_RESULT_GPU_INDIRECT_RANGE                              = 378,
 	/** @} */
 
 	CR_RESULT_FILES_NULL_PATH = 1001, /**< A path is NULL or empty. */

@@ -517,6 +517,96 @@ CR_RESULT crgpu_format_get_texel_block(
 	return CR_SUCCESS;
 }
 
+int32_t crgpu___internal_format_index(CRGPU_FORMAT fmt) {
+	const uint32_t value = (uint32_t)fmt;
+	if (value >= 1 && value <= CRGPU_FORMAT_B4G4R4A4_UNORM)
+		return (int32_t)value;
+	if (value >= CRGPU_FORMAT_P208 && value <= CRGPU_FORMAT_V408)
+		return (int32_t)value;
+	if (value >= CRGPU_FORMAT_ASTC_4X4_UNORM && value <= CRGPU_FORMAT_ASTC_12X12_UNORM_SRGB)
+		return (int32_t)(CRGPU_FORMAT_V408 + 1 + (value - CRGPU_FORMAT_ASTC_4X4_UNORM));
+	return -1;
+}
+
+bool crgpu___internal_format_differs_by_backend(CRGPU_FORMAT fmt) {
+	switch (fmt) {
+	// Every TYPELESS format, the depth view formats among them.
+	case CRGPU_FORMAT_R32G32B32A32_TYPELESS:
+	case CRGPU_FORMAT_R32G32B32_TYPELESS:
+	case CRGPU_FORMAT_R16G16B16A16_TYPELESS:
+	case CRGPU_FORMAT_R32G32_TYPELESS:
+	case CRGPU_FORMAT_R32G8X24_TYPELESS:
+	case CRGPU_FORMAT_R32_FLOAT_X8X24_TYPELESS:
+	case CRGPU_FORMAT_X32_TYPELESS_G8X24_UINT:
+	case CRGPU_FORMAT_R10G10B10A2_TYPELESS:
+	case CRGPU_FORMAT_R8G8B8A8_TYPELESS:
+	case CRGPU_FORMAT_R16G16_TYPELESS:
+	case CRGPU_FORMAT_R32_TYPELESS:
+	case CRGPU_FORMAT_R24G8_TYPELESS:
+	case CRGPU_FORMAT_R24_UNORM_X8_TYPELESS:
+	case CRGPU_FORMAT_X24_TYPELESS_G8_UINT:
+	case CRGPU_FORMAT_R8G8_TYPELESS:
+	case CRGPU_FORMAT_R16_TYPELESS:
+	case CRGPU_FORMAT_R8_TYPELESS:
+	case CRGPU_FORMAT_BC1_TYPELESS:
+	case CRGPU_FORMAT_BC2_TYPELESS:
+	case CRGPU_FORMAT_BC3_TYPELESS:
+	case CRGPU_FORMAT_BC4_TYPELESS:
+	case CRGPU_FORMAT_BC5_TYPELESS:
+	case CRGPU_FORMAT_B8G8R8A8_TYPELESS:
+	case CRGPU_FORMAT_B8G8R8X8_TYPELESS:
+	case CRGPU_FORMAT_BC6H_TYPELESS:
+	case CRGPU_FORMAT_BC7_TYPELESS:
+	// Made as another format by a backend: Vulkan's R8 for A8, and its
+	// B8G8R8A8 for B8G8R8X8.
+	case CRGPU_FORMAT_A8_UNORM:
+	case CRGPU_FORMAT_B8G8R8X8_UNORM:
+	case CRGPU_FORMAT_B8G8R8X8_UNORM_SRGB:
+	// Video and palette formats: the packed 4:2:2 ones (Vulkan's _422
+	// formats, sampled only through a Y'CbCr conversion), the planar ones,
+	// and the packed 4:4:4 and palette ones.
+	case CRGPU_FORMAT_R8G8_B8G8_UNORM:
+	case CRGPU_FORMAT_G8R8_G8B8_UNORM:
+	case CRGPU_FORMAT_YUY2:
+	case CRGPU_FORMAT_Y210:
+	case CRGPU_FORMAT_Y216:
+	case CRGPU_FORMAT_NV12:
+	case CRGPU_FORMAT_P010:
+	case CRGPU_FORMAT_P016:
+	case CRGPU_FORMAT_420_OPAQUE:
+	case CRGPU_FORMAT_NV11:
+	case CRGPU_FORMAT_P208:
+	case CRGPU_FORMAT_V208:
+	case CRGPU_FORMAT_V408:
+	case CRGPU_FORMAT_AYUV:
+	case CRGPU_FORMAT_Y410:
+	case CRGPU_FORMAT_Y416:
+	case CRGPU_FORMAT_AI44:
+	case CRGPU_FORMAT_IA44:
+	case CRGPU_FORMAT_P8:
+	case CRGPU_FORMAT_A8P8:
+		return true;
+	default:
+		return false;
+	}
+}
+
+bool crgpu___internal_format_two_aspects(CRGPU_FORMAT fmt) {
+	switch (fmt) {
+	case CRGPU_FORMAT_D24_UNORM_S8_UINT:
+	case CRGPU_FORMAT_D32_FLOAT_S8X24_UINT:
+	case CRGPU_FORMAT_R24G8_TYPELESS:
+	case CRGPU_FORMAT_R32G8X24_TYPELESS:
+	case CRGPU_FORMAT_R24_UNORM_X8_TYPELESS:
+	case CRGPU_FORMAT_X24_TYPELESS_G8_UINT:
+	case CRGPU_FORMAT_R32_FLOAT_X8X24_TYPELESS:
+	case CRGPU_FORMAT_X32_TYPELESS_G8X24_UINT:
+		return true;
+	default:
+		return false;
+	}
+}
+
 CRGPU_FORMAT crgpu_format_from_string(const char *fmt_str) {
 	if (fmt_str == NULL)
 		return CRGPU_FORMAT_UNKNOWN;

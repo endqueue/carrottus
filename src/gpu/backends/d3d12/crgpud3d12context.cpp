@@ -81,6 +81,59 @@ static void crgpu_d3d12_unregister_debug_callback(crgpu_device_d3d12 *device) {
 // feature an adapter has or lacks.
 static const D3D_FEATURE_LEVEL crgpu_d3d12___minimum_feature_level = D3D_FEATURE_LEVEL_12_0;
 
+// D3D12's support of [format] on [probe]: Support1 and Support2, both 0
+// where CheckFeatureSupport fails, which it does (E_FAIL) for a format the
+// adapter supports in no way at all: an answer, not a failed instance.
+static D3D12_FEATURE_DATA_FORMAT_SUPPORT crgpu_d3d12___format_support(ID3D12Device *probe, DXGI_FORMAT format) {
+	D3D12_FEATURE_DATA_FORMAT_SUPPORT support = {};
+	support.Format                            = format;
+	if (format == DXGI_FORMAT_UNKNOWN || FAILED(probe->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support)))) {
+		support.Support1 = D3D12_FORMAT_SUPPORT1_NONE;
+		support.Support2 = D3D12_FORMAT_SUPPORT2_NONE;
+	}
+	return support;
+}
+
+// [format]'s CRGPU_FORMAT_CAPABILITIES on [probe] (card S51), each asked of
+// the DXGI format D3D12 is handed for that use: the image's own, and for
+// SAMPLED and FILTERED the one a shader reads it in (a depth format's
+// readable twin, crgpu_d3d12_srv_format()). D3D12 has no copy bit: COPY is
+// a texture of any dimension. Not settled, owed to the Windows run: whether
+// D3D12 copies a region smaller than a D16_UNORM or D32_FLOAT subresource
+// (D3D11's CopySubresourceRegion didn't). Unmasked (crgpushared.c masks
+// what every backend masks).
+static CRGPU_FORMAT_CAPABILITIES crgpu_d3d12___format_capabilities(ID3D12Device *probe, CRGPU_FORMAT format) {
+	const DXGI_FORMAT image = crgpu_d3d12_get_dxgi_format(format);
+	if (image == DXGI_FORMAT_UNKNOWN)
+		return 0;
+	const D3D12_FEATURE_DATA_FORMAT_SUPPORT own = crgpu_d3d12___format_support(probe, image);
+	const DXGI_FORMAT read                      = crgpu_d3d12_srv_format(format, CRGPU_IMAGE_ASPECT_DEPTH);
+	const D3D12_FEATURE_DATA_FORMAT_SUPPORT srv = read == image ? own : crgpu_d3d12___format_support(probe, read);
+	CRGPU_FORMAT_CAPABILITIES caps              = 0;
+	if (srv.Support1 & D3D12_FORMAT_SUPPORT1_SHADER_LOAD) {
+		caps |= CRGPU_FORMAT_CAPABILITY_SAMPLED;
+		if (srv.Support1 & D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE)
+			caps |= CRGPU_FORMAT_CAPABILITY_FILTERED;
+	}
+	if ((own.Support1 & D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW) && (own.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE)) {
+		caps |= CRGPU_FORMAT_CAPABILITY_STORAGE;
+		if (own.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD)
+			caps |= CRGPU_FORMAT_CAPABILITY_STORAGE_READ;
+	}
+	if (own.Support1 & D3D12_FORMAT_SUPPORT1_RENDER_TARGET) {
+		caps |= CRGPU_FORMAT_CAPABILITY_COLOR_ATTACHMENT;
+		if (own.Support1 & D3D12_FORMAT_SUPPORT1_BLENDABLE)
+			caps |= CRGPU_FORMAT_CAPABILITY_BLEND;
+	}
+	if (own.Support1 & D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL)
+		caps |= CRGPU_FORMAT_CAPABILITY_DEPTH_STENCIL_ATTACHMENT;
+	if (own.Support1 & D3D12_FORMAT_SUPPORT1_IA_VERTEX_BUFFER)
+		caps |= CRGPU_FORMAT_CAPABILITY_VERTEX;
+	if (own.Support1 & (D3D12_FORMAT_SUPPORT1_TEXTURE1D | D3D12_FORMAT_SUPPORT1_TEXTURE2D | D3D12_FORMAT_SUPPORT1_TEXTURE3D))
+		caps |= CRGPU_FORMAT_CAPABILITY_COPY;
+	return caps;
+}
+
 // Fills in what [adapter] is and can do. D3D12 answers the features only
 // through a device (CheckFeatureSupport is a device method), so this creates
 // a probe device on the adapter and releases it before returning: D3D12
@@ -226,6 +279,12 @@ static bool crgpu_d3d12___read_adapter_facts(crgpu_adapter_d3d12 *adapter) {
 		facts->ray_query_placement_alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
 	}
 	properties->supported_features = features;
+	// Each named format's capabilities (card S51), on the probe.
+	for (uint32_t value = 0; value <= CRGPU_FORMAT_ASTC_12X12_UNORM_SRGB; ++value) {
+		const int32_t slot = crgpu___internal_format_index((CRGPU_FORMAT)value);
+		if (slot >= 0)
+			facts->format_capabilities[slot] = (uint16_t)crgpu_d3d12___format_capabilities(probe.Get(), (CRGPU_FORMAT)value);
+	}
 	// The probe is released here, as the ComPtr goes.
 	return true;
 }
@@ -400,6 +459,17 @@ CR_RESULT crgpu_adapter_get_properties(
 	return crgpu___internal_get_adapter_properties(&adapter->_facts, out_properties);
 }
 
+CR_RESULT crgpu_adapter_get_format_capabilities(
+    crgpu_adapter adapter,
+    CRGPU_FORMAT format,
+    CRGPU_FORMAT_CAPABILITIES *out_flags) {
+	if (!adapter)
+		return CR_RESULT_GPU_INVALID_ADAPTER;
+	if (CR_STALE(adapter, "crgpu_adapter_get_format_capabilities", "adapter"))
+		return CR_RESULT_GPU_INVALID_ADAPTER;
+	return crgpu___internal_get_format_capabilities(&adapter->_facts, format, out_flags);
+}
+
 CR_RESULT crgpu_adapter_supports_surface(
     crgpu_adapter adapter,
     crgpu_surface surface,
@@ -510,6 +580,8 @@ static void crgpu_d3d12___free_device(crgpu_device_d3d12 *device) {
 		device->_tight_draw_signature->Release();
 	if (device->_tight_draw_indexed_signature)
 		device->_tight_draw_indexed_signature->Release();
+	if (device->_dispatch_signature)
+		device->_dispatch_signature->Release();
 	for (size_t i = 0; i < device->_indirect_signatures.count; ++i)
 		device->_indirect_signatures.data[i].signature->Release();
 	eq_array_free(&device->_indirect_signatures);
@@ -587,11 +659,13 @@ CR_RESULT crgpu_device_create(
 	if (sr == CR_SUCCESS && (desc->required_features & CRGPU_FEATURE_BINDLESS))
 		sr = crgpu_d3d12___create_bindless_state(device);
 	if (sr == CR_SUCCESS) {
-		device->_tight_draw_signature =
-		    crgpu_d3d12___create_draw_indirect_signature(device->_d3d_device.Get(), false, sizeof(crgpu_draw_indirect_args));
-		device->_tight_draw_indexed_signature = crgpu_d3d12___create_draw_indirect_signature(
-		    device->_d3d_device.Get(), true, sizeof(crgpu_draw_indexed_indirect_args));
-		if (!device->_tight_draw_signature || !device->_tight_draw_indexed_signature)
+		device->_tight_draw_signature = crgpu_d3d12___create_indirect_signature(
+		    device->_d3d_device.Get(), D3D12_INDIRECT_ARGUMENT_TYPE_DRAW, sizeof(crgpu_draw_indirect_args));
+		device->_tight_draw_indexed_signature = crgpu_d3d12___create_indirect_signature(
+		    device->_d3d_device.Get(), D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED, sizeof(crgpu_draw_indexed_indirect_args));
+		device->_dispatch_signature = crgpu_d3d12___create_indirect_signature(
+		    device->_d3d_device.Get(), D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH, sizeof(crgpu_dispatch_indirect_args));
+		if (!device->_tight_draw_signature || !device->_tight_draw_indexed_signature || !device->_dispatch_signature)
 			sr = CR_RESULT_API_SPECIFIC_FAILURE;
 	}
 	if (sr == CR_SUCCESS && cr_debug_name_set(device, desc->debug_name) != CR_SUCCESS)

@@ -1062,6 +1062,124 @@ CR_RESULT crgpu_adapter_get_properties(
     CRGPU_ADAPTER_PROPERTIES *out_properties);
 
 /**
+ * @brief What an adapter can do with a format: a bitmask of
+ * CRGPU_FORMAT_CAPABILITY_* values, from crgpu_adapter_get_format_capabilities().
+ *
+ * Each bit is the graphics API's own answer for the format the backend
+ * makes for that use, read when the instance lists its adapters. A bit's
+ * meaning never changes; new uses are new bits. Since 0.4.0.
+ *
+ * @see CRGPU_FORMAT_CAPABILITY_Constants
+ */
+typedef uint32_t CRGPU_FORMAT_CAPABILITIES;
+
+/**
+ * @name Format Capability Flags
+ * @anchor CRGPU_FORMAT_CAPABILITY_Constants
+ *
+ * The uses crgpu_adapter_get_format_capabilities() reports, each the
+ * graphics API's answer for the native format the backend makes for it.
+ */
+/** @{ */
+enum {
+	/** Read by a shader through a sampled image binding
+	 * (CRGPU_IMAGE_USAGE_SAMPLED): loaded, or sampled with nearest
+	 * filtering. Vulkan: `SAMPLED_IMAGE`. D3D12: `SHADER_LOAD` of the
+	 * format a shader reads it in (a depth format's readable twin). Metal:
+	 * every pixel format the backend maps. */
+	CRGPU_FORMAT_CAPABILITY_SAMPLED                  = 1 << 0,
+	/** Sampled with linear filtering. Never without SAMPLED.
+	 * Vulkan: `SAMPLED_IMAGE_FILTER_LINEAR`. D3D12: `SHADER_SAMPLE`. Metal:
+	 * the feature set tables' "Filter", and for the 32-bit float formats
+	 * `supports32BitFloatFiltering`. */
+	CRGPU_FORMAT_CAPABILITY_FILTERED                 = 1 << 1,
+	/** Written by a shader through a storage image binding
+	 * (CRGPU_IMAGE_USAGE_STORAGE), whether or not the shader declares the
+	 * format. Vulkan: `STORAGE_IMAGE` and `STORAGE_WRITE_WITHOUT_FORMAT`.
+	 * D3D12: `TYPED_UNORDERED_ACCESS_VIEW` and `UAV_TYPED_STORE`. Metal:
+	 * "Write". */
+	CRGPU_FORMAT_CAPABILITY_STORAGE                  = 1 << 2,
+	/** Rendered into as a colour attachment
+	 * (CRGPU_IMAGE_USAGE_COLOR_ATTACHMENT). Vulkan: `COLOR_ATTACHMENT`.
+	 * D3D12: `RENDER_TARGET`. Metal: "Color". */
+	CRGPU_FORMAT_CAPABILITY_COLOR_ATTACHMENT         = 1 << 3,
+	/** Blended into as a colour attachment: a graphics pipeline
+	 * whose enabled blend attachment has a format without it is refused
+	 * with CR_RESULT_GPU_INVALID_FORMAT. Never without COLOR_ATTACHMENT.
+	 * Vulkan: `COLOR_ATTACHMENT_BLEND`. D3D12: `BLENDABLE`. Metal:
+	 * "Blend". */
+	CRGPU_FORMAT_CAPABILITY_BLEND                    = 1 << 4,
+	/** Rendered into as the depth/stencil attachment
+	 * (CRGPU_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT). Vulkan:
+	 * `DEPTH_STENCIL_ATTACHMENT`. D3D12: `DEPTH_STENCIL`. Metal: the
+	 * depth formats it maps (D16_UNORM, D32_FLOAT, D32_FLOAT_S8X24_UINT). */
+	CRGPU_FORMAT_CAPABILITY_DEPTH_STENCIL_ATTACHMENT = 1 << 5,
+	/** A vertex attribute's format
+	 * (crgpu_vertex_attribute_desc::format). Vulkan: the buffer features'
+	 * `VERTEX_BUFFER`. D3D12: `IA_VERTEX_BUFFER`. Metal: an MTLVertexFormat
+	 * the backend maps. */
+	CRGPU_FORMAT_CAPABILITY_VERTEX                   = 1 << 6,
+	/** Copied both ways between a buffer and an image by
+	 * crgpu_command_list_copy_buffer_to_image() and _copy_image_to_buffer():
+	 * the format has a texel block and one aspect (never a combined
+	 * depth-stencil format, whose aspect no copy desc names), and Vulkan
+	 * `TRANSFER_SRC` and `TRANSFER_DST`; D3D12 a texture format; Metal a
+	 * pixel format it maps. */
+	CRGPU_FORMAT_CAPABILITY_COPY                     = 1 << 7,
+	/** Read, as well as written, by a shader through a
+	 * storage image binding, whether or not the shader declares the format.
+	 * Never without STORAGE. Vulkan: `STORAGE_IMAGE` and
+	 * `STORAGE_READ_WITHOUT_FORMAT`. D3D12: `UAV_TYPED_LOAD` with
+	 * STORAGE's bits. Metal: the format is in the device's
+	 * `readWriteTextureSupport` tier. */
+	CRGPU_FORMAT_CAPABILITY_STORAGE_READ             = 1 << 8
+};
+/** @} */
+
+/**
+ * @brief Reports what an adapter can do with a format.
+ *
+ * Each bit is the graphics API's answer for the native format this backend
+ * makes for that use, read when the instance was created: Vulkan's format
+ * properties, D3D12's `CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT)`,
+ * and on Metal, which has no such query, Apple's feature set tables by GPU
+ * family with the device's own properties where it has one
+ * (CRGPU_FORMAT_CAPABILITIES). A format the backend makes nothing of
+ * reports 0. A TYPELESS format, a format a backend makes as another, and a
+ * video or palette format report CRGPU_FORMAT_CAPABILITY_COPY at most: what
+ * the rest would mean differs by backend.
+ *
+ * The answer is the adapter's: an image of a block-compressed format still
+ * needs a device created with its family's feature bit. Two adapters, or
+ * two backends, may answer differently; that is what the call is for.
+ *
+ * Checks `adapter`, then `format`, then `out_flags`; nothing is written on a
+ * refusal. A destroyed adapter's instance is refused as a NULL one in
+ * Debug.
+ *
+ * Thread: may overlap any call on the same adapter or its instance,
+ * crgpu_device_create() on it included, except crgpu_instance_destroy().
+ * It reads what the instance recorded. Since 0.4.0.
+ *
+ * @param[in]  adapter   Adapter to ask about.
+ * @param[in]  format    Format to ask about: any value CRGPU_FORMAT names
+ *                       but CRGPU_FORMAT_UNKNOWN.
+ * @param[out] out_flags Receives its CRGPU_FORMAT_CAPABILITIES; 0 is an
+ *                       answer, not a failure.
+ *
+ * @retval CR_SUCCESS `out_flags` was written.
+ * @retval CR_RESULT_GPU_INVALID_ADAPTER `adapter` is NULL.
+ * @retval CR_RESULT_GPU_INVALID_FORMAT `format` is CRGPU_FORMAT_UNKNOWN or a
+ *         value CRGPU_FORMAT doesn't name (116 to 129, 133 to 999, past
+ *         1027). Nothing is written.
+ * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_flags` is NULL.
+ */
+CR_RESULT crgpu_adapter_get_format_capabilities(
+    crgpu_adapter adapter,
+    CRGPU_FORMAT format,
+    CRGPU_FORMAT_CAPABILITIES *out_flags);
+
+/**
  * @brief Reports whether a device on an adapter can present to a surface.
  *
  * Vulkan: `vkGetPhysicalDeviceSurfaceSupportKHR` for the family direct
@@ -1980,9 +2098,11 @@ enum {
 	CRGPU_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT = 1 << 6,
 
 	/**
-	 * @brief Buffer holds crgpu_draw_indirect_args /
-	 * crgpu_draw_indexed_indirect_args consumed by crgpu_command_list_draw_indirect
-	 * / crgpu_command_list_draw_indexed_indirect.
+	 * @brief Buffer holds crgpu_draw_indirect_args,
+	 * crgpu_draw_indexed_indirect_args or crgpu_dispatch_indirect_args read by
+	 * crgpu_command_list_draw_indirect(), _draw_indexed_indirect() and
+	 * _dispatch_indirect(). The dispatch refuses a buffer without it
+	 * (CR_RESULT_GPU_INVALID_BUFFER_USAGE).
 	 *
 	 * Vulkan-specific creation-time fact (maps to
 	 * VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT) — D3D12/Metal have no equivalent
@@ -2208,7 +2328,10 @@ CR_RESULT crgpu_buffer_view_get_desc(
  *
  * A buffer has one mapping at a time: it is unmapped before it is mapped
  * again. It may stay mapped for as long as it exists, including while the GPU
- * uses it.
+ * uses it. Bytes no unfinished GPU work reads may be written and flushed
+ * (crgpu_buffer_flush()) while other bytes of the buffer are in use; which
+ * bytes those are, and when the work reading them has finished (a fence's
+ * value), is the caller's to know.
  *
  * @param[in]  buffer Buffer to map.
  * @param[in]  offset Byte offset into the buffer where the mapped region
@@ -2353,7 +2476,10 @@ enum {
 	CRGPU_IMAGE_USAGE_COLOR_ATTACHMENT         = 1 << 1,
 	/** Rendered into as the depth/stencil attachment. */
 	CRGPU_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT = 1 << 2,
-	/** Read and written by a shader through a storage image binding. */
+	/** Written by a shader through a storage image binding, and read there
+	 * where the format has CRGPU_FORMAT_CAPABILITY_STORAGE_READ on the
+	 * device's adapter; what a shader reads from a storage image of
+	 * another format is undefined. */
 	CRGPU_IMAGE_USAGE_STORAGE                  = 1 << 3,
 	/** Read by a copy or blit. */
 	CRGPU_IMAGE_USAGE_TRANSFER_SRC             = 1 << 4,
@@ -3327,7 +3453,7 @@ enum {
 	CRGPU_RESOURCE_STATE_SHADER_RESOURCE,  /**< Read-only in shader */
 	CRGPU_RESOURCE_STATE_UNORDERED_ACCESS, /**< Read/Write (SSBO/UAV) */
 	CRGPU_RESOURCE_STATE_PRESENT,          /**< Ready to present */
-	CRGPU_RESOURCE_STATE_INDIRECT_ARGUMENT, /**< Read by crgpu_command_list_draw_indirect / _indexed_indirect */
+	CRGPU_RESOURCE_STATE_INDIRECT_ARGUMENT, /**< Read by an indirect draw or dispatch (crgpu_command_list_draw_indirect(), _draw_indexed_indirect(), _dispatch_indirect()) */
 	CRGPU_RESOURCE_STATE_COPY_SOURCE,       /**< Read by a copy command */
 	CRGPU_RESOURCE_STATE_COPY_DEST,         /**< Written by a copy command */
 	/** Read by an acceleration structure build: its vertices, indices,
@@ -3354,7 +3480,7 @@ enum {
 typedef uint32_t CRGPU_PIPELINE_STAGE;
 enum {
 	CRGPU_PIPELINE_STAGE_TOP_OF_PIPE             = 0x00000001, /**< Before any stage: wait for nothing */
-	CRGPU_PIPELINE_STAGE_DRAW_INDIRECT           = 0x00000002, /**< Where indirect draw arguments are read */
+	CRGPU_PIPELINE_STAGE_DRAW_INDIRECT           = 0x00000002, /**< Where indirect draw and dispatch arguments are read */
 	CRGPU_PIPELINE_STAGE_VERTEX_INPUT            = 0x00000004, /**< Where vertex and index buffers are read */
 	CRGPU_PIPELINE_STAGE_VERTEX_SHADER           = 0x00000008, /**< The vertex shader */
 	CRGPU_PIPELINE_STAGE_TESSELLATION_CONTROL    = 0x00000010, /**< The tessellation control shader */
@@ -5386,7 +5512,9 @@ typedef struct crgpu_graphics_pipeline_desc {
 	 * CRGPU_FEATURE_INDEPENDENT_BLEND. An entry naming an SRC1 factor needs a
 	 * device created with CRGPU_FEATURE_DUAL_SOURCE_BLEND and a
 	 * #color_attachment_count of 1: dual-source blending writes attachment 0
-	 * alone, on every backend.
+	 * alone, on every backend. An entry with blend_enable needs its format
+	 * (#color_attachment_formats[i]) to have CRGPU_FORMAT_CAPABILITY_BLEND
+	 * on the device's adapter (crgpu_adapter_get_format_capabilities()).
 	 * @see crgpu_blend_attachment_desc
 	 */
 	crgpu_blend_attachment_desc blend_attachments[CRGPU_MAX_COLOR_ATTACHMENTS];
@@ -5497,7 +5625,11 @@ typedef struct crgpu_graphics_pipeline_desc {
  *         `desc->vertex_module` set, as the format of one of the first
  *         `desc->vertex_attribute_count` `desc->vertex_attributes`: no API
  *         renders to or fetches vertices from one. Checked in that order,
- *         before any backend translates a format. Since 0.4.0.
+ *         before any backend translates a format. Since 0.4.0. Or, checked
+ *         after every blend check below (the dual-source count included),
+ *         the format of one of the first `desc->color_attachment_count`
+ *         attachments with blend_enable lacks CRGPU_FORMAT_CAPABILITY_BLEND
+ *         on the device's adapter, attachments in index order. Since 0.4.0.
  * @retval CR_RESULT_GPU_DEPTH_BIAS_CLAMP_NOT_SUPPORTED
  *         `desc->depth_bias_clamp` is not 0 and the device wasn't created
  *         with CRGPU_FEATURE_DEPTH_BIAS_CLAMP.
@@ -5957,7 +6089,7 @@ typedef struct CRGPU_MESH_SHADING_LIMITS {
  * and crgpu_command_list_end_rendering()), unlike crgpu_command_list_dispatch(), which
  * targets a compute pipeline outside one. Does nothing if the bound pipeline
  * is not a mesh-shader pipeline, or if the device was created without
- * CRGPU_FEATURE_MESH_SHADING (and a debug build asserts then).
+ * CRGPU_FEATURE_MESH_SHADING.
  *
  * Maps to: vkCmdDrawMeshTasksEXT (Vulkan), ID3D12GraphicsCommandList6::
  * DispatchMesh (D3D12), drawMeshThreadgroups:threadsPerObjectThreadgroup:
@@ -5967,6 +6099,17 @@ typedef struct CRGPU_MESH_SHADING_LIMITS {
  * The group counts are in workgroups, not threads: they match the
  * [numthreads]/local_size the pipeline's mesh module declares, the same
  * convention crgpu_command_list_dispatch() uses for compute.
+ *
+ * Two rules hold on every backend, whatever the graphics API underneath
+ * keeps:
+ *
+ * - Each group count is at most 65535, and their product at most 1024.
+ *   Vulkan and D3D12 guarantee 2^22 in all; a mesh grid holds 1024
+ *   threadgroups on every Metal 3 GPU (Apple's "Metal Feature Set Tables",
+ *   the Apple7 column), the smaller. What a dispatch past that does is
+ *   undefined. A 0 in any dispatches nothing.
+ * - A mesh dispatch reads the graphics pipeline and state bound in the
+ *   pass, as a draw does.
  *
  * @param[in] cmd           Command list being recorded.
  * @param[in] group_count_x Number of mesh shader workgroups in X.
@@ -7113,6 +7256,20 @@ void crgpu_command_list_push_compute_constants(
  * The group counts are in workgroups, not threads: they match the
  * [numthreads]/local_size declared in the compute shader.
  *
+ * Two rules hold on every backend, whatever the graphics API underneath
+ * keeps:
+ *
+ * - Each group count is at most 65535. What a dispatch with a larger one
+ *   does is undefined. A 0 in any dispatches nothing.
+ * - A dispatch reads the compute pipeline, the compute descriptor sets and
+ *   the compute push constants recorded since the last of these:
+ *   crgpu_command_list_begin(), a rendering pass
+ *   (crgpu_command_list_begin_rendering() to _end_rendering()), a copy,
+ *   blit or clear outside a pass, a debug label, an acceleration structure
+ *   build, copy or compacted-size write, and
+ *   crgpu_command_list_bind_graphics_pipeline(). With any of them not
+ *   recorded since, what the dispatch does is undefined: bind them again.
+ *
  * @param[in] cmd           Command list being recorded.
  * @param[in] group_count_x Number of workgroups in X.
  * @param[in] group_count_y Number of workgroups in Y.
@@ -7123,6 +7280,76 @@ void crgpu_command_list_dispatch(
     uint32_t group_count_x,
     uint32_t group_count_y,
     uint32_t group_count_z);
+
+/**
+ * @brief The three group counts an indirect dispatch reads
+ * (crgpu_command_list_dispatch_indirect()).
+ *
+ * Bit for bit VkDispatchIndirectCommand, D3D12_DISPATCH_ARGUMENTS and
+ * MTLDispatchThreadgroupsIndirectArguments: a shader writes these 12 bytes
+ * and any backend reads them as they are. Counts in workgroups, as
+ * crgpu_command_list_dispatch() takes them: each at most 65535, and a 0 in
+ * any dispatches nothing.
+ */
+/* Frozen: read by the GPU, so its layout is the GPU's. It never changes; a new need gets a new type. */
+typedef struct crgpu_dispatch_indirect_args {
+	/** Workgroups in X. */
+	uint32_t group_count_x;
+	/** Workgroups in Y. */
+	uint32_t group_count_y;
+	/** Workgroups in Z. */
+	uint32_t group_count_z;
+} crgpu_dispatch_indirect_args;
+
+/**
+ * @brief Records a compute dispatch against the bound compute pipeline
+ * whose group counts the GPU reads, when the dispatch runs, from a
+ * crgpu_dispatch_indirect_args in a buffer.
+ *
+ * The rules of crgpu_command_list_dispatch() hold for the counts read
+ * (each at most 65535, a 0 dispatching nothing) and for the bound state.
+ * The caller writes the arguments before the dispatch runs and moves the
+ * buffer to CRGPU_RESOURCE_STATE_INDIRECT_ARGUMENT
+ * (crgpu_command_list_pipeline_barrier()) after a GPU write; a buffer of
+ * CRGPU_MEMORY_KIND_UPLOAD is readable so from creation. The threadgroup's
+ * size is the bound pipeline's compute module's
+ * (crgpu_shader_module_desc::workgroup_size), as for a direct dispatch.
+ * Carrottus GPU never reads, clamps or rewrites the counts.
+ *
+ * Maps to: vkCmdDispatchIndirect (Vulkan); ExecuteIndirect with a command
+ * signature of one D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH, made with the
+ * device (D3D12); dispatchThreadgroupsWithIndirectBuffer:
+ * indirectBufferOffset:threadsPerThreadgroup: (Metal).
+ *
+ * @param[in] cmd    Command list being recorded: of a DIRECT or COMPUTE
+ *                   allocator, outside a rendering pass.
+ * @param[in] buffer The buffer holding the arguments, created with
+ *                   CRGPU_BUFFER_USAGE_INDIRECT. Borrowed: it lives until
+ *                   the list's submission has finished.
+ * @param[in] offset Byte offset of the arguments: a multiple of 4, with the
+ *                   12 bytes from it within the buffer's size.
+ *
+ * Checked in this order, on every backend; a refused call records nothing:
+ * @retval CR_SUCCESS The dispatch was recorded.
+ * @retval CR_RESULT_GPU_INVALID_COMMAND_LIST `cmd` is NULL (or, in Debug,
+ *         destroyed).
+ * @retval CR_RESULT_GPU_INVALID_BUFFER `buffer` is NULL (or, in Debug,
+ *         destroyed).
+ * @retval CR_RESULT_GPU_INVALID_COMMAND_LIST_TYPE `cmd` is of a COPY or
+ *         BUNDLE allocator.
+ * @retval CR_RESULT_GPU_COMMAND_INSIDE_RENDERING A rendering pass is open
+ *         on `cmd`.
+ * @retval CR_RESULT_GPU_INVALID_BUFFER_USAGE `buffer` wasn't created with
+ *         CRGPU_BUFFER_USAGE_INDIRECT.
+ * @retval CR_RESULT_GPU_INDIRECT_OFFSET_ALIGNMENT `offset` is not a
+ *         multiple of 4.
+ * @retval CR_RESULT_GPU_INDIRECT_RANGE `offset` is past the buffer's size,
+ *         or fewer than 12 bytes of it follow `offset`.
+ */
+CR_RESULT crgpu_command_list_dispatch_indirect(
+    crgpu_command_list cmd,
+    crgpu_buffer buffer,
+    uint64_t offset);
 
 // ============================================================================
 //  Image <-> Buffer Copies
@@ -7157,8 +7384,18 @@ void crgpu_command_list_dispatch(
  * For every format, the rules each backend's API needs, stated once and
  * checked by both copies:
  *  - `array_layer_count` and `depth` are at least 1;
+ *  - `buffer_row_length`, when not 0, is at least the region's width in
+ *    whole blocks (ceil(width / block width) blocks), and
+ *    `buffer_image_height`, when not 0, at least its height in whole rows of
+ *    blocks: a buffer's rows and images never overlap (since 0.4.0);
+ *  - with `depth` above 1, `buffer_image_height` is 0 or the region's
+ *    height: a 3D copy's slices follow each other with no rows between
+ *    them, the one layout every backend lays out the same way (D3D12 has no
+ *    slice pitch of its own). A 2D array's layers, and a 3D copy of one
+ *    slice, take any image height at least the region's (since 0.4.0);
  *  - the row pitch the copy implies is a multiple of
- *    crgpu_image_get_buffer_copy_row_pitch_alignment(), and the pitch
+ *    crgpu_image_get_buffer_copy_row_pitch_alignment(), and at most
+ *    2^31 - 1 bytes (since 0.4.0), and the pitch
  *    crgpu_image_get_buffer_copy_size() gives always is;
  *  - with `array_layer_count` above 1, layer i starts at `buffer_offset` plus
  *    i times the layer's bytes (the row pitch times the image's rows of
@@ -7178,14 +7415,18 @@ typedef struct crgpu_image_buffer_copy_desc {
 	/**
 	 * Row length in texels, used to interpret the buffer's layout. Pass 0
 	 * for tightly packed rows (== region width, rounded up to whole blocks
-	 * for a block format).
+	 * for a block format); otherwise a multiple of the block's width, at
+	 * least the region's width rounded up to whole blocks.
 	 */
 	uint32_t buffer_row_length;
 
 	/**
-	 * Image height in texels, used to interpret the buffer's 2D/3D layout.
-	 * Pass 0 for tightly packed rows (== region height, rounded up to whole
-	 * blocks for a block format).
+	 * Image height in texels, used to interpret the buffer's 2D/3D layout:
+	 * the rows from one layer's start (or one 3D slice's) to the next. Pass
+	 * 0 for tightly packed rows (== region height, rounded up to whole
+	 * blocks for a block format); otherwise a multiple of the block's
+	 * height, at least the region's height rounded up to whole blocks, and
+	 * with `depth` above 1 exactly the region's height.
 	 */
 	uint32_t buffer_image_height;
 
@@ -7276,12 +7517,24 @@ void crgpu_command_list_copy_buffer(
  *         image: `mip_level` past its levels, the layers past its layers or
  *         `array_layer_count` 0, a size of 0 (`depth` included), or the
  *         region past the level's width, height or depth; or it breaks the
- *         block's rules (crgpu_image_buffer_copy_desc); or `buffer_offset`
- *         isn't a multiple of the copy offset alignment; or the row pitch
- *         isn't a multiple of the row pitch alignment; or a later layer's
- *         start isn't a multiple of the offset alignment; or the bytes the
- *         region covers run past the buffer's size. Checked in that order,
- *         each its own check.
+ *         block's rules (crgpu_image_buffer_copy_desc). Then, after the
+ *         three results below: `buffer_offset` isn't a multiple of the copy
+ *         offset alignment; or the row pitch isn't a multiple of the row
+ *         pitch alignment, or is above 2^31 - 1 bytes (since 0.4.0); or a
+ *         later layer's start isn't a multiple of the offset alignment; or
+ *         the bytes the region covers run past the buffer's size. Checked
+ *         in that order, each its own check.
+ * @retval CR_RESULT_GPU_COPY_ROW_LENGTH_TOO_SHORT
+ *         `desc->buffer_row_length` is not 0 and is fewer blocks than the
+ *         region's width in whole blocks. Since 0.4.0.
+ * @retval CR_RESULT_GPU_COPY_IMAGE_HEIGHT_TOO_SHORT
+ *         `desc->buffer_image_height` is not 0 and is fewer rows of blocks
+ *         than the region's height in whole blocks. Since 0.4.0.
+ * @retval CR_RESULT_GPU_COPY_SLICE_PITCH_NOT_SUPPORTED
+ *         `desc->depth` is above 1 and `desc->buffer_image_height` is above
+ *         `desc->height`: slices with rows between them, which not every
+ *         backend can lay out. Checked after the region's checks and before
+ *         the offset's. Since 0.4.0.
  *
  * Since 0.4.0 it returns a result (it returned nothing before).
  */
@@ -7314,8 +7567,12 @@ CR_RESULT crgpu_command_list_copy_image_to_buffer(
  *         CRGPU_BUFFER_USAGE_TRANSFER_SRC on `src_buffer` and
  *         CRGPU_IMAGE_USAGE_TRANSFER_DST on `dst_image`: after the handles
  *         and `desc`, the image's format, then the usages in parameter order
- *         (the buffer's, then the image's), then the region as listed there.
- *         Since 0.4.0 it returns a result (it returned nothing before).
+ *         (the buffer's, then the image's), then the region as listed there,
+ *         CR_RESULT_GPU_COPY_ROW_LENGTH_TOO_SHORT,
+ *         CR_RESULT_GPU_COPY_IMAGE_HEIGHT_TOO_SHORT and
+ *         CR_RESULT_GPU_COPY_SLICE_PITCH_NOT_SUPPORTED included in the same
+ *         place. Since 0.4.0 it returns a result (it returned nothing
+ *         before).
  */
 CR_RESULT crgpu_command_list_copy_buffer_to_image(
     crgpu_command_list cmd,

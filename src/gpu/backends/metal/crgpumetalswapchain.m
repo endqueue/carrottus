@@ -292,7 +292,9 @@ CR_RESULT crgpu_swap_chain_create(
 	// no-op. Blocking briefly here at creation is fine; this never runs
 	// per-frame.
 	swap_chain_metal->_image_available_semaphore->_signal_value = 1;
-	{
+	// The buffer is autoreleased, and a caller in plain C may have no pool
+	// that ever drains: one of its own frees it here.
+	@autoreleasepool {
 		id<MTLCommandBuffer> init_buffer =
 		    [swap_chain_metal->_present_queue->_command_queue_mtl commandBuffer];
 		[init_buffer encodeSignalEvent:swap_chain_metal->_image_available_semaphore->_event_mtl value:1];
@@ -428,11 +430,15 @@ void crgpu_swap_chain_present(crgpu_swap_chain swap_chain) {
 	// Mirrors the D3D12 backend, which also does zero explicit
 	// synchronization in its own present() for the same reason.
 	// A use of the swap chain's queue (crgpu.h).
+	// The buffer is autoreleased, and so freed by a pool of its own, as the
+	// one at creation is.
 	crgpumetal___queue_enter(swap_chain_metal->_present_queue);
-	id<MTLCommandBuffer> present_buffer =
-	    [swap_chain_metal->_present_queue->_command_queue_mtl commandBuffer];
-	[present_buffer presentDrawable:swap_chain_metal->_current_drawable];
-	[present_buffer commit];
+	@autoreleasepool {
+		id<MTLCommandBuffer> present_buffer =
+		    [swap_chain_metal->_present_queue->_command_queue_mtl commandBuffer];
+		[present_buffer presentDrawable:swap_chain_metal->_current_drawable];
+		[present_buffer commit];
+	}
 	crgpumetal___queue_leave(swap_chain_metal->_present_queue);
 }
 

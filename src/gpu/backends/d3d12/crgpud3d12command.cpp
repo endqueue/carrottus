@@ -481,11 +481,10 @@ void crgpu_command_list_set_depth_bounds(
 
 } // extern "C"
 
-ID3D12CommandSignature *crgpu_d3d12___create_draw_indirect_signature(
-    ID3D12Device *d3d_device, bool indexed, uint32_t stride) {
+ID3D12CommandSignature *crgpu_d3d12___create_indirect_signature(
+    ID3D12Device *d3d_device, D3D12_INDIRECT_ARGUMENT_TYPE type, uint32_t stride) {
 	D3D12_INDIRECT_ARGUMENT_DESC argument_desc = {};
-	argument_desc.Type = indexed ? D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED
-	                              : D3D12_INDIRECT_ARGUMENT_TYPE_DRAW;
+	argument_desc.Type = type;
 
 	D3D12_COMMAND_SIGNATURE_DESC signature_desc = {};
 	signature_desc.pArgumentDescs = &argument_desc;
@@ -494,7 +493,8 @@ ID3D12CommandSignature *crgpu_d3d12___create_draw_indirect_signature(
 
 	// rootSignature is nullptr: only valid (and required) when every argument
 	// in the signature is DRAW/DRAW_INDEXED/DISPATCH — no root-parameter
-	// update arguments, which Carrottus GPU's indirect draw never uses.
+	// update arguments, which Carrottus GPU's indirect draws and dispatch never
+	// use.
 	ID3D12CommandSignature *signature = nullptr;
 	if (FAILED(d3d_device->CreateCommandSignature(&signature_desc, nullptr, IID_PPV_ARGS(&signature))))
 		return nullptr;
@@ -526,8 +526,8 @@ static ID3D12CommandSignature *crgpu_d3d12___get_draw_indirect_signature(
 	// device's.
 	if (kept.count == kept.capacity && eq_array_reserve(&kept, kept.capacity ? kept.capacity * 2 : 4) != EQ_SUCCESS)
 		return nullptr;
-	ID3D12CommandSignature *signature =
-	    crgpu_d3d12___create_draw_indirect_signature(device->_d3d_device.Get(), indexed, stride);
+	ID3D12CommandSignature *signature = crgpu_d3d12___create_indirect_signature(
+	    device->_d3d_device.Get(), indexed ? D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED : D3D12_INDIRECT_ARGUMENT_TYPE_DRAW, stride);
 	if (!signature)
 		return nullptr;
 	const crgpu_d3d12_indirect_signature added = {signature, stride, indexed};
@@ -539,7 +539,34 @@ static ID3D12CommandSignature *crgpu_d3d12___get_draw_indirect_signature(
 	return signature;
 }
 
+// D3D12_DISPATCH_ARGUMENTS is the 12 bytes the DISPATCH argument reads.
+static_assert(sizeof(D3D12_DISPATCH_ARGUMENTS) == sizeof(crgpu_dispatch_indirect_args),
+              "crgpu_dispatch_indirect_args is D3D12_DISPATCH_ARGUMENTS");
+
 extern "C" {
+
+CR_RESULT crgpu_command_list_dispatch_indirect(
+    crgpu_command_list cmd,
+    crgpu_buffer buffer,
+    uint64_t offset) {
+	if (!cmd)
+		return CR_RESULT_GPU_INVALID_COMMAND_LIST;
+	if (CR_STALE(cmd, "crgpu_command_list_dispatch_indirect", "cmd"))
+		return CR_RESULT_GPU_INVALID_COMMAND_LIST;
+	if (!buffer)
+		return CR_RESULT_GPU_INVALID_BUFFER;
+	if (CR_STALE(buffer, "crgpu_command_list_dispatch_indirect", "buffer"))
+		return CR_RESULT_GPU_INVALID_BUFFER;
+	const CR_RESULT checked =
+	    crgpu___internal_check_dispatch_indirect(cmd->_allocator->_type, cmd->_rendering_active, &buffer->_desc, offset);
+	if (checked != CR_SUCCESS)
+		return checked;
+	// The signature is made with the device (crgpu_device_create), so it is
+	// never null here.
+	cmd->_d3d_cmd_list->ExecuteIndirect(
+	    cmd->_allocator->_device->_dispatch_signature, 1, buffer->_d3d_resource.Get(), offset, nullptr, 0);
+	return CR_SUCCESS;
+}
 
 void crgpu_command_list_draw_indirect(
     crgpu_command_list cmd,

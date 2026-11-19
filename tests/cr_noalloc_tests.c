@@ -19,6 +19,9 @@
  *   ASTC LDR: a 64 x 64 BC7 (or ASTC 4x4) image written each frame from an
  *   upload buffer between its barriers, its texel block and row pitch
  *   alignment asked first as a caller sizing the copy does.
+ * - Carrottus GPU's indirect dispatch (card A15): a dispatch writing the
+ *   group counts, a barrier to INDIRECT_ARGUMENT, and a dispatch reading
+ *   them (crgpu_command_list_dispatch_indirect()), submitted and waited.
  * - Carrottus GPU's submit and present loop: the same frame drawn into a swap
  *   chain's image, acquired, submitted with
  *   crgpu_command_queue_submit_lists_synced() and presented. Windows presents to
@@ -136,6 +139,7 @@ static void test_hook_counts(void) {
 #define TARGET_SIZE 256
 
 typedef struct gpu_frame {
+	crgpu_adapter adapter;
 	crgpu_device device;
 	crgpu_command_queue queue;
 	crgpu_command_allocator allocator;
@@ -184,6 +188,12 @@ static bool offscreen_frame(offscreen *o) {
 			return false;
 	}
 	if (crgpu_command_allocator_reset(o->f.allocator) != CR_SUCCESS)
+		return false;
+	// The target's format asked about each frame (card S51): a read of what
+	// the instance recorded.
+	CRGPU_FORMAT_CAPABILITIES caps = 0;
+	if (crgpu_adapter_get_format_capabilities(o->f.adapter, CRGPU_FORMAT_R8G8B8A8_UNORM, &caps) != CR_SUCCESS ||
+	    !(caps & CRGPU_FORMAT_CAPABILITY_COLOR_ATTACHMENT))
 		return false;
 	record_frame(o->f.cmd, o->view, TARGET_SIZE, TARGET_SIZE,
 	             o->frame == 0 ? CRGPU_IMAGE_LAYOUT_UNDEFINED : CRGPU_IMAGE_LAYOUT_SHADER_READ_ONLY,
@@ -241,7 +251,7 @@ static void test_gpu_offscreen(gpu_frame f) {
 			ok = offscreen_frame(&o);
 		alloc_trace_stop();
 		CHECK(ok);
-		report("Carrottus GPU recording and submitting a frame offscreen, a fence waited on");
+		report("Carrottus GPU recording and submitting a frame offscreen (its format's capabilities asked), a fence waited on");
 
 		uint64_t best = UINT64_MAX, best_submit = UINT64_MAX;
 		for (int run = 0; run < TIMED_RUNS && ok; ++run) {
@@ -389,6 +399,190 @@ static void test_gpu_block_copy(gpu_frame f) {
 	crgpu_fence_destroy(b.fence);
 	crgpu_buffer_destroy(b.upload);
 	crgpu_image_destroy(b.image);
+}
+
+/* Indirect dispatch (card A15): objects_dispatch_args_comp writes {4, 1, 1}
+ * into a buffer, a barrier makes it an indirect argument, and
+ * objects_dispatch_count_comp is dispatched from it, each frame. */
+typedef struct indirect_dispatch {
+	gpu_frame f;
+	crgpu_compute_pipeline writer, counter;
+	crgpu_descriptor_set args_set, words_set;
+	crgpu_buffer args, words;
+	crgpu_fence fence;
+	uint64_t frame;
+} indirect_dispatch;
+
+static void indirect_barrier(crgpu_command_list cmd, crgpu_buffer buffer, CRGPU_RESOURCE_STATE before, CRGPU_RESOURCE_STATE after) {
+	crgpu_buffer_barrier b;
+	memset(&b, 0, sizeof(b));
+	b.base.type    = CR_STRUCT_TYPE_GPU_BUFFER_BARRIER;
+	b.buffer       = buffer;
+	b.state_before = before;
+	b.state_after  = after;
+	crgpu_command_list_pipeline_barrier(cmd, &b, 1, NULL, 0);
+}
+
+static bool indirect_dispatch_frame(indirect_dispatch *d) {
+	if (d->frame > 0) {
+		uint64_t value = d->frame;
+		if (crgpu_fence_wait(d->f.device, &d->fence, &value, 1, true, UINT64_MAX) != CR_SUCCESS)
+			return false;
+	}
+	if (crgpu_command_allocator_reset(d->f.allocator) != CR_SUCCESS)
+		return false;
+	crgpu_command_list cmd = d->f.cmd;
+	crgpu_command_list_begin(cmd);
+	indirect_barrier(cmd, d->args, CRGPU_RESOURCE_STATE_COMMON, CRGPU_RESOURCE_STATE_UNORDERED_ACCESS);
+	indirect_barrier(cmd, d->words, CRGPU_RESOURCE_STATE_COMMON, CRGPU_RESOURCE_STATE_UNORDERED_ACCESS);
+	crgpu_command_list_bind_compute_pipeline(cmd, d->writer);
+	crgpu_command_list_bind_compute_descriptor_sets(cmd, d->writer, 0, &d->args_set, 1);
+	crgpu_command_list_dispatch(cmd, 1, 1, 1);
+	indirect_barrier(cmd, d->args, CRGPU_RESOURCE_STATE_UNORDERED_ACCESS, CRGPU_RESOURCE_STATE_INDIRECT_ARGUMENT);
+	crgpu_command_list_bind_compute_pipeline(cmd, d->counter);
+	crgpu_command_list_bind_compute_descriptor_sets(cmd, d->counter, 0, &d->words_set, 1);
+	const CR_RESULT dispatched = crgpu_command_list_dispatch_indirect(cmd, d->args, 0);
+	crgpu_command_list_end(cmd);
+	++d->frame;
+	crgpu_submit_desc submit;
+	memset(&submit, 0, sizeof(submit));
+	submit.base.type          = CR_STRUCT_TYPE_GPU_SUBMIT_DESC;
+	submit.cmd_lists          = &d->f.cmd;
+	submit.cmd_list_count     = 1;
+	submit.signal_fence       = d->fence;
+	submit.signal_fence_value = d->frame;
+	return dispatched == CR_SUCCESS && crgpu_command_queue_submit(d->f.queue, &submit) == CR_SUCCESS;
+}
+
+static crgpu_compute_pipeline indirect_pipeline(gpu_frame f, CRGPU_SHADER_FORMAT format, const crgpu_test_shader *shader,
+                                                crgpu_descriptor_set_layout layout, crgpu_shader_module *out_module) {
+	crgpu_shader_module_desc module_desc = crgpu_test_module_desc(shader, format, shader->entry_point);
+	if (module_desc.code)
+		CHECK(crgpu_shader_module_create(f.device, &module_desc, out_module) == CR_SUCCESS);
+	crgpu_compute_pipeline_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type                   = CR_STRUCT_TYPE_GPU_COMPUTE_PIPELINE_DESC;
+	desc.compute_module              = *out_module;
+	desc.descriptor_set_layouts[0]   = layout;
+	desc.descriptor_set_layout_count = 1;
+	crgpu_compute_pipeline pipeline = NULL;
+	if (*out_module && layout)
+		CHECK(crgpu_compute_pipeline_create(f.device, &desc, &pipeline) == CR_SUCCESS);
+	return pipeline;
+}
+
+static crgpu_descriptor_set indirect_set(gpu_frame f, crgpu_descriptor_pool pool, crgpu_descriptor_set_layout layout, crgpu_buffer buffer,
+                                         uint64_t size) {
+	crgpu_descriptor_set set = NULL;
+	if (!pool || !layout || !buffer)
+		return NULL;
+	crgpu_descriptor_set_desc set_desc;
+	memset(&set_desc, 0, sizeof(set_desc));
+	set_desc.base.type      = CR_STRUCT_TYPE_GPU_DESCRIPTOR_SET_DESC;
+	set_desc.pool           = pool;
+	set_desc.set_layouts[0] = layout;
+	set_desc.set_count      = 1;
+	CHECK(crgpu_descriptor_set_create(f.device, &set_desc, &set) == CR_SUCCESS);
+	if (!set)
+		return NULL;
+	const crgpu_descriptor_buffer_info info = {buffer, 0, size};
+	crgpu_write_descriptor_set write;
+	memset(&write, 0, sizeof(write));
+	write.base.type        = CR_STRUCT_TYPE_GPU_WRITE_DESCRIPTOR_SET;
+	write.dst_set          = set;
+	write.descriptor_count = 1;
+	write.descriptor_type  = CRGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	write.buffer_info      = &info;
+	crgpu_device_update_descriptor_sets(f.device, &write, 1);
+	return set;
+}
+
+static crgpu_buffer indirect_buffer(gpu_frame f, CRGPU_BUFFER_USAGE usage, uint64_t size, const char *name) {
+	crgpu_buffer_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type   = CR_STRUCT_TYPE_GPU_BUFFER_DESC;
+	desc.usage       = usage;
+	desc.memory_kind = CRGPU_MEMORY_KIND_DEVICE;
+	desc.size        = size;
+	desc.debug_name  = name;
+	crgpu_buffer buffer = NULL;
+	CHECK(crgpu_buffer_create(f.device, &desc, &buffer) == CR_SUCCESS);
+	return buffer;
+}
+
+static void test_gpu_dispatch_indirect(gpu_frame f) {
+	CRGPU_ADAPTER_PROPERTIES properties;
+	memset(&properties, 0, sizeof(properties));
+	properties.base.type = CR_STRUCT_TYPE_GPU_ADAPTER_PROPERTIES;
+	CHECK(crgpu_adapter_get_properties(f.adapter, &properties) == CR_SUCCESS);
+	CRGPU_SHADER_FORMAT format = CRGPU_SHADER_FORMAT_NONE;
+	for (CRGPU_SHADER_FORMAT k = CRGPU_SHADER_FORMAT_SPIRV; k <= CRGPU_SHADER_FORMAT_METALLIB; ++k)
+		if (properties.shader_formats & (1u << k))
+			format = k;
+
+	indirect_dispatch d;
+	memset(&d, 0, sizeof(d));
+	d.f = f;
+	crgpu_descriptor_set_layout_desc layout_desc;
+	memset(&layout_desc, 0, sizeof(layout_desc));
+	layout_desc.base.type                   = CR_STRUCT_TYPE_GPU_DESCRIPTOR_SET_LAYOUT_DESC;
+	layout_desc.bindings[0].descriptor_type = CRGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	layout_desc.bindings[0].count           = 1;
+	layout_desc.bindings[0].stage_flags     = CRGPU_SHADER_STAGE_COMPUTE;
+	layout_desc.binding_count               = 1;
+	crgpu_descriptor_set_layout layout    = NULL;
+	CHECK(crgpu_descriptor_set_layout_create(f.device, &layout_desc, &layout) == CR_SUCCESS);
+	crgpu_shader_module writer_module = NULL, counter_module = NULL;
+	d.writer  = indirect_pipeline(f, format, &crgpu_test_objects_dispatch_args_comp, layout, &writer_module);
+	d.counter = indirect_pipeline(f, format, &crgpu_test_objects_dispatch_count_comp, layout, &counter_module);
+	crgpu_descriptor_pool_desc pool_desc;
+	memset(&pool_desc, 0, sizeof(pool_desc));
+	pool_desc.base.type                     = CR_STRUCT_TYPE_GPU_DESCRIPTOR_POOL_DESC;
+	pool_desc.max_sets                      = 2;
+	pool_desc.pool_sizes[0].descriptor_type = CRGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	pool_desc.pool_sizes[0].count           = 2;
+	pool_desc.pool_size_count               = 1;
+	crgpu_descriptor_pool pool            = NULL;
+	CHECK(crgpu_descriptor_pool_create(f.device, &pool_desc, &pool) == CR_SUCCESS);
+	d.args      = indirect_buffer(f, CRGPU_BUFFER_USAGE_STORAGE | CRGPU_BUFFER_USAGE_INDIRECT, 16, "noalloc indirect arguments");
+	d.words     = indirect_buffer(f, CRGPU_BUFFER_USAGE_STORAGE, 16, "noalloc indirect counter");
+	d.args_set  = indirect_set(f, pool, layout, d.args, 16);
+	d.words_set = indirect_set(f, pool, layout, d.words, 16);
+	CHECK(crgpu_fence_create(f.device, CRGPU_FENCE_FLAG_NONE, 0, &d.fence) == CR_SUCCESS);
+	if (d.writer && d.counter && d.args_set && d.words_set && d.fence) {
+		bool ok = true;
+		for (int i = 0; i < WARM_UP && ok; ++i)
+			ok = indirect_dispatch_frame(&d);
+		CHECK(ok);
+		alloc_trace_start();
+		for (int i = 0; i < ITERATIONS && ok; ++i)
+			ok = indirect_dispatch_frame(&d);
+		alloc_trace_stop();
+		CHECK(ok);
+		report("Carrottus GPU writing a dispatch's counts and dispatching from them");
+		uint64_t best = UINT64_MAX;
+		for (int run = 0; run < TIMED_RUNS && ok; ++run) {
+			const uint64_t start = crperf_get_monotonic_time_ns();
+			for (int i = 0; i < TIMED_ITERATIONS && ok; ++i)
+				ok = indirect_dispatch_frame(&d);
+			const uint64_t took = crperf_get_monotonic_time_ns() - start;
+			if (took < best)
+				best = took;
+		}
+		if (ok)
+			print_time("Carrottus GPU indirect dispatch frame (recording, submit, fence wait)", best, TIMED_ITERATIONS);
+		uint64_t value = d.frame;
+		crgpu_fence_wait(f.device, &d.fence, &value, 1, true, UINT64_MAX);
+	}
+	crgpu_fence_destroy(d.fence);
+	crgpu_buffer_destroy(d.words);
+	crgpu_buffer_destroy(d.args);
+	crgpu_descriptor_pool_destroy(pool);
+	crgpu_compute_pipeline_destroy(d.counter);
+	crgpu_compute_pipeline_destroy(d.writer);
+	crgpu_shader_module_destroy(counter_module);
+	crgpu_shader_module_destroy(writer_module);
+	crgpu_descriptor_set_layout_destroy(layout);
 }
 
 #if defined(_WIN32) || CRGPU_COMPILE_METAL_API
@@ -571,6 +765,7 @@ static void test_gpu(uint32_t adapter_index) {
 	device_desc.debug_name         = "cr_noalloc_tests";
 	gpu_frame f;
 	memset(&f, 0, sizeof(f));
+	f.adapter = adapters[adapter_index];
 	CHECK(crgpu_device_create(adapters[adapter_index], &device_desc, &f.device) == CR_SUCCESS);
 	if (f.device) {
 		CHECK(crgpu_command_queue_get(f.device, CRGPU_COMMAND_LIST_TYPE_DIRECT, 0, &f.queue) == CR_SUCCESS);
@@ -584,6 +779,7 @@ static void test_gpu(uint32_t adapter_index) {
 		if (f.queue && f.cmd) {
 			test_gpu_offscreen(f);
 			test_gpu_block_copy(f);
+			test_gpu_dispatch_indirect(f);
 #if NOALLOC_PRESENT
 			if (!can_present) {
 				printf("cr_noalloc_tests: Carrottus GPU: the adapter can't present, the present loop skipped\n");

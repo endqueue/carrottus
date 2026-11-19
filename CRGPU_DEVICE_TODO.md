@@ -1339,6 +1339,7 @@ refused where the surface can't take it, with a query to choose by:
   `vkCmdDispatchIndirect` / `vkCmdDrawMeshTasksIndirectEXT`, D3D12's
   `ExecuteIndirect` with a dispatch signature, Metal's
   `dispatchThreadgroupsWithIndirectBuffer:`. A translation; not started.
+  Drafted 2026-11-18: `carrottus/crgpu_dispatch_indirect_draft.h` (version 1, seven critique passes), not approved; nothing built. **Approved 2026-11-18 with the user**, every question as recommended. **The compute half built on the Mac 2026-11-18** (below, "Indirect dispatch"); the mesh half stopped, Apple's tables giving indirect mesh draws to Apple9 and later only.
 - **Bindless on Metal. Decided 2026-10-28 with the user (card A15):**
   `CRGPU_EXT_BINDLESS` on the Metal backend through argument buffers
   tier 2 (Apple Silicon), reported per device as the other backends'; then
@@ -2070,7 +2071,8 @@ SDK 1.4.363.0 headers here), not compiled; D3D12 written, not compiled.
   (Vulkan's valid usage, Metal's validation and D3D12's footprint each
   refuse it); and a 3D copy whose `buffer_image_height` exceeds its height is
   laid out differently on D3D12, whose footprint has no slice pitch of its
-  own (as before this change).
+  own (as before this change). Card S52, built on the Mac 2026-11-18 (its
+  section below).
 
 **Drafted 2026-11-17:** the draft is `carrottus/crgpu_anisotropy_draft.h`, version 1 (2026-11-17, seven critique passes), for approval: the bit (18), `max_sampler_anisotropy` in the adapter's properties (16 on D3D12 and Metal, Vulkan's limit, 1 without the bit), `CR_RESULT_GPU_SAMPLER_ANISOTROPY_TOO_LARGE` (371), and Q1 to Q5 with recommendations; nothing is built. Found while drafting (each in the draft): D3D12's `crgpu_d3d12_filter()` ignores min/mag/mip above level 1; every backend turns a level of 0 into 1, and D3D12 and Metal truncate fractions where Vulkan keeps them; Metal's API validation ends the process at 0, 17 and 32; `crgpu.h`'s "feature limits are always chained" is already contradicted by `max_draw_indirect_count`. It recommends a card of its own for the sampler's other unchecked fields (an unknown filter or address mode, a NaN level of detail, min_lod above max_lod).
 
@@ -2148,7 +2150,135 @@ vertex and copy, each bit read from the API (Vulkan's format properties,
 D3D12's `CheckFeatureSupport(FORMAT_SUPPORT)`, Metal's documented
 pixel-format tables by GPU family); a pipeline blending into a format
 without the blend bit refused. A Carrottus draft first (seven critique
-passes), read with S48, S49 and S50. Not drafted.
+passes), read with S48, S49 and S50.
+
+Drafted 2026-11-18: `carrottus/crgpu_format_capabilities_draft.h` (version 1, seven critique passes), not approved; nothing built.
+**Approved 2026-11-18 with the user**, every question as recommended.
+
+**Built on the Mac, 2026-11-18 (Apple M5 Pro, macOS 27; the `macos-metal`
+tree), from the draft as approved.** Metal built and run; Vulkan written
+and type-checked (`clang -fsyntax-only` against the Vulkan SDK 1.4.363.0
+headers here), not compiled; D3D12 written, not compiled.
+- **Public (`crgpu.h`):** `CRGPU_FORMAT_CAPABILITIES` and its nine values
+  (written `1 << n`, as `CRGPU_IMAGE_USAGE`'s: `check_abi.py` reads an
+  enumerator written `1u << n` as the one before it plus 1, so the
+  snapshot had 0 to 8 until they were respelled; the values are the
+  draft's), `crgpu_adapter_get_format_capabilities()`; the comments of
+  `CRGPU_IMAGE_USAGE_STORAGE`, `blend_attachments` and
+  `crgpu_graphics_pipeline_create()`'s `CR_RESULT_GPU_INVALID_FORMAT`, and
+  `crcore.h`'s 207, as the draft has them. ABI: eleven lines added (the
+  function, the typedef and nine constants; the draft said ten), nothing
+  changed.
+- **Shared (`crgpushared.c`, `crgpuformat.c`):** a 161-slot table in the
+  adapter's facts (`crgpu___internal_format_index()`), the masks every
+  backend shares (Q3's formats COPY at most; no COPY without a texel block
+  or for the eight formats of the depth-stencil family, two aspects on some
+  backend: the two depth-stencil formats, their TYPELESS resource formats
+  and their four view formats), the call's checks after the adapter's
+  (`CR_RESULT_GPU_INVALID_FORMAT`, then `CR_RESULT_NULL_OUTPUT_PARAMETER`),
+  and the blend refusal last in `crgpu___internal_check_pipeline_outputs()`,
+  which now takes the adapter's facts. Q3's "4:2:2 packed" formats are the
+  five with a 2 x 1 texel block (R8G8_B8G8, G8R8_G8B8, YUY2, Y210, Y216):
+  Vulkan makes all five `_422` formats.
+- **Metal (`crgpumetalformat.m`):** Apple's "Metal Feature Set Tables",
+  the edition dated **October 23, 2026** (downloaded from
+  developer.apple.com/metal/Metal-Feature-Set-Tables.pdf on 2026-11-18;
+  pages 11 to 15, "Texture capabilities by pixel format"), transcribed by
+  family for Apple7 to Apple10. The edition has no Mac2 column; its note 1
+  ("All Metal 3 and Metal 4 devices support at least the texture
+  capabilities listed in the Apple7 column") gives a GPU in none of
+  Apple7 to Apple10 the Apple7 column. The device wins where it answers:
+  `supportsBCTextureCompression`, `MTLGPUFamilyApple2` (ASTC),
+  `supports32BitFloatFiltering` (R32, RG32 and RGBA32 float), and
+  `readWriteTextureSupport` with the MTLReadWriteTextureTier documentation's
+  lists (Tier 1: R32Float, R32Uint, R32Sint; Tier 2 adds RGBA32 and RGBA16
+  float, uint and sint, RGBA8Unorm, RGBA8Uint, RGBA8Sint, R16 float, uint
+  and sint, R8Unorm, R8Uint, R8Sint). Table differences between columns,
+  for the formats mapped: R32, RG32 and RGBA32 float and Depth32Float and
+  Depth32Float_Stencil8 filter from Apple9.
+- **Vulkan:** `vkGetPhysicalDeviceFormatProperties2` with
+  `VkFormatProperties3` per named format, in
+  `crgpuvulkan___read_adapter_facts()`. Fault 1 fixed:
+  `CRGPU_FORMAT_B5G6R5_UNORM`, `_B5G5R5A1_UNORM` and `_B4G4R4A4_UNORM` are
+  `VK_FORMAT_R5G6B5_UNORM_PACK16`, `_A1R5G5B5_UNORM_PACK16` and
+  `_A4R4G4B4_UNORM_PACK16` (DXGI's layout).
+- **D3D12:** `CheckFeatureSupport(FORMAT_SUPPORT)` on the probe device per
+  named format, SAMPLED and FILTERED of `crgpu_d3d12_srv_format()` (moved
+  to `crgpud3d12.hpp`), a failed call that format's 0. COPY of D16_UNORM
+  and D32_FLOAT is TEXTURE1D/2D/3D as for any format; whether D3D12 copies
+  a region smaller than such a subresource is owed to the Windows run.
+- **Tests, each seen failing first:** against a stub that wrote 0 and
+  checked nothing, `crgpu_device_test` failed 114 checks (every refusal,
+  90 formats against the transcribed table and the invariants, four of the
+  exact values), and `crgpu_objects_test` ended at Metal's validation
+  (exit 134: "Blending is enabled for render target 0; however, the
+  pixelformat MTLPixelFormatR32Uint for this render target is not
+  blendable"), the refusal not yet made. Then:
+  - `crgpu_device_test`, every adapter: all 146 named formats answered and
+    the table printed, the refusals (NULL adapter, NULL output, formats 0,
+    116, 129, 133, 999, 1028, UINT32_MAX; the two orders) with the sentinel
+    unchanged, the invariants, on Metal every format against the test's
+    own transcription, and the draft's exact values on an Apple10 GPU.
+  - `crgpu_objects_test`: the refusal (an R32_UINT attachment blended,
+    UNKNOWN blended, R8G8B8A8_UNORM blended beside an unblended R32_UINT,
+    and attachment 1 blended as R32_UINT; the order behind a bad factor and
+    behind an SRC1 factor without the feature; every named format blended,
+    made exactly where BLEND is reported: 23 made, 123 refused on the M5
+    Pro), then every bit the adapter reports used once under Metal API and
+    shader validation with warnings fatal: 90 formats, 451 uses, 260 read
+    back and compared (Load per class, a linear sample between two
+    columns, a storage write and a read-write read per class with the
+    format unknown to the shader, a cleared and drawn attachment, ONE / ONE
+    over a known value, a depth test with the depth loaded and filtered, a
+    vertex fetch of an encoded value, a copy up and back). Every "yes" of
+    the transcription ran clean. B5G6R5_UNORM's layout check skips on
+    Metal (the backend maps no such format); on Vulkan and D3D12 it reads
+    the cleared texel as a 16-bit word, 0xF800.
+  - `cr_noalloc_tests`: the call once an offscreen frame, none of ours.
+  - The misuse harness regenerated: the new call added (zeroes, and a
+    destroyed adapter), nothing else.
+- **The M5 Pro's table** (Apple10, `supports32BitFloatFiltering` yes,
+  read-write tier 2; SAMPLED 0x1, FILTERED 0x2, STORAGE 0x4,
+  COLOR_ATTACHMENT 0x8, BLEND 0x10, DEPTH_STENCIL_ATTACHMENT 0x20, VERTEX
+  0x40, COPY 0x80, STORAGE_READ 0x100): 0x1df for R32G32B32A32_FLOAT,
+  R16G16B16A16_FLOAT, R8G8B8A8_UNORM, R32_FLOAT, R16_FLOAT, R8_UNORM;
+  0x0df for the other unorm, snorm and float formats with a vertex format
+  (R16G16B16A16_UNORM and _SNORM, R32G32_FLOAT, R10G10B10A2_UNORM,
+  R8G8B8A8_SNORM, R16G16_FLOAT, _UNORM, _SNORM, R8G8_UNORM, _SNORM,
+  R16_UNORM, _SNORM, R8_SNORM); 0x09f for R11G11B10_FLOAT,
+  R8G8B8A8_UNORM_SRGB, B8G8R8A8_UNORM and _SRGB; 0x1cd for the uint and
+  sint formats of the read-write tier (RGBA32, RGBA16, RGBA8, R32, R16,
+  R8); 0x0cd for the other uint and sint formats with a vertex format
+  (R32G32, R16G16, R8G8); 0x08d for R10G10B10A2_UINT; 0x040 for the three
+  R32G32B32 formats; 0x0a3 for D16_UNORM and D32_FLOAT, 0x023 for
+  D32_FLOAT_S8X24_UINT; 0x083 for every BC format but TYPELESS and every
+  ASTC LDR format; 0 for the other 56.
+- **Callers, rerun on the M5 Pro under Metal API and shader validation
+  with warnings fatal, Debug and Release:** a caller's 47 ctests and its
+  GPU tests, and a second caller's 165 ctests, all pass; nothing they
+  blend into is refused on Metal (the float targets R16G16B16A16_FLOAT,
+  R32G32B32A32_FLOAT and R11G11B10_FLOAT a caller's renderer blends into
+  all report BLEND on Apple10). What a Vulkan driver
+  without BLEND for R32G32B32A32_FLOAT or R11G11B10_FLOAT now refuses is
+  owed to the Windows and Fedora runs.
+- **Instance creation, timed on the M5 Pro (Release, 50 creations):**
+  best 1.0 us before the table, 3.0 us with it; the means (120 to 200 us)
+  are noise either way. Owed on each other machine (Vulkan's 146 format
+  queries, D3D12's up to two `CheckFeatureSupport` per format).
+- **Owed:** Windows 11 (Iris Xe, RTX A2000 and WARP over D3D12 under the
+  debug layer and GPU-based validation; the Iris Xe and the A2000 over
+  Vulkan under validation and synchronization validation) and Fedora (ANV,
+  NVK, RADV): compile both backends, each adapter's table printed by
+  `crgpu_device_test` recorded here, `crgpu_objects_test` on every adapter
+  (each reported bit used under validation; B5G6R5's 0xF800, fault 1's
+  test), D3D12's COPY of D16_UNORM and D32_FLOAT against a partial region,
+  instance creation timed before and after, and a caller's GPU tests on
+  every adapter with what each Vulkan driver now refuses (a blend into
+  R32G32B32A32_FLOAT or R11G11B10_FLOAT where its BLEND bit is missing).
+- **For a card (the draft's Q6):** the other refusals the table allows
+  (an image's usages against its format's bits; a pipeline's colour and
+  depth formats and vertex attributes; a combined depth-stencil copy,
+  the draft's fault 2; Vulkan's stand-ins refused at creation).
 
 ## A copy's buffer rows shorter than the image's (card S52, decided 2026-11-17: a)
 
@@ -2160,4 +2290,275 @@ Vulkan and Metal. Decided with the user: each refused in every build with
 its own code, as S48's other copy checks (in texels rounded to whole
 blocks); D3D12's taller 3D slice pitch refused until a backend can lay it
 out as the others. A listed break: a Carrottus draft first (seven
-critique passes). Not drafted.
+critique passes).
+
+Drafted 2026-11-18: `carrottus/crgpu_copy_rows_draft.h` (version 1, seven critique passes), not approved; nothing built.
+**Approved 2026-11-18 with the user**, every question as recommended.
+
+**Built on the Mac, 2026-11-18 (Apple M5 Pro, macOS 27; the `macos-metal`
+tree), from the draft as approved, after S51.** The checks are shared
+(`crgpu___internal_check_buffer_image_copy()`, `crgpushared.c`), so the
+Metal build runs them for every backend; no backend's translation
+changed, and Vulkan's and D3D12's files are untouched.
+- **Public:** `CR_RESULT_GPU_COPY_ROW_LENGTH_TOO_SHORT` (372),
+  `_IMAGE_HEIGHT_TOO_SHORT` (373) and `_SLICE_PITCH_NOT_SUPPORTED` (374)
+  in `crcore.h`, named by `cr_result_str()` (371 left to S49's draft); the
+  copy desc's rules and its two fields' comments, and both copies'
+  results, as the draft has them. ABI: three constants added, nothing
+  changed. The misuse harness regenerated: unchanged, as expected.
+- **The checks, in the draft's place (Q2 a):** after the block's rules and
+  before the offset, in blocks (the region's blocks across and down worked
+  out before them, the values unchanged): a row length above 0 of fewer
+  blocks than the region's, an image height above 0 of fewer rows of
+  blocks, a copy of depth above 1 with an image height above its height
+  (Q1 a, every backend); after the row pitch's alignment, a pitch above
+  2^31 - 1 bytes, `CR_RESULT_DESC_INVALID_PARAMETERS` (Q3 a).
+- **Tests, each seen failing first:** before the checks, under Metal's
+  validation the first short row length ended the process (exit 134:
+  "sourceBytesPerRow(16) must be >= (32)"); without validation 29 checks
+  failed, every refusal case accepted and its bytes moved (the short row
+  length and image height cases both ways, BC7's, the 3D taller slice, the
+  3D short image height, the order case behind a misaligned offset
+  answering `CR_RESULT_DESC_INVALID_PARAMETERS`, and the 2 GiB pitch
+  accepted both ways). Then `crgpu_objects_test`'s `test_copy_rows`,
+  under Metal API and shader validation with warnings fatal, Debug and
+  Release: 28 cases, 13 refused with nothing recorded (the region written
+  beforehand reads back unchanged and a sentinel-filled buffer keeps every
+  byte), 15 accepted and round-tripped byte for byte (the gaps between
+  rows keeping the sentinel): R8G8B8A8_UNORM 8 x 8 (row length 4 and 7
+  refused; 8, 0 and 64 taken; image height 4 refused; 8, 0 and 12 taken),
+  BC7_UNORM 12 x 12's level 1, 6 x 6 (row length 4 refused, 6 the block
+  rule's, 8 and 64 taken, image height 4 refused, 8 taken, the edge block
+  alone at row length 4 and 64 taken), a 3D 4 x 4 x 4 (depth 4 with image
+  height 8 refused, 4 and 0 taken, depth 1 at z 2 with 8 taken, depth 4
+  with 2 the short height's), a 2D array of 3 with image height 8 taken,
+  the order (a short row length before a misaligned offset; a missing
+  transfer usage before a short row length; a short row length before a
+  short image height), and a row pitch of 2^31 bytes (a DEVICE buffer of
+  2^31 + 256 bytes made on the M5 Pro) refused both ways, its first bytes
+  keeping their sentinel. G8R8_G8B8_UNORM's case skips on Metal (no such
+  image: `CR_RESULT_GPU_INVALID_FORMAT`). S48's region refusals keep
+  `CR_RESULT_DESC_INVALID_PARAMETERS`, unchanged. `crcore_test` checks the
+  three names.
+- **Callers, rerun on the M5 Pro under Metal API and shader validation
+  with warnings fatal, Debug and Release:** a caller's 47 ctests and its
+  GPU tests, and a second caller's 165 ctests, all pass: none of their
+  uploads or readbacks is refused.
+- **Owed:** Windows 11 (Iris Xe, RTX A2000 and WARP over D3D12 under the
+  debug layer and GPU-based validation; the Iris Xe and the A2000 over
+  Vulkan under validation and synchronization validation) and Fedora (ANV,
+  NVK, RADV): `crgpu_objects_test` there (the packed 2 x 1 case where
+  G8R8_G8B8_UNORM can be made; the accepted cases at D3D12's 256-byte
+  pitch), and a caller's GPU tests on every adapter.
+- **For a card (the draft's Q1 c):** laying out a 3D copy's taller slice
+  pitch on D3D12 (a footprint as tall as the image height with a source
+  box, or one copy per slice where each start meets 512 bytes), measured
+  on Windows; then the refusal lifted on every backend at once.
+
+## Indirect dispatch (card A15, decided 2026-10-28; draft approved 2026-11-18)
+
+`crgpu_dispatch_indirect_draft.h`, approved with the user on 2026-11-18,
+every question as recommended (Q1 mesh indirect in; Q2 Metal's threadgroup
+size from the bound pipeline's module; Q3 the counts' rule; Q4 the bound
+state's rule, no check; Q5 four codes, 375 to 378).
+
+**Built on the Mac, 2026-11-18 (Apple M5 Pro, macOS 27; the `macos-metal`
+tree): the compute half.** Metal built and run; Vulkan's files
+type-checked against the Vulkan SDK 1.4.363.0's headers (`clang
+-fsyntax-only`, Debug and Release); D3D12's written, not compiled.
+- **Public:** `crgpu_command_list_dispatch_indirect()` (cmd, buffer,
+  offset; a `CR_RESULT`) and the frozen `crgpu_dispatch_indirect_args` (12
+  bytes, after `crgpu_command_list_dispatch()`);
+  `CR_RESULT_GPU_COMMAND_INSIDE_RENDERING` (375),
+  `_INDIRECT_OFFSET_ALIGNMENT` (377) and `_INDIRECT_RANGE` (378), named by
+  `cr_result_str()`; 210's comment widened. 376
+  (`_COMMAND_OUTSIDE_RENDERING`) is held for the mesh half, which alone
+  returns it. Comments: `CRGPU_BUFFER_USAGE_INDIRECT`,
+  `CRGPU_RESOURCE_STATE_INDIRECT_ARGUMENT`,
+  `CRGPU_PIPELINE_STAGE_DRAW_INDIRECT`; `crgpu_command_list_dispatch()`
+  gains Q3's and Q4's rules; `crgpu_command_list_dispatch_mesh()` loses
+  its promised Debug assert (the draft's "Found in the code" 7) and gains
+  Q3's rule: each count at most 65535, their product at most **1024**
+  (below), and Q4's sentence. ABI: three constants, one struct and one
+  function added, nothing changed. The misuse harness regenerated: the
+  call with zeroes, and with its list destroyed.
+- **The checks,** written once (`crgpu___internal_check_dispatch_indirect()`,
+  `crgpushared.c`, with the struct's layout asserted) after each backend's
+  null and stale checks of the list, then the buffer: a COPY or BUNDLE
+  list, a pass open, no `CRGPU_BUFFER_USAGE_INDIRECT`, an offset not a
+  multiple of 4, an offset past the size or fewer than 12 bytes after it.
+- **Each backend:** Vulkan `vkCmdDispatchIndirect`; D3D12
+  `ExecuteIndirect` with a DISPATCH signature made by
+  `crgpu_device_create()` beside the tightly packed draw ones
+  (`_dispatch_signature`; the signature maker now takes the argument type,
+  `crgpu_d3d12___create_indirect_signature()`), released with them; Metal
+  `dispatchThreadgroupsWithIndirectBuffer:` with the bound pipeline's
+  workgroup size, unclamped, nothing recorded where Q4's rule is broken
+  (no compute encoder or pipeline). Each file asserts the API's own
+  struct is 12 bytes. Vulkan: a device created with mesh shading whose
+  `vkCmdDrawMeshTasksEXT` loads as null now fails with
+  `CR_RESULT_API_SPECIFIC_FAILURE` ("Found in the code" 8).
+- **Q3's mesh limit, read from Apple's "Metal Feature Set Tables"** (the
+  edition dated October 23, 2026, fetched again from
+  developer.apple.com/metal/Metal-Feature-Set-Tables.pdf on 2026-11-18;
+  page 9, "Maximum threadgroups per mesh shader grid"): Apple7 1024,
+  Apple8 1024, Apple9 1,048,575, Apple10 4,194,303, Apple11 4,194,303;
+  note 1, "All Metal 3 and Metal 4 devices support at least the limits
+  listed in the Apple7 column". The narrowest every backend keeps is
+  1024, written onto `crgpu_command_list_dispatch_mesh()`.
+- **Stopped: the mesh half (Q1).** The same edition's page 8 lists
+  "Indirect mesh draw arguments" (`drawMeshThreadgroupsWithIndirectBuffer:`)
+  from Apple9 only, while every Metal adapter of this backend reports
+  `CRGPU_FEATURE_MESH_SHADING` (Apple7 and Apple8 included: M1, M2).
+  The draft's contract (refused only on a device without the feature)
+  can't be kept on an Apple7 or Apple8 GPU, so
+  `crgpu_command_list_dispatch_mesh_indirect()` was not built: no
+  declaration, no PFN, no D3D12 mesh signature, no test 8. Its options
+  are a card's.
+- **Tests, seen failing first** (the call declared, Metal's body a stub
+  returning `CR_SUCCESS` and recording nothing): without validation
+  `crgpu_objects_test` failed 25 checks (the counters 0 against 12, 4, 4,
+  2, 1 and 65535; every refusal answered `CR_SUCCESS`); under Metal's
+  validation the first run ended at `unused binding in compute encoder`,
+  which reshaped the refusal cases (below); `crcore_test` failed the three
+  names. The zero-count case passes against a stub by its nature, and the
+  no-allocation scenario can't fail on one; both were run after.
+  Then, Debug and Release under Metal API and shader validation with
+  warnings fatal (`test_dispatch_indirect`): objects_dispatch_ids_comp
+  over {3, 2, 2} from an UPLOAD buffer the CPU wrote, the counter 12,
+  each of 12 slots its own value (slot 12 65795), slot 13 the sentinel,
+  equal byte for byte to the direct dispatch's; {4, 1, 1} written by
+  objects_dispatch_args_comp, a barrier to INDIRECT_ARGUMENT, 4 groups, on
+  a DIRECT and a COMPUTE list; offsets 16 and 52 of a 64-byte buffer
+  ({1000, 1000, 1000} at 0 not run); {0, 5, 5}, {5, 0, 5}, {5, 5, 0}
+  nothing run and no validation message (Q3's "a 0 dispatches nothing"
+  holds on Metal); {65535, 1, 1} with objects_dispatch_count_comp, 65535;
+  every refusal in the header's order, each submitted with the counter
+  shader bound and a one-group direct dispatch after it, read back as the
+  counter 1 and every slot its sentinel (0 on a COPY list): cmd NULL,
+  buffer NULL, a destroyed buffer (Debug), a COPY list, a pass open, a
+  buffer of STORAGE alone, offsets 2 and 6, offsets 56, 64, 68 and
+  UINT64_MAX - 3, and the four pairs of the order; a BUNDLE list's
+  refusal where `CRGPU_EXT_BUNDLES` is 1 (not on Metal). `cr_noalloc_tests`:
+  the dispatch writing counts, the barrier and the indirect dispatch,
+  submitted and waited, 0 of ours (5 a frame of Metal's).
+  `cr_misuse_tests` ten times in Debug, no failure. The three shaders are
+  in `CR_TEST_SHADERS` (cs_6_0).
+- **Callers, rerun on the M5 Pro under Metal API and shader validation
+  with warnings fatal, Debug and Release:** a caller's 47 ctests and its
+  GPU tests, and a second caller's 165 ctests.
+- **Owed:** Windows 11 (Iris Xe, RTX A2000 and WARP over D3D12 under the
+  debug layer and GPU-based validation, D3D12's file compiled for the
+  first time; the Iris Xe and the A2000 over Vulkan under validation and
+  synchronization validation, the COMPUTE list on a compute-only family:
+  "Found in the code" 5) and Fedora (ANV, NVK, RADV).
+- **For cards (the draft's "Found in the code"):** 1 Metal's compute
+  state lost at every ended encoder; 2 Metal's `_bound_compute_pipeline`
+  never cleared at `crgpu_command_list_begin()`; 3 D3D12's one
+  pipeline-state slot; 4 the indirect draws' missing usage, offset and
+  range checks and their void shape; 5 Vulkan's barrier stages on a
+  compute-only queue; 6 Metal's dead 0-to-1 workgroup clamp in the direct
+  dispatches; and Q4's check of the bound state. Q3's CPU check of the
+  direct dispatches' counts. The mesh half's options (above).
+
+**Card S54 decided 2026-11-18 with the user (c now, a later):** indirect mesh dispatch is left out (code 376 held) until a caller needs it; then a feature bit of its own, `CRGPU_FEATURE_MESH_SHADING_INDIRECT` (Metal: Apple9 and later, per Apple's Metal Feature Set Tables of 2026-10-23, page 8), by a short draft.
+
+## A recording dropped without a submit (card S53, decided 2026-11-18: a)
+
+Found 2026-11-17 and 18 by a caller's GPU tests: on Metal, a command list
+begun, recorded into and then begun again, its allocator reset or the
+list destroyed, never submitted, kept its `MTLCommandBuffer`'s place in
+its queue. A queue hands out a fixed number at once (`maxCommandBufferCount`,
+64 by default), after which `-commandBuffer` blocks for good. Decided with
+the user (a): the backend finds what keeps such a buffer alive and lets
+go of it at the list's next begin, its allocator's reset and its destroy,
+ending an open encoder first and never committing it (that would run what
+was recorded). A fix within `crgpu.h`'s contract (a recording is
+submitted once, or not at all); no public change, no ABI change.
+
+**Cause, measured 2026-11-18 on the Mac (Apple M5 Pro, macOS 27).** Three:
+1. Every encoder (`-renderCommandEncoderWithDescriptor:`,
+   `-computeCommandEncoder`, `-blitCommandEncoder`) was returned
+   autoreleased and retained by the list; the list released its retain at
+   the encoder's end, but the autoreleased reference waited for a pool of
+   the caller's, which a plain C caller with no run loop never drains. An
+   encoder keeps its command buffer, so every recorded buffer outlived
+   its release, and one never committed never gave its place back. (The
+   buffer itself was already taken in a pool of the backend's own; the
+   acceleration-structure encoders were already made in one.) With only
+   this fixed, a list begun again, reset or destroyed after a whole
+   recording ran 200 times each.
+2. A list destroyed (or begun again) with an encoder still open (a
+   recording stopped inside a pass, as a refused one is) released its
+   buffer but not the open encoder, which kept the buffer for good, and
+   the encoder was never ended. With 1 fixed, 200 lists destroyed inside
+   a pass still blocked.
+3. A list took its buffer when created and held it, uncommitted, until
+   its first begin, and after a submit held the committed one until its
+   next begin. Found by the fix's first shape, which gave a reset list a
+   fresh buffer at once: a caller's GPU suite then blocked in the reset
+   itself (`crgpu_command_allocator_reset`, its many pooled lists each
+   holding an uncommitted buffer). The old code had the same limit at
+   creation: a 65th list alive and never begun blocked
+   `crgpu_command_list_create()`. 200 lists of one allocator alive at once
+   blocked so.
+
+**Fix (`crgpumetalcommand.m`, `crgpumetalrenderpass.m`,
+`crgpumetalswapchain.m`, `crgpumetal.h`).**
+- Each encoder is made inside an `@autoreleasepool` of its own and
+  retained there, so the retain is its only reference when the call
+  returns.
+- A list holds a command buffer only while it holds a recording: none
+  when created; a new one taken at each `crgpu_command_list_begin()`.
+- `crgpumetal___internal_drop_recording()`: ends and releases whichever
+  encoder is open, then releases the buffer, never committing it (a
+  committed one Metal keeps until it has run). Called by
+  `crgpu_command_list_begin()` before it takes the new buffer, by
+  `crgpu_command_allocator_reset()` for each of the allocator's lists,
+  and by `crgpu_command_list_destroy()`. An allocator now links its lists
+  (`_first_list`; `_next_in_allocator` / `_prev_in_allocator`) so its
+  reset can reach them.
+- `crgpu_get_mtl_command_buffer()` (`crgpu_metal_natives.h`): its comment
+  now says it is the current recording's buffer, nil before the list's
+  first begin and after its allocator's reset (before, a created list
+  had one). No signature changed; nothing in the workspace calls it.
+- `crgpu_command_queue_wait_idle()`'s buffer and the swap chain's two
+  (at creation and each present) are taken inside pools of their own too:
+  committed, they never blocked, but each leaked for a plain C caller.
+
+**Vulkan and D3D12: no analogue, unchanged.** A Vulkan list's begin
+resets its buffer (`vkResetCommandBuffer`, legal in the recording or
+executable state), the allocator's reset is `vkResetCommandPool` and a
+destroy `vkFreeCommandBuffers`, legal in any state but pending; D3D12's
+begin is `Reset()` on the closed list, its destroy a `Release()`, legal
+open. Neither has a per-queue count of command buffers, so a recording
+never submitted holds nothing beyond its allocator's memory, which the
+allocator's reset gives back as `crgpu.h` says.
+
+**Test (`tests/crgpu_objects_test.c`, `begun_again_without_submit()`).**
+Run on every backend, after the draw test's uploads and before its
+frame's and the compute test's real submits (which are then still drawn
+and read back right), for a whole recording (the draw test's frame; the
+compute test's copies and dispatch): begun again after its end 200
+times; the allocator reset before each of 200; 200 lists created,
+recorded and destroyed; 200 lists of the allocator alive at once, each
+recorded, submitted and waited for, the allocator reset, twice; and 200
+lists destroyed open (the frame stopped inside its pass; the compute
+recording before its end), never submitted. A watchdog thread fails the
+test after 60 s rather than leave it blocked. Seen failing first: before
+any fix, blocked in the frame's loops (the watchdog's message after 60 s,
+exit 1); with only the encoders' pools, the three whole-recording loops
+passed for both recordings and the frame's destroyed-open loop blocked;
+with the first shape of the fix (a buffer taken at creation and at
+reset), the 200 lists alive at once blocked.
+
+**Built and run on the Mac, 2026-11-18 (Apple M5 Pro, macOS 27; the
+`macos-metal` tree), Debug and Release, under Metal's API and shader
+validation with errors and warnings as asserts:** carrottus' 15 ctests;
+a caller's 53 ctests; that caller's GPU suite on both of its device
+passes, three times in a row in each configuration, with neither of the
+workarounds the bug had forced on it (a pool drained round every test, a
+two-thread test cut to 3 rounds of 20); a second caller's 173 ctests (171
+run in Release). `check.sh abi` shows no change. **Owed:** Windows 11 and
+Fedora run the new test over D3D12 and Vulkan (no backend file changed
+there; the test is backend-neutral and holds every list's contract).
