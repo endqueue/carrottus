@@ -2280,6 +2280,14 @@ headers here), not compiled; D3D12 written, not compiled.
   depth formats and vertex attributes; a combined depth-stencil copy,
   the draft's fault 2; Vulkan's stand-ins refused at creation).
 
+**Card S58 decided 2026-11-20 with the user (a):** one Carrottus draft
+(seven critique passes), **not yet written**: each use refused without
+its format's bit, read from the table, everywhere (an image's usages,
+colour and depth attachments, vertex attributes, copies); a combined
+depth-stencil image's copy refused unless the caller names one aspect (a
+chained struct on the copy), so the three backends no longer do three
+different things; Metal's FloatRG11B10 and BGRA8 vertex formats mapped.
+
 ## A copy's buffer rows shorter than the image's (card S52, decided 2026-11-17: a)
 
 Found 2026-11-17 by S48's build: a copy's `buffer_row_length` or
@@ -2354,6 +2362,9 @@ changed, and Vulkan's and D3D12's files are untouched.
   pitch on D3D12 (a footprint as tall as the image height with a source
   box, or one copy per slice where each start meets 512 bytes), measured
   on Windows; then the refusal lifted on every backend at once.
+  **Card S59 decided 2026-11-20 with the user (b):** the refusal
+  (`CR_RESULT_GPU_COPY_SLICE_PITCH_NOT_SUPPORTED`) is kept on every
+  backend until a caller needs such a copy; nothing to build until then.
 
 ## Indirect dispatch (card A15, decided 2026-10-28; draft approved 2026-11-18)
 
@@ -2463,6 +2474,33 @@ type-checked against the Vulkan SDK 1.4.363.0's headers (`clang
 
 **Card S54 decided 2026-11-18 with the user (c now, a later):** indirect mesh dispatch is left out (code 376 held) until a caller needs it; then a feature bit of its own, `CRGPU_FEATURE_MESH_SHADING_INDIRECT` (Metal: Apple9 and later, per Apple's Metal Feature Set Tables of 2026-10-23, page 8), by a short draft.
 
+**Card S55 decided 2026-11-20 with the user (a):** the indirect draws
+(`crgpu_command_list_draw_indirect` and its siblings) return `CR_RESULT`
+and take the indirect dispatch's checks, written once beside
+`crgpu___internal_check_dispatch_indirect()`: no
+`CRGPU_BUFFER_USAGE_INDIRECT` (221), an offset not a multiple of 4 (377),
+a range past the buffer (378), on every backend ("Found in the code" 4).
+A signature change on four calls, so a Carrottus draft first (seven
+critique passes); **not yet written**.
+
+**Card S56 decided 2026-11-20 with the user (a):** every backend tracks
+what is bound and refuses a dispatch (and a draw) with nothing valid
+bound, each its own code: Metal's compute state lost at an ended encoder
+and its `_bound_compute_pipeline` cleared at
+`crgpu_command_list_begin()`, D3D12's one pipeline-state slot told apart
+by kind ("Found in the code" 1 to 3, Q4's check); the direct dispatches'
+counts checked on the CPU against 65,535 (Q3's). Three backends behaving
+three ways breaks Carrottus's rule. A Carrottus draft first (seven
+critique passes); **not yet written**.
+
+**Card S57 decided 2026-11-20 with the user (a):** Vulkan's barrier stage
+masks are taken from the list's queue family, graphics stages only on a
+family that has them ("Found in the code" 5;
+`crgpuvulkancommand.c` ~821-832). Verified first on the Windows and
+Fedora Vulkan runs (the COMPUTE list on a compute-only family, under
+synchronization validation), then fixed; a fix within the contract, no
+public change.
+
 ## A recording dropped without a submit (card S53, decided 2026-11-18: a)
 
 Found 2026-11-17 and 18 by a caller's GPU tests: on Metal, a command list
@@ -2562,3 +2600,21 @@ two-thread test cut to 3 rounds of 20); a second caller's 173 ctests (171
 run in Release). `check.sh abi` shows no change. **Owed:** Windows 11 and
 Fedora run the new test over D3D12 and Vulkan (no backend file changed
 there; the test is backend-neutral and holds every list's contract).
+
+## Compute that overlaps on Metal (card S60, decided 2026-11-20: a)
+
+Found 2026-11-19 by a caller's measurements of a GPU particle step: the
+Metal backend records compute into one serial encoder and its barriers
+are no-ops (it relies on Metal's hazard tracking), so independent
+dispatches never overlap. 100 small systems in one command cost half of
+100 commands' (1.2 against 2.5 ms on the M5 Pro), not the sixth the
+caller expected, and a step of 100,000 particles ran three to five times
+over its estimate. Vulkan and D3D12 overlap dispatches between barriers.
+Decided with the user (a): the compute encoder is made with
+`MTLDispatchTypeConcurrent`, and `crgpu_command_list_pipeline_barrier()`
+becomes Metal's `memoryBarrierWithScope:` (buffers, textures), with
+untracked resources where the caller's barriers already order them, so
+Carrottus GPU's barriers are real on Metal as they are on the other two.
+Not b (leave it, the cost recorded). A Carrottus draft first (seven
+critique passes; what changes for a caller that leaned on Metal's
+tracking, and the heaps' tracked mode above); **not yet written**.

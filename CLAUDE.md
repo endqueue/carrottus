@@ -1313,7 +1313,9 @@ evening on the Mac (Known gaps below, `CRGPU_DEVICE_TODO.md`).
   recorded. The draws check neither `CRGPU_BUFFER_USAGE_INDIRECT`, nor the
   offset's multiple of 4, nor the entries' range, and return nothing: a
   card (`crgpu_dispatch_indirect_draft.h`, "Found in the code" 4), to take
-  the indirect dispatch's checks and result. A larger stride skips the caller's data between entries. Until
+  the indirect dispatch's checks and result: card S55, decided 2026-11-20
+  (a), its draft not yet written (`CRGPU_DEVICE_TODO.md`, "Indirect
+  dispatch"). A larger stride skips the caller's data between entries. Until
   2026-10-16 D3D12 ignored `stride`: its one cached command signature fixed
   `ByteStride` at the args size. It now keeps a signature per stride and
   kind on the device: the two tightly packed ones made with the device (so
