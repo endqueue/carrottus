@@ -48,6 +48,9 @@ typedef struct crtest_allocator {
 	/* Refuse every allocation once `given` reaches it. SIZE_MAX refuses
 	 * none. */
 	size_t refuse_after;
+	/* Refuse only the request whose number (`asked`, from 1) is this one,
+	 * and give every other. 0 refuses none. */
+	size_t refuse_only;
 } crtest_allocator;
 
 typedef struct crtest_allocator_header {
@@ -72,6 +75,8 @@ static void *crtest_allocator_allocate(void *user_data, size_t size, size_t alig
 		return NULL;
 	}
 	if (tracker->given >= tracker->refuse_after)
+		return NULL;
+	if (tracker->refuse_only == tracker->asked)
 		return NULL;
 
 	const size_t block_alignment = alignment < _Alignof(crtest_allocator_header) ? _Alignof(crtest_allocator_header) : alignment;

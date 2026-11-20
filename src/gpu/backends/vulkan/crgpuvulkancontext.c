@@ -214,26 +214,60 @@ VkFormat convert_cr_to_vulkan_format(CRGPU_FORMAT format) {
 }
 
 
-// Whether the Vulkan loader offers instance extension [name].
-static bool crgpuvulkan__instance_extension_available(const CR_ALLOCATOR *allocator, const char *name) {
-    uint32_t count = 0;
-    if (vkEnumerateInstanceExtensionProperties(NULL, &count, NULL) != VK_SUCCESS || count == 0)
-        return false;
-    const uint32_t capacity = count;
-    VkExtensionProperties *properties = CR_NEW_ARRAY(allocator, VkExtensionProperties, capacity);
-    if (!properties)
-        return false;
-    bool found = false;
-    if (vkEnumerateInstanceExtensionProperties(NULL, &count, properties) == VK_SUCCESS)
-        for (uint32_t i = 0; i < count && !found; i++)
-            found = strcmp(properties[i].extensionName, name) == 0;
-    CR_DELETE_ARRAY(allocator, VkExtensionProperties, properties, capacity);
-    return found;
+// The extensions the loader or a GPU lists, read once into one array on
+// the caller's allocator, so that a failed allocation is the call's
+// CR_RESULT_OUT_OF_MEMORY and not an extension taken as missing. A list
+// the API fails to give is empty, as an extension it can't name is
+// missing.
+typedef struct crgpuvulkan___extension_list {
+    VkExtensionProperties *items;
+    uint32_t count;
+    uint32_t capacity; // what [items] was allocated with, 0 for none
+} crgpuvulkan___extension_list;
+
+static void crgpuvulkan___extension_list_free(const CR_ALLOCATOR *allocator, crgpuvulkan___extension_list *list) {
+    if (list->capacity)
+        CR_DELETE_ARRAY(allocator, VkExtensionProperties, list->items, list->capacity);
+    list->items    = NULL;
+    list->count    = 0;
+    list->capacity = 0;
+}
+
+// [physicalDevice]'s extensions, or the instance's when it is NULL.
+static CR_RESULT crgpuvulkan___extension_list_read(
+    const CR_ALLOCATOR *allocator,
+    VkPhysicalDevice physicalDevice,
+    crgpuvulkan___extension_list *out_list) {
+    out_list->items    = NULL;
+    out_list->count    = 0;
+    out_list->capacity = 0;
+    uint32_t count     = 0;
+    const VkResult sized = physicalDevice ? vkEnumerateDeviceExtensionProperties(physicalDevice, NULL, &count, NULL)
+                                          : vkEnumerateInstanceExtensionProperties(NULL, &count, NULL);
+    if (sized != VK_SUCCESS || count == 0)
+        return CR_SUCCESS;
+    VkExtensionProperties *items = CR_NEW_ARRAY_ZEROED(allocator, VkExtensionProperties, count);
+    if (!items)
+        return CR_RESULT_OUT_OF_MEMORY;
+    out_list->items    = items;
+    out_list->capacity = count;
+    const VkResult read = physicalDevice ? vkEnumerateDeviceExtensionProperties(physicalDevice, NULL, &count, items)
+                                         : vkEnumerateInstanceExtensionProperties(NULL, &count, items);
+    out_list->count = read == VK_SUCCESS ? count : 0;
+    return CR_SUCCESS;
+}
+
+static bool crgpuvulkan___extension_listed(const crgpuvulkan___extension_list *list, const char *name) {
+    for (uint32_t i = 0; i < list->count; i++)
+        if (strcmp(list->items[i].extensionName, name) == 0)
+            return true;
+    return false;
 }
 
 // The instance extensions, into [names] (room for 8), and their count.
 // [*out_surface_maintenance1_khr] and [_ext] say which of those two went in.
-static void crgpuvulkan__determine_vulkan_extensions(
+// CR_RESULT_OUT_OF_MEMORY when the loader's list couldn't be read.
+static CR_RESULT crgpuvulkan__determine_vulkan_extensions(
     const CR_ALLOCATOR *allocator,
     VkInstanceCreateInfo *pOutput,
     const char **names,
@@ -241,7 +275,10 @@ static void crgpuvulkan__determine_vulkan_extensions(
     bool *out_surface_maintenance1_ext) {
     *out_surface_maintenance1_khr = false;
     *out_surface_maintenance1_ext = false;
-    if (!pOutput) return;
+    crgpuvulkan___extension_list available;
+    const CR_RESULT read = crgpuvulkan___extension_list_read(allocator, NULL, &available);
+    if (read != CR_SUCCESS)
+        return read;
     uint32_t count = 0;
 #if defined(_WIN32)
     names[count++] = "VK_KHR_surface";
@@ -256,16 +293,16 @@ static void crgpuvulkan__determine_vulkan_extensions(
 #endif
     // Debug labels (crgpu_command_list_begin_debug_label) and object names: only
     // read by tools, and enabled wherever the loader has them.
-    if (crgpuvulkan__instance_extension_available(allocator, VK_EXT_DEBUG_UTILS_EXTENSION_NAME))
+    if (crgpuvulkan___extension_listed(&available, VK_EXT_DEBUG_UTILS_EXTENSION_NAME))
         names[count++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
     // The surface half of a device's VK_KHR_swapchain_maintenance1 (or its
     // EXT original, which some drivers still list alone), for present
     // scaling: both where the loader has them, so that an adapter with
     // either device extension can enable it. Each needs
     // VK_KHR_get_surface_capabilities2.
-    if (crgpuvulkan__instance_extension_available(allocator, VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME)) {
-        const bool khr = crgpuvulkan__instance_extension_available(allocator, VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME);
-        const bool ext = crgpuvulkan__instance_extension_available(allocator, VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME);
+    if (crgpuvulkan___extension_listed(&available, VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME)) {
+        const bool khr = crgpuvulkan___extension_listed(&available, VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME);
+        const bool ext = crgpuvulkan___extension_listed(&available, VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME);
         if (khr || ext)
             names[count++] = VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME;
         if (khr)
@@ -275,43 +312,34 @@ static void crgpuvulkan__determine_vulkan_extensions(
         *out_surface_maintenance1_khr = khr;
         *out_surface_maintenance1_ext = ext;
     }
+    crgpuvulkan___extension_list_free(allocator, &available);
     pOutput->enabledExtensionCount   = count;
     pOutput->ppEnabledExtensionNames = count ? names : NULL;
+    return CR_SUCCESS;
 }
 
 // ---------------------------------------------------------------------------
 // Adapters
 // ---------------------------------------------------------------------------
 
-// Whether [physicalDevice] offers device extension [name].
-static bool crgpuvulkan___device_extension_available(const CR_ALLOCATOR *allocator, VkPhysicalDevice physicalDevice, const char *name) {
-    uint32_t count = 0;
-    if (vkEnumerateDeviceExtensionProperties(physicalDevice, NULL, &count, NULL) != VK_SUCCESS || count == 0)
-        return false;
-    const uint32_t capacity = count;
-    VkExtensionProperties *extensions = CR_NEW_ARRAY_ZEROED(allocator, VkExtensionProperties, capacity);
-    if (!extensions)
-        return false;
-    bool found = false;
-    if (vkEnumerateDeviceExtensionProperties(physicalDevice, NULL, &count, extensions) == VK_SUCCESS)
-        for (uint32_t i = 0; i < count && !found; i++)
-            found = strcmp(extensions[i].extensionName, name) == 0;
-    CR_DELETE_ARRAY(allocator, VkExtensionProperties, extensions, capacity);
-    return found;
-}
-
 // Picks each kind's family by the rule in crgpu.h and fills in the queue
-// pools and the timestamp feature from them. False when the GPU has no
-// family with graphics, which this backend does not list.
-static bool crgpuvulkan___read_queue_families(const CR_ALLOCATOR *allocator, crgpu_adapter_vulkan *adapter, CRGPU_FEATURES *features) {
+// pools and the timestamp feature from them. [*out_graphics] false when the
+// GPU has no family with graphics, which this backend does not list;
+// CR_RESULT_OUT_OF_MEMORY when the families couldn't be read.
+static CR_RESULT crgpuvulkan___read_queue_families(
+    const CR_ALLOCATOR *allocator,
+    crgpu_adapter_vulkan *adapter,
+    CRGPU_FEATURES *features,
+    bool *out_graphics) {
+    *out_graphics  = false;
     uint32_t count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(adapter->_physical_device_vk, &count, NULL);
     if (count == 0)
-        return false;
+        return CR_SUCCESS;
     const uint32_t capacity = count;
     VkQueueFamilyProperties *families = CR_NEW_ARRAY_ZEROED(allocator, VkQueueFamilyProperties, capacity);
     if (!families)
-        return false;
+        return CR_RESULT_OUT_OF_MEMORY;
     vkGetPhysicalDeviceQueueFamilyProperties(adapter->_physical_device_vk, &count, families);
 
     uint32_t direct = UINT32_MAX, compute = UINT32_MAX, copy = UINT32_MAX;
@@ -327,7 +355,7 @@ static bool crgpuvulkan___read_queue_families(const CR_ALLOCATOR *allocator, crg
             copy = i;
     if (direct == UINT32_MAX) {
         CR_DELETE_ARRAY(allocator, VkQueueFamilyProperties, families, capacity);
-        return false;
+        return CR_SUCCESS;
     }
     if (compute == UINT32_MAX)
         compute = direct;
@@ -365,7 +393,8 @@ static bool crgpuvulkan___read_queue_families(const CR_ALLOCATOR *allocator, crg
     if (families[direct].timestampValidBits > 0)
         *features |= CRGPU_FEATURE_PASS_TIMESTAMPS;
     CR_DELETE_ARRAY(allocator, VkQueueFamilyProperties, families, capacity);
-    return true;
+    *out_graphics = true;
+    return CR_SUCCESS;
 }
 
 // [format]'s CRGPU_FORMAT_CAPABILITIES on [physicalDevice] (card S51), for
@@ -409,10 +438,14 @@ static CRGPU_FORMAT_CAPABILITIES crgpuvulkan___format_capabilities(VkPhysicalDev
 // Fills in what [adapter] is and can do. False when the GPU can't have a
 // device of this backend (below Vulkan 1.3, no shaderDrawParameters, or no
 // graphics family), which is then not listed. Creates nothing.
-static bool crgpuvulkan___read_adapter_facts(
+// [*out_listed] false for a GPU this backend doesn't list;
+// CR_RESULT_OUT_OF_MEMORY when what it lists couldn't be read.
+static CR_RESULT crgpuvulkan___read_adapter_facts(
     const CR_ALLOCATOR *allocator,
     const crgpu_instance_vulkan *instance,
-    crgpu_adapter_vulkan *adapter) {
+    crgpu_adapter_vulkan *adapter,
+    bool *out_listed) {
+    *out_listed                            = false;
     VkPhysicalDevice physicalDevice        = adapter->_physical_device_vk;
     crgpu___adapter_facts *facts         = &adapter->_facts;
     CRGPU_ADAPTER_PROPERTIES *properties = &facts->properties;
@@ -424,7 +457,7 @@ static bool crgpuvulkan___read_adapter_facts(
     // timelineSemaphore, bufferDeviceAddress) is required by Vulkan 1.3;
     // shaderDrawParameters, below, by Carrottus GPU.
     if (props->apiVersion < VK_API_VERSION_1_3)
-        return false;
+        return CR_SUCCESS;
     // A shader's vertex and instance index (HLSL's SV_VertexID and
     // SV_InstanceID, as a compiler writes them into SPIR-V) declares
     // DrawParameters, which needs shaderDrawParameters: part of the base set
@@ -436,11 +469,19 @@ static bool crgpuvulkan___read_adapter_facts(
     baseFeatures2.pNext = &vk11Available;
     vkGetPhysicalDeviceFeatures2(physicalDevice, &baseFeatures2);
     if (!vk11Available.shaderDrawParameters)
-        return false;
+        return CR_SUCCESS;
 
     CRGPU_FEATURES features = 0;
-    if (!crgpuvulkan___read_queue_families(allocator, adapter, &features))
-        return false;
+    bool graphics           = false;
+    const CR_RESULT families = crgpuvulkan___read_queue_families(allocator, adapter, &features, &graphics);
+    if (families != CR_SUCCESS)
+        return families;
+    if (!graphics)
+        return CR_SUCCESS;
+    crgpuvulkan___extension_list extensions;
+    const CR_RESULT listed = crgpuvulkan___extension_list_read(allocator, physicalDevice, &extensions);
+    if (listed != CR_SUCCESS)
+        return listed;
 
     size_t nameLen = strnlen(props->deviceName, sizeof(properties->description) - 1);
     memcpy(properties->description, props->deviceName, nameLen);
@@ -544,7 +585,7 @@ static bool crgpuvulkan___read_adapter_facts(
     // shaderOutputViewportIndex on as well (VUID-VkDeviceCreateInfo-
     // ppEnabledExtensionNames-02835).
     if (vk12.shaderOutputLayer && vk12.shaderOutputViewportIndex &&
-        crgpuvulkan___device_extension_available(allocator, physicalDevice, VK_EXT_SHADER_VIEWPORT_INDEX_LAYER_EXTENSION_NAME))
+        crgpuvulkan___extension_listed(&extensions, VK_EXT_SHADER_VIEWPORT_INDEX_LAYER_EXTENSION_NAME))
         features |= CRGPU_FEATURE_LAYERED_RENDERING;
     // Every descriptor indexing feature the bindless table switches on, and
     // room for the table's three classes in one stage.
@@ -581,7 +622,7 @@ static bool crgpuvulkan___read_adapter_facts(
     // which every kind has wherever crgpu_buffer_create can make it.
     features |= CRGPU_FEATURE_MAPPABLE_HEAPS;
 
-    if (crgpuvulkan___device_extension_available(allocator, physicalDevice, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
+    if (crgpuvulkan___extension_listed(&extensions, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
         features |= CRGPU_FEATURE_PRESENT;
         // Present scaling (crgpu_surface_get_present_scalings): the KHR
         // extension, or its EXT original, where the instance has the surface
@@ -589,10 +630,10 @@ static bool crgpuvulkan___read_adapter_facts(
         // feature bit of its own: what it offers is per surface.
         const char *maintenance1 = NULL;
         if (instance->_surface_maintenance1_khr &&
-            crgpuvulkan___device_extension_available(allocator, physicalDevice, VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME))
+            crgpuvulkan___extension_listed(&extensions, VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME))
             maintenance1 = VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME;
         else if (instance->_surface_maintenance1_ext &&
-                 crgpuvulkan___device_extension_available(allocator, physicalDevice, VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME))
+                 crgpuvulkan___extension_listed(&extensions, VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME))
             maintenance1 = VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME;
         if (maintenance1) {
             VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR maintenance1Features = {0};
@@ -610,7 +651,7 @@ static bool crgpuvulkan___read_adapter_facts(
 
     // VK_EXT_mesh_shader: the extension being listed doesn't by itself mean
     // the driver has meshShader, so the feature bit is read too.
-    if (crgpuvulkan___device_extension_available(allocator, physicalDevice, VK_EXT_MESH_SHADER_EXTENSION_NAME)) {
+    if (crgpuvulkan___extension_listed(&extensions, VK_EXT_MESH_SHADER_EXTENSION_NAME)) {
         VkPhysicalDeviceMeshShaderFeaturesEXT meshFeatures = {0};
         meshFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
         VkPhysicalDeviceFeatures2 meshFeatures2 = {0};
@@ -636,9 +677,9 @@ static bool crgpuvulkan___read_adapter_facts(
     // driver has the feature). Deferred host operations are enabled with
     // them because VK_KHR_acceleration_structure requires it, and never
     // used: every build is recorded on the device.
-    if (crgpuvulkan___device_extension_available(allocator, physicalDevice, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) &&
-        crgpuvulkan___device_extension_available(allocator, physicalDevice, VK_KHR_RAY_QUERY_EXTENSION_NAME) &&
-        crgpuvulkan___device_extension_available(allocator, physicalDevice, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME)) {
+    if (crgpuvulkan___extension_listed(&extensions, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) &&
+        crgpuvulkan___extension_listed(&extensions, VK_KHR_RAY_QUERY_EXTENSION_NAME) &&
+        crgpuvulkan___extension_listed(&extensions, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME)) {
         VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures = {0};
         rayQueryFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
         VkPhysicalDeviceAccelerationStructureFeaturesKHR structureFeatures = {0};
@@ -675,7 +716,9 @@ static bool crgpuvulkan___read_adapter_facts(
         if (slot >= 0)
             facts->format_capabilities[slot] = (uint16_t) crgpuvulkan___format_capabilities(physicalDevice, (CRGPU_FORMAT) value);
     }
-    return true;
+    crgpuvulkan___extension_list_free(allocator, &extensions);
+    *out_listed = true;
+    return CR_SUCCESS;
 }
 
 static void crgpuvulkan___destroy_adapters(crgpu_instance_vulkan *instance) {
@@ -736,7 +779,15 @@ static CR_RESULT crgpuvulkan___list_adapters(crgpu_instance_vulkan *instance) {
 #endif
         adapter->_physical_device_vk = physicalDevices[i];
         atomic_init(&adapter->_in_use, false);
-        if (!crgpuvulkan___read_adapter_facts(allocator, instance, adapter)) {
+        bool listed_here     = false;
+        const CR_RESULT read = crgpuvulkan___read_adapter_facts(allocator, instance, adapter, &listed_here);
+        if (read != CR_SUCCESS) {
+            CR_DELETE(allocator, crgpu_adapter_vulkan, adapter);
+            crgpuvulkan___destroy_adapters(instance);
+            CR_DELETE_ARRAY(allocator, VkPhysicalDevice, physicalDevices, capacity);
+            return read;
+        }
+        if (!listed_here) {
             CR_DELETE(allocator, crgpu_adapter_vulkan, adapter);
             continue;
         }
@@ -791,7 +842,10 @@ CR_RESULT crgpu_instance_create(
     const char *extensionNames[8] = {0};
     bool surfaceMaintenance1Khr = false;
     bool surfaceMaintenance1Ext = false;
-    crgpuvulkan__determine_vulkan_extensions(allocator, &createInfo, extensionNames, &surfaceMaintenance1Khr, &surfaceMaintenance1Ext);
+    const CR_RESULT extensions_sr = crgpuvulkan__determine_vulkan_extensions(
+        allocator, &createInfo, extensionNames, &surfaceMaintenance1Khr, &surfaceMaintenance1Ext);
+    if (extensions_sr != CR_SUCCESS)
+        return extensions_sr;
 
     createInfo.enabledLayerCount = 0;
     createInfo.ppEnabledLayerNames = NULL;

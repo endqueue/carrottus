@@ -834,6 +834,57 @@ static void test_timestamps_when_asked(crgpu_adapter adapter) {
 	crgpu_device_destroy(device);
 }
 
+/* The instance's create on an allocator that refuses its n-th request alone,
+ * for each n until the create no longer asks that many: each refusal is
+ * CR_RESULT_OUT_OF_MEMORY with nothing made and nothing left allocated
+ * (the allocator's contract), so a failed request never passes for an
+ * extension or an adapter missing; and the instance made when none is
+ * refused lists all [adapter_count] adapters. Returns how many requests
+ * the create made. */
+static size_t test_instance_out_of_memory(uint32_t adapter_count) {
+	size_t n = 1;
+	for (;; ++n) {
+		crtest_allocator tracker;
+		CR_ALLOCATOR allocator  = crtest_allocator_make(&tracker);
+		tracker.refuse_only     = n;
+		crgpu_instance_desc desc;
+		memset(&desc, 0, sizeof(desc));
+		desc.base.type          = CR_STRUCT_TYPE_GPU_INSTANCE_DESC;
+		desc.allocator          = &allocator;
+		desc.application_name   = "crgpu_device_test";
+		desc.engine_name        = "crgpu_device_test";
+		crgpu_instance instance = NULL;
+		const CR_RESULT result  = crgpu_instance_create(&desc, &instance);
+		if (result == CR_SUCCESS) {
+			// Made although its n-th request was refused: the refusal
+			// passed for something else.
+			const bool refused = tracker.asked >= n;
+			if (refused)
+				fprintf(stderr, "  request %zu refused: the instance was made\n", n);
+			CHECK(!refused);
+			const crgpu_adapter *adapters = NULL;
+			uint32_t count                = 0;
+			crgpu_adapter_enumerate(instance, &adapters, &count);
+			if (!refused && count != adapter_count)
+				fprintf(stderr, "  %u adapters listed of %u\n", count, adapter_count);
+			CHECK(refused || count == adapter_count);
+			CHECK(crgpu_instance_destroy(instance) == CR_SUCCESS);
+			CHECK(crtest_allocator_clean(&tracker));
+			if (!refused)
+				break;
+			continue;
+		}
+		if (result != CR_RESULT_OUT_OF_MEMORY)
+			fprintf(stderr, "  request %zu refused: %s\n", n, cr_result_str(result));
+		CHECK(result == CR_RESULT_OUT_OF_MEMORY);
+		CHECK(instance == NULL);
+		CHECK(crtest_allocator_clean(&tracker));
+		if (n > 100000)
+			break;
+	}
+	return n - 1;
+}
+
 int main(void) {
 	crtest_allocator tracker;
 	CR_ALLOCATOR allocator = crtest_allocator_make(&tracker);
@@ -918,6 +969,9 @@ int main(void) {
 
 	CHECK(crgpu_instance_destroy(instance) == CR_SUCCESS);
 	CHECK(crtest_allocator_clean(&tracker));
+
+	const size_t requests = test_instance_out_of_memory(adapter_count);
+	printf("crgpu_device_test: the instance's create, each of its %zu requests refused alone\n", requests);
 
 	if (failures)
 		fprintf(stderr, "crgpu_device_test: %d checks failed\n", failures);
