@@ -3,24 +3,30 @@
  * dispatches side by side, as Vulkan and D3D12 do, and the caller's
  * barriers become Metal's own memory barriers (card S60).
  *
- * DRAFT, 2026-11-20, version 2 (version 1, then seven critique passes, each
- * fixed before the next), for the user's approval; not built.
+ * APPROVED by the user 2026-11-20 after a second seven-pass critique, every
+ * question as recommended (S60's Q1 a included: every resource and heap
+ * stays tracked, narrowing the card's "untracked resources"; Q2 as
+ * recommended in this version, c: pass 10, 1 changed it from version 2's
+ * a). Version 3, 2026-11-20 (version 1, seven critique passes, version 2;
+ * then passes 8 to 14, each fixed before the next); not built. Frozen from
+ * here (ROADMAP.md, section 1).
  * Card S60 decided 2026-11-20 (a): "a Metal compute encoder of
  * MTLDispatchTypeConcurrent, Carrottus GPU's barriers turned into Metal's
  * memoryBarrierWithScope: (untracked resources where the caller's barriers
- * already order them)". Found 2026-11-19 by a caller's measurements of a
- * GPU particle step: 100 small systems in one command list cost half of 100
- * lists' (1.2 against 2.5 ms on the M5 Pro), not the sixth expected, since
- * Metal's serial encoder runs one dispatch after another.
+ * already order them)". Found 2026-11-19 by a caller's measurement: 100
+ * small compute dispatches in one command list cost half of 100 lists' (1.2
+ * against 2.5 ms on the M5 Pro), not the sixth expected, since Metal's
+ * serial encoder runs one dispatch after another.
  *
- * NO PUBLIC DECLARATION CHANGES. The change is the Metal backend's; what
- * this draft changes in crgpu.h is comments: the contract a caller already
- * has (ordering within a list is the caller's barriers', on every backend)
- * stated where it was implied, and the "Maps to" lines that said Metal
- * records no barrier. ABI: none. It is a draft because it changes what a
- * caller's work does on Metal (dispatches with no barrier between them now
- * overlap there, as they always could on the other two), and the card asked
- * for one.
+ * NO PUBLIC DECLARATION CHANGES. The change is the Metal backend's, and an
+ * early return of a barrier inside a pass in all three backends (Q2 c);
+ * what this draft changes in crgpu.h is comments: the contract a caller
+ * already has (ordering within a list is the caller's barriers', on every
+ * backend) stated where it was implied, a barrier inside a pass taken out
+ * of it, and the "Maps to" lines that said Metal records no barrier. ABI:
+ * none. It is a draft because it changes what a caller's work does on Metal
+ * (dispatches with no barrier between them now overlap there, as they
+ * always could on the other two), and the card asked for one.
  *
  * No version raise while carrottus' 0.4.0 is untagged (card X2).
  *
@@ -50,8 +56,12 @@
  * Buffers, Textures, RenderTargets (macOS only)), MTLResource.h
  * (MTLHazardTrackingMode, 91 to 155: "Tracked: command encoder dependencies
  * for this resource are tracked automatically"; "Untracked: ... tracked
- * manually with MTLFence"). carrottus 5b71f5d, 0.4.0, untagged. Not built,
- * not in any target, not compilable.
+ * manually with MTLFence"). carrottus 5b71f5d, 0.4.0, untagged; passes 8 to
+ * 14 rechecked against ad3d5ab (its sources those of 5b71f5d), with
+ * crgpuvulkancommand.c's pipeline_barrier (897 to 920), crgpumetalraytracing.m
+ * (212 to 216, 614 to 627) and the Vulkan SDK 1.4.363.0's validusage.json
+ * (vkCmdPipelineBarrier, read here). Not built, not in any target, not
+ * compilable.
  *
  * ---------------------------------------------------------------------------
  * Revision notes (version 1 written, then seven passes, each fixed before
@@ -182,13 +192,121 @@
  *     change; recorded in its own TODO.
  *
  * ---------------------------------------------------------------------------
+ * Revision notes, second round (version 2, then passes 8 to 14, each fixed
+ * before the next; version 3)
+ * ---------------------------------------------------------------------------
+ *
+ * Pass 8 (correctness against today's code, all three backends' sources).
+ *  1. Checked: the compute encoder is made at crgpumetalcommand.m 462 to 482
+ *     with -computeCommandEncoder; the image barriers print at
+ *     crgpumetalrenderpass.m 48 and its two twins; pipeline_barrier is the
+ *     no-op at 589 to 630; heaps are tracked (crgpumetalheap.m 73, 145), and
+ *     buffers and images made from the device take Metal's default,
+ *     tracked.
+ *  2. Found: the acceleration structure barrier (crgpumetalraytracing.m 614
+ *     to 627) stays a no-op: every build, copy and size write is in an
+ *     acceleration structure encoder of its own (212 to 216 end any compute
+ *     or blit encoder first), so tracking orders it against the concurrent
+ *     compute encoder after it. Said in "What changes".
+ *  3. Found: a barrier with only a blit encoder open: blit encoders aren't
+ *     concurrent and tracking orders the encoder after; nothing recorded.
+ *     Said ("with no compute encoder open, nothing").
+ *  4. Found: Vulkan's pipeline_barrier records vkCmdPipelineBarrier inside a
+ *     pass as outside one (crgpuvulkancommand.c 897 to 920 never looks at
+ *     _rendering_active): pass 10, 1.
+ *
+ * Pass 9 (conventions: no hidden policy, no default, codes, append-only).
+ *  1. Found: version 2 named what a caller's work was for (its header and
+ *     "Why" called the caller's dispatches by their rendering purpose):
+ *     Carrottus has no rendering domain and assumes nothing of its caller.
+ *     Reworded to dispatches.
+ *  2. Checked for Q2 (c): a barrier inside a pass records nothing on every
+ *     backend, an early return of a void call at the same point in all
+ *     three; never emulated by ending and beginning the pass again (a
+ *     decision for the caller, and a pass's load and store it never asked
+ *     for).
+ *  3. No code, no struct, no result changes.
+ *
+ * Pass 10 (the platform APIs).
+ *  1. Read here (validusage.json): VUID-vkCmdPipelineBarrier-None-09553 (no
+ *     vkCmdPipelineBarrier inside a render pass instance begun with
+ *     vkCmdBeginRendering without dynamicRenderingLocalRead or a tile image
+ *     feature), -09554 (with neither, no buffer or image barrier there) and
+ *     -srcStageMask-09556 (framebuffer-space stages only). The Vulkan device
+ *     enables none of these. So crgpu.h's barrier "between two draws" of a
+ *     pass has no Vulkan mapping, and version 2's Q2 (a) would have Metal
+ *     order what Vulkan can't. Changed: Q2 recommends (c), a barrier inside
+ *     a pass records nothing on every backend, and crgpu.h says a draw never
+ *     reads what another draw of the same pass wrote through a storage slot
+ *     (end the pass, barrier, begin another). The render-encoder barrier and
+ *     its stages are gone from "Where it is done".
+ *  2. From memory, not read here: Apple's documentation of
+ *     memoryBarrierWithScope:afterStages:beforeStages: says a tile-based GPU
+ *     can't order a later draw's vertex stage after an earlier draw's
+ *     fragment stage in one pass; another reason for (c).
+ *  3. Read here: MTLComputeCommandEncoder.h 316 to 327 (a barrier "between
+ *     currently dispatched kernels in a concurrent compute command encoder
+ *     and any subsequent ones"), MTLCommandBuffer.h 398 to 399 (a device
+ *     without concurrent encoders gets a serial one, its barriers ignored,
+ *     its order kept).
+ *  4. D3D12 (as remembered): a UAV barrier between two draws is legal there;
+ *     narrowed by (c) like Metal.
+ *
+ * Pass 11 (industry practice).
+ *  1. WebGPU (as remembered): no barriers; a render pass is one usage scope,
+ *     and a storage buffer written by one draw and read by another of the
+ *     same pass has no ordering: (c)'s rule.
+ *  2. MoltenVK (as remembered): maps an in-pass vkCmdPipelineBarrier to the
+ *     render encoder's memory barrier where Metal has it, beyond Vulkan
+ *     core's own rule; not followed.
+ *  3. Unreal's RHI (as remembered): overlapping UAV writes are declared for
+ *     compute (BeginUAVOverlap), not between draws of a pass. Kept.
+ *
+ * Pass 12 (performance).
+ *  1. (c) adds nothing per draw (version 2's render barrier is gone).
+ *  2. A barrier inside a compute encoder is one message; with no encoder
+ *     open, nothing. Concurrency's gain is Tests 3's figure, by name.
+ *  3. The early return in a pass is one load of the list's pass flag on
+ *     each backend.
+ *
+ * Pass 13 (tests: each failing first, figures by name).
+ *  1. Test 4 rewritten for (c): a barrier inside a pass records nothing on
+ *     every backend; it fails first on Vulkan, where validation reports
+ *     09553 today (owed on Windows and Fedora); on Metal and D3D12 nothing
+ *     can be seen, said rather than claimed.
+ *  2. Named: crgpu_objects_test's objects_compute_chain (1),
+ *     objects_compute_fan_out (2), objects_compute_measure (3, Release, run
+ *     by hand, not a ctest), objects_barrier_in_pass (4),
+ *     objects_compute_chain_image (5); A15's indirect cases (6); the figures
+ *     into CRGPU_DEVICE_TODO.md by those names.
+ *  3. Vulkan and D3D12 change now (the early return): Vulkan written and
+ *     type-checked here, D3D12 written, not compiled.
+ *
+ * Pass 14 (callers above, and the ABI list).
+ *  1. A caller that records a barrier inside a pass: today outside
+ *     Vulkan's rules, nothing on Metal, real on D3D12; now nothing on every
+ *     backend. One that leaned on D3D12's sees a draw read a stale storage
+ *     value there; Q4's runs under Vulkan's validation find each such
+ *     barrier (09553), listed for that caller's TODO. No caller is named
+ *     here (./check.sh caller-names passes).
+ *  2. The three image barriers take the same early return inside a pass: a
+ *     layout change there was outside Vulkan's rules already
+ *     (VUID-vkCmdPipelineBarrier-oldLayout-01181, read here), and Metal's
+ *     were no-ops. A caller that moved a layout inside a pass is found the
+ *     same way as in 1.
+ *  3. A caller's compute on Metal: as pass 7, 2 and 3.
+ *  4. The ABI list: none. crgpu.h's comments: pipeline_barrier (a rule
+ *     added, the Metal mapping), crgpu_buffer_barrier's "Maps to", the image
+ *     barriers' GENERAL to GENERAL rule, crgpu_command_list_dispatch().
+ *
+ * ---------------------------------------------------------------------------
  * Why
  * ---------------------------------------------------------------------------
  *
  * Vulkan and D3D12 run dispatches side by side unless a barrier orders
  * them; Metal's backend made every compute encoder serial and its barriers
  * no-ops, relying on Metal's hazard tracking. So on Metal independent work
- * never overlaps (the caller's 100 particle systems, the card's figures),
+ * never overlaps (the caller's 100 small dispatches, the card's figures),
  * and the caller's barriers, which the contract makes the only ordering,
  * mean nothing there. One behaviour on every backend, and the caller's
  * barriers real on all three.
@@ -197,27 +315,32 @@
  * What changes, in one paragraph
  * ---------------------------------------------------------------------------
  *
- * Metal only. The compute encoder is made with
+ * Metal: the compute encoder is made with
  * -computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent.
  * crgpu_command_list_pipeline_barrier() records, where any of its entries
  * does something by crgpu.h's rules (states that differ, or the two equal
  * pairs that order), memoryBarrierWithScope: into an open compute encoder
- * (Buffers and/or Textures by the entries), or
- * memoryBarrierWithScope:afterStages:beforeStages: into an open render
- * encoder, and nothing otherwise (Metal orders encoders on a tracked
- * resource itself). The three image barriers do the same for a GENERAL to
- * GENERAL barrier (Textures). Resources and heaps stay hazard tracked (Q1).
- * crgpu.h's comments say what holds on every backend: work recorded with no
- * barrier between may overlap, and what each barrier orders.
+ * (Buffers and/or Textures by the entries), and nothing otherwise (Metal
+ * orders encoders on a tracked resource itself). The three image barriers
+ * do the same for a GENERAL to GENERAL barrier (Textures). The acceleration
+ * structure barrier stays nothing (each build is an encoder of its own).
+ * Resources and heaps stay hazard tracked (Q1). Every backend: a barrier
+ * inside a pass records nothing (Q2 c; Vulkan's
+ * VUID-vkCmdPipelineBarrier-None-09553). crgpu.h's comments say what holds
+ * on every backend: work recorded with no barrier between may overlap, what
+ * each barrier orders, and that no barrier orders two draws of one pass.
  *
  * ---------------------------------------------------------------------------
  * The contract the caller sees (unchanged in substance, stated once)
  * ---------------------------------------------------------------------------
  *
  * On every backend, within a command list:
- *  - Commands start in recording order. Two dispatches, or two draws in a
- *    pass, with no barrier between them may run at the same time and finish
- *    in any order: a write one makes is not visible to the other.
+ *  - Commands start in recording order. Two dispatches with no barrier
+ *    between them may run at the same time and finish in any order: a
+ *    write one makes is not visible to the other. Two draws of one pass
+ *    likewise, and no barrier orders them: a barrier inside a pass records
+ *    nothing (Q2 c), so a draw that reads what an earlier draw wrote through
+ *    a storage slot needs the pass ended, a barrier and another pass.
  *  - A barrier entry that does something (crgpu_command_list_pipeline_barrier())
  *    orders every access to its resource recorded before it, of the stage
  *    its state_before names, before every access after it, of the stage its
@@ -276,11 +399,22 @@
  *         ordering the caller didn't write becomes a race on Metal at once.
  *
  * Q2. A BARRIER INSIDE A PASS.
- *     (a) RECOMMENDED. Recorded: the render encoder's
- *         memoryBarrierWithScope:afterStages:beforeStages:, as the contract
- *         says the barrier orders two draws (pass 1, 2).
+ *     (a) Recorded on Metal: the render encoder's
+ *         memoryBarrierWithScope:afterStages:beforeStages:, as crgpu.h's
+ *         "between two draws" says (pass 1, 2). Version 2's recommendation;
+ *         Vulkan can't keep it (pass 10, 1: VUID-vkCmdPipelineBarrier-None-09553
+ *         without dynamicRenderingLocalRead), so one backend would order
+ *         what another can't.
  *     (b) Left a no-op on Metal, as now: the contract's "between two draws"
- *         false on one backend.
+ *         false on one backend, and Vulkan's barrier outside its rules.
+ *     (c) RECOMMENDED (since version 3). Records nothing on every backend,
+ *         and crgpu.h's rule changes to say so: no barrier orders two draws
+ *         of one pass; a draw reading what an earlier draw wrote through a
+ *         storage slot needs the pass ended, a barrier and a new pass. The
+ *         narrowest contract every API keeps (Vulkan core, Metal's
+ *         tile-based GPUs, WebGPU's usage scopes); D3D12's UAV barrier
+ *         between draws is given up. A rule change of a comment, no
+ *         declaration.
  *
  * Q3. SCOPE OR RESOURCES.
  *     (a) RECOMMENDED. memoryBarrierWithScope: (the card's words): one
@@ -315,10 +449,14 @@
  *     100 dispatches of 64 threads, one list, submit to idle, three rounds
  *     of the mean of 50 after 10, before and after; the figures into
  *     CRGPU_DEVICE_TODO.md beside the caller's.
- *  4. Inside a pass: a draw whose fragment shader writes a storage buffer
- *     at its pixel, a barrier UNORDERED_ACCESS to UNORDERED_ACCESS, a second
- *     draw reading it into the target; the target read back, every pixel the
- *     first draw's value.
+ *  4. objects_barrier_in_pass (Q2 c): a barrier UNORDERED_ACCESS to
+ *     UNORDERED_ACCESS recorded inside a pass between two draws records
+ *     nothing, on every backend: Vulkan's validation (and synchronization
+ *     validation) silent where it reports VUID-vkCmdPipelineBarrier-None-09553
+ *     today (fails first there; owed on Windows and Fedora); D3D12's debug
+ *     layer silent; on Metal nothing to see (said, not claimed). Then the
+ *     same two draws in two passes with the barrier between them: every
+ *     pixel the first draw's value, on every backend.
  *  5. Images: test 1 with a storage image and the image barrier GENERAL to
  *     GENERAL between each dispatch.
  *  6. A15's indirect dispatch tests, unchanged, pass on the concurrent
@@ -327,12 +465,17 @@
  *  8. Every caller's GPU suite, Debug and Release, under Metal's API and
  *     shader validation with warnings fatal: its printed figures and hashes
  *     the same as before the build, line for line (Q4).
- * Seen failing first: 4 against today's no-op (whether a stale read shows on
- * the M5 Pro is recorded); 1 and 5 between the build's two steps (pass 6,
- * 1), recorded as seen or not.
+ * Seen failing first: 4 on Vulkan (09553 reported today), owed there; 1 and
+ * 5 between the build's two steps on Metal (pass 6, 1), recorded as seen or
+ * not.
+ * By name (pass 13, 2): 1 objects_compute_chain, 2 objects_compute_fan_out,
+ * 3 objects_compute_measure, 4 objects_barrier_in_pass, 5
+ * objects_compute_chain_image.
  * Where each runs: the Mac (macos-metal, Debug and Release, Metal's
- * validation with warnings fatal, -asan, -tsan). Owed: the new tests on
- * Windows 11 (D3D12 and Vulkan, synchronization validation) and Fedora.
+ * validation with warnings fatal, -asan, -tsan). Vulkan written and
+ * type-checked here, D3D12 written, not compiled (the in-pass early return).
+ * Owed: the new tests on Windows 11 (D3D12 and Vulkan, synchronization
+ * validation) and Fedora.
  *
  * ---------------------------------------------------------------------------
  * crgpu.h (comments only)
@@ -349,16 +492,21 @@
  * - Within a command list, on every backend, commands start in recording
  *   order and may overlap: two dispatches, or two draws of a pass, with no
  *   barrier between them may run at the same time. This call is what orders
- *   one before the other.
+ *   one dispatch before another, and a pass before the work after it.
+ * - Inside a rendering pass this call records nothing, on every backend:
+ *   no barrier orders two draws of one pass. A draw that reads what an
+ *   earlier draw wrote through a storage slot needs the pass ended, this
+ *   call, and another pass. [CHANGED] "between two draws or dispatches" in
+ *   the UNORDERED_ACCESS rule becomes "between two dispatches, or between
+ *   two passes or a pass and a dispatch".
  *
  * Maps to: vkCmdPipelineBarrier (Vulkan); ID3D12GraphicsCommandList::
- * ResourceBarrier ... (D3D12, unchanged). [CHANGED] Metal: where an entry
- * does something, memoryBarrierWithScope: on an open compute encoder, or
- * memoryBarrierWithScope:afterStages:beforeStages: on an open render
- * encoder (pass), the scope buffers and/or textures by the entries; with
- * neither open, nothing (Metal orders a resource between its encoders).
- * [REMOVED] "Records nothing on Metal, which orders access to a resource
- * itself."
+ * ResourceBarrier ... (D3D12, unchanged); each outside a pass only.
+ * [CHANGED] Metal: where an entry does something, memoryBarrierWithScope:
+ * on an open compute encoder, the scope buffers and/or textures by the
+ * entries; with none open, nothing (Metal orders a resource between its
+ * encoders). [REMOVED] "Records nothing on Metal, which orders access to a
+ * resource itself."
  */
 void crgpu_command_list_pipeline_barrier(
     crgpu_command_list cmd,
@@ -371,7 +519,9 @@ void crgpu_command_list_pipeline_barrier(
  * [CHANGED] (comment only) crgpu_buffer_barrier's "Maps to": "Metal records
  * no barriers" becomes "Metal: as crgpu_command_list_pipeline_barrier()";
  * the image barriers' GENERAL to GENERAL rule gains "Metal: as
- * crgpu_command_list_pipeline_barrier(), textures"; and
+ * crgpu_command_list_pipeline_barrier(), textures", and each image barrier
+ * gains "Inside a rendering pass it records nothing, on every backend (as
+ * crgpu_command_list_pipeline_barrier())"; and
  * crgpu_command_list_dispatch() gains "Dispatches with no barrier between
  * them may run at the same time (crgpu_command_list_pipeline_barrier())."
  *
@@ -384,14 +534,16 @@ void crgpu_command_list_pipeline_barrier(
  *   its pool as now.
  * - crgpumetalrenderpass.m: crgpumetal___internal_barrier(cmd, buffers,
  *   textures), one static helper: the compute encoder's
- *   memoryBarrierWithScope:, else the render encoder's with
- *   MTLRenderStageVertex | Fragment (| Object | Mesh on a device created
- *   with CRGPU_FEATURE_MESH_SHADING) on both sides, else nothing.
- *   pipeline_barrier decides `buffers` and `textures` from its entries by
+ *   memoryBarrierWithScope: where one is open, else nothing.
+ *   pipeline_barrier returns after its checks while a render encoder is
+ *   open (Q2 c), then decides `buffers` and `textures` from its entries by
  *   crgpu.h's rules (an entry whose two states differ, or which is one of
- *   the two ordering pairs); the image barriers call it for GENERAL to
+ *   the two ordering pairs); the image barriers do the same for GENERAL to
  *   GENERAL; their prints go (pass 1, 3).
- * - Nothing in Vulkan or D3D12. No allocation; no new member.
+ * - Vulkan (crgpuvulkancommand.c) and D3D12: pipeline_barrier and the
+ *   three image barriers return after their checks while a pass is open
+ *   (Vulkan's _rendering_active; D3D12's open-pass state), the same point
+ *   in all three. No allocation; no new member.
  *
  * ---------------------------------------------------------------------------
  * Found in the code (each to be carded when the user takes this draft)
@@ -400,8 +552,9 @@ void crgpu_command_list_pipeline_barrier(
  *  1. Metal's image barriers print on a layout outside the enum (pass 1,
  *     3): removed here; Vulkan's and D3D12's handling of the same value to
  *     be checked against it (a card if they differ).
- *  2. A barrier inside a pass was a no-op on Metal (pass 1, 2): fixed here
- *     (Q2).
+ *  2. A barrier inside a pass was a no-op on Metal, outside Vulkan's rules
+ *     (VUID-vkCmdPipelineBarrier-None-09553) and real on D3D12 (pass 1, 2;
+ *     pass 10, 1): one rule here, nothing on every backend (Q2 c).
  *
  * ---------------------------------------------------------------------------
  * Records when built

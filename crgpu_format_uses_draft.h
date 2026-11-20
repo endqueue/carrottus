@@ -6,8 +6,10 @@
  * in a chained struct, and maps Metal's FloatRG11B10 and BGRA8 vertex
  * formats (card S58).
  *
- * DRAFT, 2026-11-20, version 2 (version 1, then seven critique passes, each
- * fixed before the next), for the user's approval; not built.
+ * APPROVED by the user 2026-11-20 after a second seven-pass critique, every
+ * question as recommended (Q1 a to Q4 a). Version 3, 2026-11-20 (version 1,
+ * seven critique passes, version 2; then passes 8 to 14, each fixed before
+ * the next); not built. Frozen from here (ROADMAP.md, section 1).
  * Card S58 decided 2026-11-20 (a): "one Carrottus draft: each use (image
  * usages, attachments, vertex attributes, copies) refused without its
  * format's bit, a combined depth-stencil copy refused unless the caller
@@ -22,12 +24,13 @@
  * include/crgpu.h (CRGPU_FORMAT_CAPABILITIES and its nine bits, lines 1060
  * to 1180; CRGPU_IMAGE_USAGE, 2460 to 2525; crgpu_image_create(), 2646 to
  * 2728; CRGPU_IMAGE_ASPECT, 2799 to 2815; crgpu_image_buffer_copy_desc,
- * 7360 to 7455; the two copies, 7487 to 7582; crgpu_image_get_buffer_copy_size()
- * and the two alignment queries, 7584 to 7660; crgpu_graphics_pipeline_create()'s
- * results, 5601 to 5655), include/crcore.h (207, 222; the GPU struct types
- * to 1035), src/gpu/crgpushared.c (crgpu___internal_check_pipeline_outputs(),
- * line 96; crgpu___internal_format_capabilities(), 190, whose mask drops
- * COPY for the two-aspect family; crgpu___internal_check_image_block(),
+ * 7360 to 7447, its Frozen line 7409; the two copies, 7487 to 7582;
+ * crgpu_image_get_buffer_copy_size() and the two alignment queries, 7584 to
+ * 7660; crgpu_graphics_pipeline_create()'s results, 5601 to 5655),
+ * include/crcore.h (207, 222; the GPU struct types to 1035; CR_STRUCT_BASE's
+ * rules, 612 to 620), src/gpu/crgpushared.c (crgpu___internal_check_pipeline_outputs(),
+ * line 96; crgpu___internal_format_capabilities(), 173, whose mask at 184 to
+ * 186 drops COPY for the two-aspect family; crgpu___internal_check_image_block(),
  * 1175; crgpu___internal_check_buffer_image_copy(), 1224), src/gpu/crgpuformat.c
  * (crgpu___internal_format_two_aspects(), 594),
  * src/gpu/backends/metal/crgpumetalformat.m (the vertex column, lines 48 to
@@ -39,7 +42,8 @@
  * the macOS SDK's MTLVertexDescriptor.h, MTLStageInputOutputDescriptor.h
  * and MTLBlitCommandEncoder.h (read here); Microsoft's documentation of
  * CopyTextureRegion and planar depth-stencil footprints, as remembered.
- * carrottus 5b71f5d, 0.4.0, untagged. Not built, not in any target, not
+ * carrottus 5b71f5d, 0.4.0, untagged; passes 8 to 14 rechecked against
+ * ad3d5ab (its sources those of 5b71f5d). Not built, not in any target, not
  * compilable. Every declaration below is marked [ADDED], [CHANGED] or
  * [REMOVED]; nothing unmarked changes.
  *
@@ -203,6 +207,117 @@
  *     a depth-stencil image gets one layout that serves either aspect (Q2).
  *
  * ---------------------------------------------------------------------------
+ * Revision notes, second round (version 2, then passes 8 to 14, each fixed
+ * before the next; version 3)
+ * ---------------------------------------------------------------------------
+ *
+ * Pass 8 (correctness against today's code, all three backends' sources).
+ *  1. Wrong line numbers in version 2: the desc's Frozen line is crgpu.h
+ *     7409 (pass 1, 1 said 7451); crgpushared.c's capabilities are at 173,
+ *     the two-aspect mask at 184 to 186 (pass 1, 2 said 197 to 199).
+ *     Corrected in the list of what was read; nothing else moves.
+ *  2. Found: D32_FLOAT_S8X24_UINT's texel block is 8 bytes today
+ *     (crgpuformat.c 382, DXGI's size), and the three copy queries answer
+ *     from it. Under Q2 (a) they answer the depth aspect's 4: a changed
+ *     answer of crgpu_image_get_buffer_copy_size() and the two alignment
+ *     queries for that format, now listed in "The version and the breaks".
+ *     D24_UNORM_S8_UINT's block is 4 bytes already (407).
+ *  3. Checked: Vulkan's copy offset alignment is the least common multiple
+ *     of the block's bytes and 4 (crgpuvulkanrenderpass.c 277 to 287), which
+ *     keeps VUID-vkCmdCopyBufferToImage-dstImage-07978 (read here) for
+ *     D16_UNORM and for a stencil copy (a 1-byte block gives 4), as Q2 (a)
+ *     says.
+ *  4. Checked: Vulkan's copies take the aspect from the image's format
+ *     (cr_format_aspect(), crgpuvulkanrenderpass.c 362 and its twin), which
+ *     for a two-aspect format is DEPTH | STENCIL, outside
+ *     VUID-VkBufferImageCopy-aspectMask-09103 (read here) today; the chained
+ *     aspect replaces it ("Where it is done").
+ *  5. Found (counted outside the draft): a caller in the workspace adds both
+ *     transfer usages to every 2D and 3D image it makes, depth ones
+ *     included. With usages refused by the table, an image of a format
+ *     without COPY would be refused where it was made: no format with a
+ *     texel block that a backend copies; the two-aspect pair reports COPY
+ *     where each aspect copies (pass 1, 2); D24_UNORM_S8_UINT has no Metal
+ *     texture at all (refused already). Said in pass 14.
+ *
+ * Pass 9 (conventions: based or frozen, no hidden policy, codes, append-only).
+ *  1. Wrong in version 2: the copies' results gave
+ *     CR_RESULT_STRUCT_WRONG_TYPE for a chained struct of another type.
+ *     CR_STRUCT_BASE's rules (crcore.h 612 to 620) give
+ *     CR_RESULT_STRUCT_UNKNOWN_IN_CHAIN for a chained struct the call
+ *     doesn't take there and CR_RESULT_STRUCT_DUPLICATE_IN_CHAIN for one type
+ *     twice. Corrected: WRONG_TYPE for the desc's own base; 13 for a foreign
+ *     struct anywhere in the chain; 14 for a second aspect. Test 3 gains the
+ *     second aspect.
+ *  2. Checked: CRGPU_IMAGE_COPY_ASPECT is upper case as the other based value
+ *     structs a caller fills (CR_STRUCT_BASE, not _OUT); 1036 and 1037 are
+ *     the next struct types and no other draft holds them; 386 follows the
+ *     S55/S56 draft's 385, appended.
+ *  3. Checked: no default aspect, no flag, no substitution of a format or a
+ *     usage. The refusal names no usage (Carrottus has the code alone,
+ *     CONVENTIONS.md "Error handling"): the usage bits' order is the order
+ *     of the checks, and the caller asks the table for the fact.
+ *
+ * Pass 10 (the platform APIs).
+ *  1. Read here: VUID-vkCmdCopyBufferToImage-imageSubresource-09105 (the
+ *     aspect is one the image has) and VUID-VkBufferImageCopy-aspectMask-09103
+ *     (one bit): 386's three cases are Vulkan's two rules, for every backend.
+ *  2. Read here (MTLBlitCommandEncoder.h 28 to 31, 79): the depth and stencil
+ *     options are the buffer-texture copies'; unchanged from pass 3.
+ *  3. D3D12, as remembered (to be read on Windows): plane 1 of either
+ *     depth-stencil format is 1 byte a texel in its footprint, plane 0 4
+ *     bytes; and Q4's whole-subresource rule. Unchanged.
+ *  4. Checked: no VUID or Metal rule asks the stencil copy's row pitch to be
+ *     other than a multiple of its 1-byte texel above Q2 (a)'s alignments
+ *     (as read in pass 3; D3D12's 256 as remembered).
+ *
+ * Pass 11 (industry practice).
+ *  1. WebGPU (as remembered): a copy of a depth-stencil texture names one
+ *     aspect; depth32float's depth aspect copies out but not in, a narrowing
+ *     for the APIs under it. Here a copy goes both ways wherever the
+ *     adapter's table gives COPY for the format: the table is per adapter,
+ *     so no narrowing is built in; a backend that can't copy an aspect in
+ *     reports no COPY. Kept.
+ *  2. SDL_GPU and NVRHI (as remembered) refuse a texture of a usage its
+ *     format lacks at creation, as here. No change.
+ *
+ * Pass 12 (performance).
+ *  1. A copy: one compare of the desc's base and one pointer test of its
+ *     chain; a chain is walked only where given (a depth-stencil copy).
+ *     Copies run per frame in a caller's uploads; the cost is a few
+ *     instructions, no allocation (cr_noalloc_tests).
+ *  2. An image create: at most six table reads, once. A pipeline create: a
+ *     table read per attachment and attribute, once. Nothing per draw.
+ *
+ * Pass 13 (tests: each failing first, figures by name).
+ *  1. Named: crgpu_objects_test's objects_format_image_uses (1),
+ *     objects_format_pipeline_uses (2), objects_copy_aspect_refusals and
+ *     objects_copy_aspect_depth_stencil (3), objects_vertex_formats (4);
+ *     crgpu_device_test's device_format_copy_queries (the queries' answers,
+ *     pass 8, 2: 8 bytes a texel to 4 for D32_FLOAT_S8X24_UINT, failing
+ *     first).
+ *  2. Added to 3: a second aspect chained after the first (14), a foreign
+ *     struct after it (13).
+ *  3. Said per backend: Metal built, run and seen failing first here; Vulkan
+ *     written and type-checked, not run; D3D12 written, not compiled.
+ *
+ * Pass 14 (callers above, and the ABI list).
+ *  1. Every caller of the two copies sets the desc's base: counted outside
+ *     the draft (no caller is named here; ./check.sh caller-names passes),
+ *     three call sites of one caller's image uploads and read-backs, three
+ *     samples, and carrottus's own tests. A caller that copies a two-aspect
+ *     image now names the aspect; one that never does changes the base only.
+ *  2. A caller that adds both transfer usages to every image it makes sees a
+ *     refusal only for a format the table gives no COPY; one that wants its
+ *     own refusal reads the table first (its own record).
+ *  3. The ABI list: crgpu_image_buffer_copy_desc gains a 16-byte base first
+ *     (56 bytes to 72 on a 64-bit target, every field 16 later);
+ *     CRGPU_IMAGE_COPY_ASPECT added; CR_STRUCT_TYPE_GPU_IMAGE_BUFFER_COPY_DESC
+ *     (1036), _IMAGE_COPY_ASPECT (1037) and CR_RESULT_GPU_COPY_ASPECT (386)
+ *     added; the copy queries' answer for D32_FLOAT_S8X24_UINT (behaviour).
+ *     ./check.sh --update-abi lists them; the misuse generator is rerun.
+ *
+ * ---------------------------------------------------------------------------
  * Why
  * ---------------------------------------------------------------------------
  *
@@ -282,7 +397,9 @@
  *    CR_STRUCT_TYPE_GPU_IMAGE_COPY_ASPECT (1037) added; 386 added.
  *  - Behaviour: creations and copies the adapter can't take are refused
  *    (they reached the driver); D24_UNORM_S8_UINT and D32_FLOAT_S8X24_UINT
- *    report COPY where each aspect copies (they reported none).
+ *    report COPY where each aspect copies (they reported none); the three
+ *    copy queries answer 4 bytes a texel for D32_FLOAT_S8X24_UINT (8
+ *    before; pass 8, 2).
  *  - No version raise: 0.4.0 untagged (card X2). ./check.sh --update-abi;
  *    the misuse generator rerun (the copies' desc).
  *
@@ -349,8 +466,10 @@
  *     R8_UNORM, a vertex attribute of a format without VERTEX (R10G10B10A2_UINT
  *     on Metal; a format the running adapter's table gives none on each
  *     other backend): 207; the blend refusal (S51) still last.
- *  3. Copies: the desc's base wrong (STRUCT_WRONG_TYPE) and a chain of a
- *     foreign type (STRUCT_UNKNOWN_IN_CHAIN); a two-aspect image's copy
+ *  3. Copies: the desc's base wrong (STRUCT_WRONG_TYPE), a chain of a
+ *     foreign type (STRUCT_UNKNOWN_IN_CHAIN), the same after an aspect, and
+ *     a second aspect after the first (STRUCT_DUPLICATE_IN_CHAIN); a
+ *     two-aspect image's copy
  *     with no chain, with aspect 0, with DEPTH | STENCIL, and with COLOR
  *     (386 each); a one-aspect image with its own aspect chained (accepted)
  *     and another (386). Then each aspect of a 4 x 4 D32_FLOAT_S8X24_UINT
@@ -367,6 +486,13 @@
  *     table gives VERTEX.
  *  5. cr_misuse_tests regenerated; cr_noalloc_tests' frame copies with a
  *     based desc, 0 of ours.
+ *  6. device_format_copy_queries (crgpu_device_test): the three copy
+ *     queries for a D32_FLOAT_S8X24_UINT image answer the depth aspect's 4
+ *     bytes a texel (8 today: fails first), and a stencil copy at that
+ *     pitch and offset is accepted.
+ * By name (pass 13, 1): 1 objects_format_image_uses, 2
+ * objects_format_pipeline_uses, 3 objects_copy_aspect_refusals and
+ * objects_copy_aspect_depth_stencil, 4 objects_vertex_formats.
  * Seen failing first: 1, 2 and 3's refusals pass today's code wrongly (the
  * creates succeed; the copies record), and 3's reads and 4's draw fail on
  * Metal (no option; the attribute unmapped).
@@ -502,10 +628,11 @@ typedef struct crgpu_image_buffer_copy_desc {
  * @retval CR_RESULT_GPU_INVALID_BUFFER ...
  * @retval CR_RESULT_NULL_DESC ...
  * @retval CR_RESULT_STRUCT_WRONG_TYPE [ADDED] `desc->base.type` is not
- *         CR_STRUCT_TYPE_GPU_IMAGE_BUFFER_COPY_DESC, or a chained struct's
- *         is not CR_STRUCT_TYPE_GPU_IMAGE_COPY_ASPECT.
- * @retval CR_RESULT_STRUCT_UNKNOWN_IN_CHAIN [ADDED] Anything chained after
- *         the aspect.
+ *         CR_STRUCT_TYPE_GPU_IMAGE_BUFFER_COPY_DESC.
+ * @retval CR_RESULT_STRUCT_UNKNOWN_IN_CHAIN [ADDED] A chained struct of any
+ *         type but CR_STRUCT_TYPE_GPU_IMAGE_COPY_ASPECT.
+ * @retval CR_RESULT_STRUCT_DUPLICATE_IN_CHAIN [ADDED] Two
+ *         CRGPU_IMAGE_COPY_ASPECTs chained.
  * @retval CR_RESULT_GPU_INVALID_FORMAT ... (the image's format: no texel
  *         block, as before)
  * @retval CR_RESULT_GPU_COPY_ASPECT [ADDED] The image's format has two

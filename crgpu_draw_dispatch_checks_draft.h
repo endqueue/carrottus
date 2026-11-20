@@ -7,8 +7,10 @@
  * checked on the CPU (card S56). One draft because both cards change the
  * same eight calls.
  *
- * DRAFT, 2026-11-20, version 2 (version 1, then seven critique passes, each
- * fixed before the next), for the user's approval; not built.
+ * APPROVED by the user 2026-11-20 after a second seven-pass critique, every
+ * question as recommended (Q1 a to Q6 a). Version 3, 2026-11-20 (version 1,
+ * seven critique passes, version 2; then passes 8 to 14, each fixed before
+ * the next); not built. Frozen from here (ROADMAP.md, section 1).
  * Card S55 decided 2026-11-20 (a): "crgpu_command_list_draw_indirect and
  * its siblings return CR_RESULT and take the indirect dispatch's checks
  * (no CRGPU_BUFFER_USAGE_INDIRECT 221, an offset not a multiple of 4 377, a
@@ -47,7 +49,9 @@
  * 1.4.363.0's validusage.json (read here); the macOS SDK's
  * MTLRenderCommandEncoder.h and MTLComputeCommandEncoder.h (read here); and
  * Microsoft's documentation of ExecuteIndirect, DrawInstanced and Dispatch
- * as remembered (not on this machine). carrottus 5b71f5d, 0.4.0, untagged.
+ * as remembered (not on this machine). carrottus 5b71f5d, 0.4.0, untagged;
+ * passes 8 to 14 rechecked against ad3d5ab (the drafts' commit, its sources
+ * those of 5b71f5d), every line number above unchanged.
  * Not built, not in any target, not compilable: it repeats declarations of
  * crgpu.h and crcore.h to show them changed. Every declaration below is
  * marked [ADDED], [CHANGED] or [REMOVED]; nothing unmarked changes. Once
@@ -237,9 +241,145 @@
  *     each backend's validation is the build's gate (Tests, 11); every
  *     refusal it finds in a caller is that caller's to fix, recorded in
  *     its own TODO, not worked round here.
- *  3. A caller that records commands from its own command stream checks
- *     each result and fails its own compile on a refusal, naming the call:
- *     the caller's design, after this is approved.
+ *  3. A caller checks each result where it records the call and reports a
+ *     refusal its own way, naming the call: the caller's design, after this
+ *     is approved. (Reworded in pass 9, 3.)
+ *
+ * ---------------------------------------------------------------------------
+ * Revision notes, second round (version 2, then passes 8 to 14, each fixed
+ * before the next; version 3)
+ * ---------------------------------------------------------------------------
+ *
+ * Pass 8 (correctness against today's code, all three backends' sources).
+ *  1. Found: a clear is a pass on Metal (crgpumetalrenderpass.m 519 to 587
+ *     call its own begin_rendering() and end_rendering()), and crgpu.h says
+ *     the clears wrap the two; Vulkan's clear inside a pass is
+ *     vkCmdClearAttachments of a bound attachment (crgpuvulkanrenderpass.c
+ *     765), D3D12's ClearRenderTargetView in any case. Outside a pass every
+ *     backend's clear ends Metal's compute encoder (event 3 as written), and
+ *     the record's graphics field is unobservable outside a pass (no draw
+ *     records there, and the next pass clears it). Event 3's wording now
+ *     says so; nothing else changes.
+ *  2. Found: a clear inside a pass on Metal calls begin_rendering() over the
+ *     open render encoder, which ends compute and blit encoders but never
+ *     the render one (crgpumetalrenderpass.m 392 and 393): a second render
+ *     encoder while one is open, outside Metal's rules, the first never
+ *     ended. Vulkan clears in the pass. Not this draft's calls: "Found in the
+ *     code" 7, a card. A clear inside a pass is no event of the record, as
+ *     Vulkan and D3D12 keep the pass.
+ *  3. Found: Vulkan's, Metal's and D3D12's indirect draws return on a
+ *     draw_count of 0 before their stale checks (`if (!cmd || !buffer ||
+ *     draw_count == 0) return;`, the first line of each). The order here
+ *     (every check, then the 0) mends it; said under "Where it is done".
+ *  4. Found: crgpu_d3d12___get_draw_indirect_signature() returns a pointer,
+ *     null on any failure (crgpud3d12command.cpp 586 to 588): the split of
+ *     API_SPECIFIC_FAILURE from OUT_OF_MEMORY needs the helper to return a
+ *     CR_RESULT and the signature through an out parameter. Said under
+ *     "Where it is done".
+ *  5. Checked: Metal's dispatch_indirect() returns CR_SUCCESS with no
+ *     encoder or pipeline (crgpumetalcommand.m, after its shared check),
+ *     which 380 replaces; Metal's set_index_buffer() and Vulkan's and
+ *     D3D12's keep a null view an early return (no event).
+ *
+ * Pass 9 (conventions: based or frozen, no hidden policy, codes and the
+ * message callback, append-only results).
+ *  1. Checked: 379 to 385 appended after 378, no value reused; no other
+ *     draft in carrottus holds them; 376's comment as A15 wrote it.
+ *  2. Kept, worded: the Metal draws' `if (!encoder || !pipeline) return;`
+ *     become asserts of what the record guarantees, an invariant
+ *     (carrottus/CLAUDE.md, "Check the handle"), never an assert of the
+ *     caller's input, which CONVENTIONS.md forbids.
+ *  3. Found: pass 7, 3 described a caller by how it works ("records
+ *     commands from its own command stream"); Carrottus assumes nothing of
+ *     its caller. Reworded.
+ *  4. Found: D3D12's failed signature has a platform error (an HRESULT).
+ *     Carrottus GPU has no message callback yet (card S10, approved, not
+ *     built for Carrottus GPU); when it has, the HRESULT goes to it inside
+ *     the failing call, naming CreateCommandSignature. Said; nothing added.
+ *  5. Checked: no struct, no default, nothing bound or restored for the
+ *     caller; the binds that record nothing are an early return of a void
+ *     call at the same point in every backend (the rule for void calls).
+ *
+ * Pass 10 (the platform APIs).
+ *  1. Read here (validusage.json): vkCmdBindPipeline has no render-pass
+ *     VUID (pipelineBindPoint-00777 to -00779 name the pool and the kind):
+ *     a compute bind inside a pass is legal on Vulkan. Event 6 narrows
+ *     Vulkan, the narrowest contract's price; kept.
+ *  2. Read here: VUID-vkCmdDraw-colorAttachmentCount-06179 and
+ *     -dynamicRenderingUnusedAttachments-08910 and -08912 (a pipeline's
+ *     attachment formats are the pass's, without that feature). The record
+ *     keeps a pipeline's kind, not its formats: added to "Left out".
+ *  3. Read here: VUID-vkCmdBindIndexBuffer-offset-08783 (the offset a
+ *     multiple of the index size) and the macOS SDK's "indexBufferOffset
+ *     must be a multiple of the index size" (MTLRenderCommandEncoder.h 729
+ *     to 785): set_index_buffer() checks neither. "Found in the code" 8, a
+ *     card with Q5's.
+ *  4. Read here: indirectBufferOffset a multiple of 4 (MTLRenderCommandEncoder.h
+ *     691, 775, 787): 377 holds it for the draws as for the dispatch.
+ *  5. Read here: VUID-vkCmdPipelineBarrier-None-09553 and -09554: no
+ *     barrier inside a render pass instance begun with vkCmdBeginRendering
+ *     without dynamicRenderingLocalRead, which the Vulkan device doesn't
+ *     enable. Card S60's draft (version 3) has a barrier inside a pass
+ *     record nothing on every backend; event 8's parenthesis says so.
+ *     Barriers stay no event.
+ *
+ * Pass 11 (industry practice).
+ *  1. WebGPU (as remembered): a draw with no pipeline, an indexed draw with
+ *     no index buffer, a dispatch with no compute pipeline are validation
+ *     errors, kept on the encoder and reported at finish(); setPipeline
+ *     checks the pipeline's attachment formats against the pass ("Left
+ *     out" here). Carrottus returns each code at the call: a C API's
+ *     result, and no error state kept on a list.
+ *  2. Vulkan's validation layers, D3D12's debug layer and Metal's API
+ *     validation report a draw with no pipeline; their release paths check
+ *     nothing (as remembered). WebGPU validates always. Card S56 decided
+ *     "always" (not b, Debug-only): kept, its cost bounded by pass 12.
+ *  3. No change of shape.
+ *
+ * Pass 12 (performance: recording cost, per-draw tracking).
+ *  1. Counted against today's code: Metal's draw already loads
+ *     _active_render_encoder and _bound_pipeline and branches on both; the
+ *     record's one 4-byte load takes their place. Vulkan's and D3D12's
+ *     draws gain one load and two to four predictable branches.
+ *  2. The cross-clearing writes (a graphics bind clearing compute, a
+ *     compute bind clearing graphics) are unobservable today (every pass
+ *     clears both); one byte stored each, kept so the record stays true if
+ *     a later rule lets a compute bind inside a pass.
+ *  3. The indirect range: one multiply and three compares in 64 bits, no
+ *     division. Recording a 0 count: no API call at all, cheaper than now.
+ *  4. Tests, 10: the figures recorded by name with the spread of the three
+ *     rounds; a difference inside that spread is said to be none.
+ *
+ * Pass 13 (tests: each failing first, figures by name).
+ *  1. Named: crgpu_objects_test's cases objects_draw_refusals (1),
+ *     objects_draw_events (2), objects_dispatch_refusals (3),
+ *     objects_dispatch_events (4), objects_dispatch_indirect_pipeline (5),
+ *     objects_mesh_refusals (6), objects_draw_indirect_refusals (7),
+ *     objects_zero_counts (8), objects_clear_record (12, added: a clear
+ *     outside a pass, then a dispatch refused, a rebind accepted), and the
+ *     measurement objects_record_measure (10, Release, run by hand, not a
+ *     ctest); the figures go into CRGPU_DEVICE_TODO.md by those names.
+ *  2. Wrong in version 2: test 7's range case carried a correction in its
+ *     own text; rewritten.
+ *  3. Said per backend: Metal built, run and seen failing first here;
+ *     Vulkan written and type-checked, not run; D3D12 written, not compiled.
+ *     The failures first on Vulkan and D3D12 (tests 2 and 4, which today's
+ *     kept state passes wrongly) are owed with their runs.
+ *
+ * Pass 14 (callers above, and the ABI list).
+ *  1. Counted outside the draft (no caller is named here; ./check.sh
+ *     caller-names passes): the eight calls are made by the samples, by
+ *     carrottus's own tests and by one caller's renderer. Each call site
+ *     now has a result to read; one that ignores it compiles and records
+ *     what it did, less the refusals.
+ *  2. What a caller above sees: a refused draw is missing from its picture
+ *     where the draw was undefined before (nothing on Metal, a driver's
+ *     choice elsewhere); a caller that reports per command turns the code
+ *     into its own failure. Its own codes and messages are its own record.
+ *  3. The ABI list: eight return types from void to CR_RESULT; 376 and 379
+ *     to 385 added; no struct; the dispatch_indirect() results' order
+ *     changed (a refusal added after 375). ./check.sh --update-abi lists
+ *     them; the misuse generator is rerun (eight calls).
  *
  * ---------------------------------------------------------------------------
  * Why
@@ -307,10 +447,11 @@
  *     (Metal's new render encoder starts empty; its compute encoder ends).
  *     The index buffer is kept: every backend keeps it across passes
  *     (Metal holds it as the list's, not the encoder's).
- *  3. A copy, blit or clear recorded outside a pass, a debug label begun
- *     or ended outside a pass, an acceleration structure build, copy or
- *     compacted-size write: compute cleared (Metal ends its compute encoder
- *     at each).
+ *  3. A copy, blit or clear recorded outside a pass (a clear is itself a
+ *     pass on Metal; graphics, cleared there too, is unobservable outside
+ *     a pass), a debug label begun or ended outside a pass, an acceleration
+ *     structure build, copy or compacted-size write: compute cleared (Metal
+ *     ends its compute encoder at each).
  *  4. crgpu_command_list_execute_bundle(): graphics and index buffer
  *     cleared (crgpu.h already makes them undefined, 8304 to 8306).
  *  5. crgpu_command_list_bind_graphics_pipeline() inside a pass, or on a
@@ -325,8 +466,9 @@
  *     view's stride is 2 or 4, cleared otherwise (pass 1, 6).
  *  8. Not events: barriers (pipeline, image, acceleration structure),
  *     timestamps, viewports, scissors, vertex buffers, sets, push
- *     constants, depth bounds. None ends a Metal encoder (card S60's
- *     barriers are recorded into the open encoder).
+ *     constants, depth bounds, a clear inside a pass. None ends a Metal
+ *     encoder (card S60's barriers are recorded into an open compute
+ *     encoder, and inside a pass record nothing on every backend).
  *
  * Descriptor sets and push constants keep the rule crgpu.h states (read
  * since the last event above and the last pipeline bind), unchecked: Q6.
@@ -366,6 +508,10 @@
  *  - Metal's per-draw loop for draw_count above 1: an indirect command
  *    buffer would make it one call; not needed by a caller yet.
  *  - The mesh indirect call: card S54.
+ *  - A pipeline whose attachment formats differ from the pass's (Vulkan's
+ *    VUID-vkCmdDraw-dynamicRenderingUnusedAttachments-08910; WebGPU checks
+ *    it at setPipeline): the record would keep each pipeline's formats and
+ *    each pass's; a card if a caller asks (pass 10, 2).
  *  - The caller's own handling of the results: the caller's design.
  *
  * ---------------------------------------------------------------------------
@@ -492,12 +638,12 @@
  *     strides 0, 2, 12 (384; 16 and 20 the tight sizes accepted), a
  *     draw_count of 2 on a device without CRGPU_FEATURE_MULTI_DRAW_INDIRECT
  *     and of max_draw_indirect_count + 1 with it (385, where it isn't
- *     UINT32_MAX), the range at counts 1 and 3 (378: a 64-byte buffer,
- *     offset 52 count 1 accepted for 12 bytes? no: 16 bytes needed, so 52
- *     is refused and 48 accepted; stride 32 count 3 from 0 needs 80 bytes,
- *     refused; offset UINT64_MAX - 3 refused without wrapping); and two
- *     wrong at once for each adjacent pair. Accepted: 3 draws at stride 32
- *     writing three known pixels.
+ *     UINT32_MAX), the range at counts 1 and 3 (378: a 64-byte buffer and
+ *     16-byte entries, offset 48 count 1 accepted, offset 52 count 1
+ *     refused; stride 32 count 3 from 0 needs 80 bytes, refused; offset
+ *     UINT64_MAX - 3 refused without wrapping); and two wrong at once for
+ *     each adjacent pair. Accepted: 3 draws at stride 32 writing three
+ *     known pixels.
  *  8. A count of 0 in each of the eight calls and the indirect dispatch's
  *     buffer: CR_SUCCESS, nothing drawn or counted, no validation message
  *     (Metal's validation with warnings fatal, Vulkan's validation and
@@ -513,6 +659,14 @@
  * 11. Callers rerun under Metal API and shader validation with warnings
  *     fatal, Debug and Release; every refusal a caller's suite hits is
  *     listed for that caller's TODO.
+ * 12. objects_clear_record: a compute pipeline bound, a clear outside a
+ *     pass, a dispatch refused (380), bound again, accepted and counted; on
+ *     every backend (fails first on Vulkan and D3D12, which keep the bind).
+ * Each case by name (pass 13, 1): tests 1 to 8 are objects_draw_refusals,
+ * objects_draw_events, objects_dispatch_refusals, objects_dispatch_events,
+ * objects_dispatch_indirect_pipeline, objects_mesh_refusals,
+ * objects_draw_indirect_refusals, objects_zero_counts; test 10 is
+ * objects_record_measure; test 12 objects_clear_record.
  * Seen failing first: the eight calls declared with the new return types,
  * each body today's plus `return CR_SUCCESS;` (and the events not yet
  * wired): every refusal case of tests 1 to 7 fails on every backend, and
@@ -949,7 +1103,8 @@ CR_RESULT crgpu_command_list_dispatch_indirect(
  *   call writes it at the place named in "The tracked state"; each draw and
  *   dispatch: cmd null, CR_STALE, (indirect) buffer null, CR_STALE, (mesh)
  *   the feature, the shared check, then a 0 count returns CR_SUCCESS, then
- *   the API call.
+ *   the API call. (Today the indirect draws return on a 0 before their
+ *   stale checks, on all three backends: this order mends it; pass 8, 3.)
  *   - Metal: _bound_pipeline and _bound_compute_pipeline cleared where the
  *     record is ("Found in the code" 2 of A15, cleared at begin); the
  *     0-to-1 workgroup clamp in dispatch and dispatch_mesh removed (A15's
@@ -959,7 +1114,12 @@ CR_RESULT crgpu_command_list_dispatch_indirect(
  *     the draws' and dispatches' `if (!encoder || !pipeline) return;`
  *     become unreachable (the record refuses first) and are asserted.
  *   - Vulkan: no API change; the record alone.
- *   - D3D12: the draw_indirect signature's failure returned (pass 1, 3).
+ *   - D3D12: the draw_indirect signature's failure returned (pass 1, 3):
+ *     crgpu_d3d12___get_draw_indirect_signature() returns a CR_RESULT
+ *     (OUT_OF_MEMORY where its eq::array can't grow, API_SPECIFIC_FAILURE
+ *     where CreateCommandSignature fails) and the signature through an out
+ *     parameter (pass 8, 4); the HRESULT to the instance's message callback
+ *     once card S10 is built for Carrottus GPU (pass 9, 4).
  * - No new file; no allocation; no lock.
  *
  * ---------------------------------------------------------------------------
@@ -981,6 +1141,12 @@ CR_RESULT crgpu_command_list_dispatch_indirect(
  *     card.
  *  6. Metal's begin_rendering asserts on a layered pass without the
  *     feature (crgpumetalrenderpass.m 448): the same, a card.
+ *  7. A clear inside a pass on Metal opens a second render encoder over the
+ *     open one, never ending the first (pass 8, 2); Vulkan clears in the
+ *     pass, D3D12 clears the view: a card.
+ *  8. set_index_buffer() takes a view whose offset isn't a multiple of its
+ *     stride, outside Vulkan's VUID-vkCmdBindIndexBuffer-offset-08783 and
+ *     Metal's indexBufferOffset rule (pass 10, 3): a card, with Q5's.
  *
  * ---------------------------------------------------------------------------
  * Records when built
@@ -991,6 +1157,7 @@ CR_RESULT crgpu_command_list_dispatch_indirect(
  * the indirect dispatch bullet's "unchecked" sentence replaced.
  * CRGPU_DEVICE_TODO.md, "Indirect dispatch": S55 and S56 built, each
  * machine's run, the measured figures. The workspace's DECISIONS.md: cards
- * for "Found in the code" 3, 5, 6 and Q5's and Q6's options if a caller asks.
+ * for "Found in the code" 3, 5, 6, 7, 8 and Q5's and Q6's options if a
+ * caller asks; and the attachment-format check of "Left out" if one asks.
  * The callers' own records are the callers' to write.
  */

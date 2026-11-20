@@ -2288,7 +2288,7 @@ depth-stencil image's copy refused unless the caller names one aspect (a
 chained struct on the copy), so the three backends no longer do three
 different things; Metal's FloatRG11B10 and BGRA8 vertex formats mapped.
 
-**Card S58 decided 2026-11-20 with the user (a).** Drafted 2026-11-20: `carrottus/crgpu_format_uses_draft.h` version 2, seven passes, for approval; not built.
+**Card S58 decided 2026-11-20 with the user (a).** Approved 2026-11-20 with the user after a second seven-pass critique: `carrottus/crgpu_format_uses_draft.h` version 3, 10eda907; not built.
 
 ## A copy's buffer rows shorter than the image's (card S52, decided 2026-11-17: a)
 
@@ -2484,7 +2484,7 @@ and take the indirect dispatch's checks, written once beside
 a range past the buffer (378), on every backend ("Found in the code" 4).
 A signature change on four calls, so a Carrottus draft first (seven
 critique passes); **not yet written**.
-Drafted 2026-11-20: `carrottus/crgpu_draw_dispatch_checks_draft.h` version 2, seven passes, for approval; not built.
+Approved 2026-11-20 with the user after a second seven-pass critique: `carrottus/crgpu_draw_dispatch_checks_draft.h` version 3, 2e885fec; not built.
 
 **Card S56 decided 2026-11-20 with the user (a):** every backend tracks
 what is bound and refuses a dispatch (and a draw) with nothing valid
@@ -2495,7 +2495,7 @@ by kind ("Found in the code" 1 to 3, Q4's check); the direct dispatches'
 counts checked on the CPU against 65,535 (Q3's). Three backends behaving
 three ways breaks Carrottus's rule. A Carrottus draft first (seven
 critique passes); **not yet written**.
-Drafted 2026-11-20: `carrottus/crgpu_draw_dispatch_checks_draft.h` version 2, seven passes, for approval; not built.
+Approved 2026-11-20 with the user after a second seven-pass critique: `carrottus/crgpu_draw_dispatch_checks_draft.h` version 3, 2e885fec; not built.
 
 **Card S57 decided 2026-11-20 with the user (a):** Vulkan's barrier stage
 masks are taken from the list's queue family, graphics stages only on a
@@ -2622,4 +2622,4 @@ Carrottus GPU's barriers are real on Metal as they are on the other two.
 Not b (leave it, the cost recorded). A Carrottus draft first (seven
 critique passes; what changes for a caller that leaned on Metal's
 tracking, and the heaps' tracked mode above); **not yet written**.
-Drafted 2026-11-20: `carrottus/crgpu_concurrent_compute_draft.h` version 2, seven passes, for approval; not built.
+Approved 2026-11-20 with the user after a second seven-pass critique: `carrottus/crgpu_concurrent_compute_draft.h` version 3, 930e661f; not built.
