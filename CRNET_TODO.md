@@ -1331,6 +1331,76 @@ warning.
   Carrottus's own in Debug and Release.
 - What builds on carrottus: see `../ROADMAP.md`, section 12.
 
+## UDP, local discovery and the interface listing (drafted 2026-11-21)
+
+A caller now exists for three missing pieces (cards X46 and X47, decided
+2026-11-21 with the user): one that carries data between devices on a
+local network, first for phones and tablets used as controllers and
+dashboards. It needs:
+
+- **UDP sockets** (`crnet_udp_draft.h`): non-blocking, in the wait set as
+  TCP's objects are; bind, send to an address, receive a datagram with its
+  source, the local address; truncation reported. Input sent as
+  datagrams at 60 to 120 Hz, where TCP's head-of-line blocking is the
+  wrong trade.
+- **Local service discovery** (`crnet_discovery_draft.h`): advertise and
+  browse over the operating system's own service: Bonjour on Apple,
+  DNS-SD on Windows, Avahi on Linux; Android's (NSD, Java only) waits on
+  card S47's Net card (the draft's Q1). The caller names the
+  service type and every choice; results are events polled from the
+  caller's update; no thread. On iOS the caller's app declares
+  `NSLocalNetworkUsageDescription` and `NSBonjourServices`.
+- **The interface listing** (`crnet_interface_draft.h`): card S9's,
+  decided 2026-10-28 ("Missing pieces" above) and not started, written now
+  since discovery and binding need it.
+
+Pure translation, as all of Carrottus: no default port, no service type,
+no choice of interface. Each draft is for the user's approval (card
+X21), with its tests per platform (macOS, Windows, Linux, the iOS
+simulator, Android once card S47's platform draft has run). Built first on
+the Mac, then Windows and Fedora, as the resumable starts were. Waits on:
+the drafts' approval only.
+
+**Drafted 2026-11-21** (version 1 each, every one compiled clean as C11
+and C++17 under six platform configurations): BSD sockets and `dns_sd` on
+Apple (Network.framework's listener can't advertise a BSD socket's port,
+and `dns_sd`'s descriptors fit the wait set with no thread), DNS-SD on
+Windows found at run time, Avahi opened by each object at its create (no state between objects). **Android's
+discovery is 0** until card S47's Net card settles how Carrottus reaches
+Java (NsdManager through JNI with a JavaVM in the instance desc); the
+caller's Android app waits on it. The interface listing removes
+`crnet_instance_get_local_ipv4_addresses` (called only inside carrottus),
+a break for 0.5.0. Each draft ends with its open questions.
+
+### Critique and approval
+
+Critiqued in seven cycles (each library's rules, platform truth,
+security, the seams, the callers, failures, performance and threads)
+and one read of the whole, on 2026-11-21, each cycle with an independent
+reader and three test programs on the Mac (UDP over-size sends,
+truncation and port sharing; dns_sd from a poll() loop); the record is
+the meta repo's `prompts/remote_drafts_critique_record.md`. Versions
+reached: `crnet_interface_draft.h` 7, `crnet_udp_draft.h` 7,
+`crnet_discovery_draft.h` 7, every open question answered.
+
+- **Approved by you 2026-11-22** (the meta repo's `prompts/remote_drafts_critique_record.md`, "Approval session (2026-11-22)"): the critique's entries for
+  these three (C1.9, C2.1, C2.2 and C2.11, C2.3) approved as decided;
+  each object's own open of the system's library kept, with two tests
+  added (a create timed with the library loaded and not; the last object
+  destroyed and another created, libdbus's unload included), version 8 of
+  the discovery draft. SHA-256 with carriage returns removed (card X23):
+  - `crnet_interface_draft.h` version 7
+    `c5d7d3b0a498a24cb7bb5628e9f752a08bf80436a6c49dbdd1ed7cb11f6415dc`
+  - `crnet_udp_draft.h` version 7
+    `4a35b7cffe141316755debb342b954cd1accc836bbc4de1a00ce3c647d85e0dd`
+  - `crnet_discovery_draft.h` version 8
+    `77ffa3b2210fbbee1c1950dd6315046a16c35bf46a44415b0372a958e167f4cf`
+
+  Every session building them checks these first and stops on a
+  mismatch; the drafts stay as the record. Their "unconfirmed" marks
+  (C2.4 to C2.6, C2.10, C2.12, C2.13) are settled when each part is built
+  on its platform.
+
 ## Order to do it in
 
 0. Compiled on macOS (2026-10-08), Linux and Windows with MSVC (2026-10-14).
