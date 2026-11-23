@@ -1178,11 +1178,10 @@ evening on the Mac (Known gaps below, `CRGPU_DEVICE_TODO.md`).
 
 - **Vulkan** — reference backend, plain C23, complete. Build against this first;
   D3D12 and Metal follow its shape.
-- **D3D12** — complete, C++26. Cross-compiles the project's SPIR-V shaders to HLSL at
-  runtime via **SPIRV-Cross**, built from source through `FetchContent` (deliberately
-  not the Vulkan SDK's prebuilt libs — those are release-only `/MD` and mismatch a
-  `/MDd` debug build; building from source lets it inherit `CMAKE_MSVC_RUNTIME_LIBRARY`
-  correctly). Also pulls in Microsoft's vendored `d3dx12.h` (3,400+ lines, not
+- **D3D12** — complete, C++26. Takes DXIL and compiles nothing at run time (card A9,
+  revised): no SPIRV-Cross and no DXC in the library since 2026-10-31
+  (`CMakeLists.txt`); the caller's build makes the DXIL through
+  `cmake/cr_shaders.cmake` (below). Also pulls in Microsoft's vendored `d3dx12.h` (3,400+ lines, not
   authored here — don't "clean up" or reformat it as if it were project code).
 - **Metal** — implemented, all twelve backend `.m` files, now that Apple hardware is
   available to validate against. Swap chain creation/present is verified end-to-end
