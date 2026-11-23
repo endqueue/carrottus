@@ -1468,7 +1468,21 @@ type missing from NSBonjourServices: `../prompts/host_revamp_test.md`,
   interface that answered first only; resolving on each FOUND's interface
   gives each interface's addresses.
 
-**For you:**
+**Settled with you 2026-11-23** ("do what's recommended"), each written
+into `crnet.h` as text, no ABI change:
+- ACCESS_DENIED: the result's own text stands. `crnet_udp_socket_create()`
+  lists it (Android without INTERNET), `_send_to()` and `_recv_from()`
+  list it (Android 17's EPERM), never on Apple; BIND_FAILED and
+  SEND_FAILED no longer name those cases.
+- Threads: the set is woken under the ring's lock, said so in "Threads".
+- Conflicts: two identical adverts of one Apple machine are one service,
+  said in "Service discovery"; Avahi's and Windows' answers stay their
+  prompts' to record.
+- dns_sd's codes stay under CR_PLATFORM_ERROR_SOURCE_OTHER ("dns_sd: ...");
+  no source of their own unless a later draft asks (Avahi's go the same
+  way on Fedora).
+
+The questions as they were put:
 - **The UDP draft disagrees with itself over CR_RESULT_NET_ACCESS_DENIED.**
   The result's own text (cycle 6) says Android's EPERM at a send or receive
   is ACCESS_DENIED; `crnet_udp_socket_send_to()`'s and `_recv_from()`'s
@@ -1496,7 +1510,7 @@ type missing from NSBonjourServices: `../prompts/host_revamp_test.md`,
 `crnet_wait_set_draft.h`, for your approval (below, "The wait set's
 draft").
 
-### The wait set's draft (2026-11-23, for your approval)
+### The wait set's draft (2026-11-23, approved the same day)
 
 What the Endqueue client's critique found missing (the meta repo's
 `prompts/eqc_v21_critique_record.md`, C4.5 and C5.10), with Pigeonous's
@@ -1529,9 +1543,11 @@ local carrier as a second caller: `crnet_wait_set_draft.h`, version 4.
   `infos`. Both capacities are compared now, an entry pushed only when both
   have room; `crnet_test`'s "udp" part refuses the second growth twice and
   waits again.
-- **Waiting for your approval.** Its SHA-256 (carriage returns removed,
-  card X23) is recorded here at approval; version 4 reads
-  `b329252dbd523eec61756745f182d98287c0a7f30d260e87921f452f8fbccb65`.
+- **Approved by you 2026-11-23** (version 4, its header line then made
+  "APPROVED"). SHA-256 with carriage returns removed (card X23):
+  `46fed3bd707d8ec0078a6bdadf834503fc18c13ae21b42552431e48fc732c5c0`. Every session building it checks this first and stops on a
+  mismatch. Not built yet: its build (carrottus 0.6.0) is its own session,
+  after the Windows and Fedora runs of 0.5.0.
   Owed by its callers, not by it: their peak counts per kind in a lent set
   (endqueue_client's and Pigeonous's drafts), and a result for a wait that
   runs out of memory in `pgn_instance_wait()`.

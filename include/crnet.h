@@ -258,8 +258,10 @@ extern "C" {
  *   back on threads of their own: each callback copies into its object's
  *   ring of events under the ring's lock - held only for a fixed-size copy,
  *   at most a resolve event's 1.6 KB, nothing allocated under it - and
- *   wakes the object's wait set, and calls nothing of the caller's; the
- *   caller's `_next` takes the same lock for its copy out.) A step begun and left
+ *   wakes the object's wait set under the same lock, so that a set the
+ *   object has been taken out of is never woken by it, and calls nothing
+ *   of the caller's; the caller's `_next` takes the same lock for its copy
+ *   out.) A step begun and left
  *   (@ref crnet_time "Time limits") goes on where the stack goes on by
  *   itself - WinHTTP's and NSURLSession's threads, the system's TCP
  *   connect - and otherwise in the caller's next call on the object:
@@ -1937,9 +1939,12 @@ typedef struct crnet_udp_socket_desc {
  * @retval CR_RESULT_NET_ADDRESS_IN_USE The address and port are taken
  *         (EADDRINUSE, WSAEADDRINUSE; WSAEACCES on Windows, which is what
  *         SO_EXCLUSIVEADDRUSE held by another gives).
+ * @retval CR_RESULT_NET_ACCESS_DENIED The system refused this program the
+ *         network (Android without INTERNET, EACCES); never on Apple.
+ *         `out_error` has it.
  * @retval CR_RESULT_NET_BIND_FAILED The system refused to open, set up or
  *         bind the socket for any other reason (an address this machine
- *         doesn't hold, Android without INTERNET); `out_error` has it.
+ *         doesn't hold); `out_error` has it.
  */
 CR_RESULT crnet_udp_socket_create(
     crnet_instance instance,
@@ -2012,11 +2017,16 @@ CR_RESULT crnet_udp_socket_get_buffer_sizes(
  * @retval CR_RESULT_NET_ABORTED crnet_udp_socket_abort() was called.
  * @retval CR_RESULT_NET_SEND_FAILED The system refused it for another
  *         reason (no route; Local Network privacy on Apple, believed to look
- *         the same, not confirmed: no errno is documented for it; Android
- *         17's local network permission, EPERM; a socket iOS has reclaimed);
- *         crnet_udp_socket_get_error() with CRNET_ERROR_SIDE_SENDING has it.
- *         The socket stays usable, but for one the system has reclaimed
- *         (iOS, above), which fails every call until destroyed.
+ *         the same, not confirmed: no errno is documented for it; a socket
+ *         iOS has reclaimed); crnet_udp_socket_get_error() with
+ *         CRNET_ERROR_SIDE_SENDING has it. The socket stays usable, but for
+ *         one the system has reclaimed (iOS, above), which fails every call
+ *         until destroyed.
+ * @retval CR_RESULT_NET_ACCESS_DENIED The system refused this program the
+ *         local network for this send (Android 17's ACCESS_LOCAL_NETWORK not
+ *         granted, EPERM); never on Apple, whose refusal looks like no
+ *         route. The socket stays usable once allowed; the record has the
+ *         errno.
  */
 CR_RESULT crnet_udp_socket_send_to(
     crnet_udp_socket socket,
@@ -2065,6 +2075,10 @@ CR_RESULT crnet_udp_socket_send_to(
  * @retval CR_RESULT_NET_RECV_FAILED The system's receive failed;
  *         crnet_udp_socket_get_error() with CRNET_ERROR_SIDE_RECEIVING has
  *         it.
+ * @retval CR_RESULT_NET_ACCESS_DENIED The system refused this program the
+ *         local network for this receive (Android 17's ACCESS_LOCAL_NETWORK
+ *         not granted, EPERM); never on Apple. The socket stays usable once
+ *         allowed; the record has the errno.
  */
 CR_RESULT crnet_udp_socket_recv_from(
     crnet_udp_socket socket,
@@ -2143,7 +2157,10 @@ void crnet_udp_socket_destroy(crnet_udp_socket socket);
  * entries and the interfaces are all the caller's, with no default.
  * The domain is always "local.". No name is ever changed for the caller: a
  * name that is taken ends the advert with
- * CR_RESULT_NET_SERVICE_NAME_CONFLICT.
+ * CR_RESULT_NET_SERVICE_NAME_CONFLICT. Taken means held by another
+ * service: on Apple two adverts of one machine with the same name, type,
+ * port and TXT record are one service to mDNSResponder, and the second is
+ * REGISTERED, not a conflict; one whose records differ conflicts.
  *
  * What the caller must give the system, per platform:
  *

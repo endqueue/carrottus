@@ -2,7 +2,8 @@
  * crnet_wait_set_draft.h - Carrottus Net's wait set: its instance, and the
  * memory a set uses once it is set up (crnet.h, "Wait set").
  *
- * FOR YOUR APPROVAL, version 4 (2026-11-23). Not built, not in any target.
+ * APPROVED by the user 2026-11-23, version 4 (SHA-256 in CRNET_TODO.md,
+ * "The wait set's draft"). Not built, not in any target.
  *   Version 1: the first, after a scratch check of today's code on the Mac
  *   (prompts/crnet_local_network_record.md, "Part 2: the scratch check").
  *   Version 2 (critique cycle 1, the library's rules): no caller named
