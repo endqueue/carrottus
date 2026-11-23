@@ -1148,6 +1148,90 @@ FACTORIES = {
 		why = "crnet_websocket_create failed (no WebSocket in this build)";
 	crnet_instance_destroy(instance);
 	return socket;''',
+    'crnet_interface_list': r'''
+	crnet_instance instance = make_net_instance();
+	if (!instance)
+		return NULL;
+	crnet_interface_list list = NULL;
+	if (crnet_interface_enumerate(instance, &list, NULL) == CR_SUCCESS)
+		crnet_interface_list_destroy(list);
+	else
+		why = "crnet_interface_enumerate failed";
+	crnet_instance_destroy(instance);
+	return list;''',
+    'crnet_udp_socket': r'''
+	crnet_instance instance = make_net_instance();
+	if (!instance)
+		return NULL;
+	crnet_udp_socket_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type           = CR_STRUCT_TYPE_NET_UDP_SOCKET_DESC;
+	desc.local.family        = CRNET_ADDRESS_FAMILY_IPV4;
+	desc.local.bytes[0]      = 127;
+	desc.local.bytes[3]      = 1;
+	desc.sharing             = CRNET_UDP_PORT_SHARING_EXCLUSIVE;
+	desc.receive_buffer_size = CRNET_SOCKET_BUFFER_SIZE_SYSTEM;
+	desc.send_buffer_size    = CRNET_SOCKET_BUFFER_SIZE_SYSTEM;
+	crnet_udp_socket socket  = NULL;
+	if (crnet_udp_socket_create(instance, &desc, &socket, NULL) == CR_SUCCESS)
+		crnet_udp_socket_destroy(socket);
+	else
+		why = "crnet_udp_socket_create failed";
+	crnet_instance_destroy(instance);
+	return socket;''',
+    'crnet_service_advert': r'''
+	crnet_instance instance = make_net_instance();
+	if (!instance)
+		return NULL;
+	crnet_service_advert_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type = CR_STRUCT_TYPE_NET_SERVICE_ADVERT_DESC;
+	desc.name      = "crnetmisuse";
+	desc.type      = "_crnetmisuse._udp";
+	desc.port      = 9;
+	desc.scope     = CRNET_DISCOVERY_SCOPE_ALL_INTERFACES;
+	crnet_service_advert object = NULL;
+	if (crnet_service_advert_create(instance, &desc, &object, NULL) == CR_SUCCESS)
+		crnet_service_advert_destroy(object);
+	else
+		why = "crnet_service_advert_create failed (no discovery service in this build)";
+	crnet_instance_destroy(instance);
+	return object;''',
+    'crnet_service_browser': r'''
+	crnet_instance instance = make_net_instance();
+	if (!instance)
+		return NULL;
+	crnet_service_browser_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type      = CR_STRUCT_TYPE_NET_SERVICE_BROWSER_DESC;
+	desc.type           = "_crnetmisuse._udp";
+	desc.scope          = CRNET_DISCOVERY_SCOPE_ALL_INTERFACES;
+	desc.event_capacity = 1;
+	crnet_service_browser object = NULL;
+	if (crnet_service_browser_create(instance, &desc, &object, NULL) == CR_SUCCESS)
+		crnet_service_browser_destroy(object);
+	else
+		why = "crnet_service_browser_create failed (no discovery service in this build)";
+	crnet_instance_destroy(instance);
+	return object;''',
+    'crnet_service_resolver': r'''
+	crnet_instance instance = make_net_instance();
+	if (!instance)
+		return NULL;
+	crnet_service_resolver_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type      = CR_STRUCT_TYPE_NET_SERVICE_RESOLVER_DESC;
+	desc.name           = "crnetmisuse";
+	desc.type           = "_crnetmisuse._udp";
+	desc.family         = CRNET_ADDRESS_FAMILY_ANY;
+	desc.event_capacity = 1;
+	crnet_service_resolver object = NULL;
+	if (crnet_service_resolver_create(instance, &desc, &object, NULL) == CR_SUCCESS)
+		crnet_service_resolver_destroy(object);
+	else
+		why = "crnet_service_resolver_create failed (no discovery service in this build)";
+	crnet_instance_destroy(instance);
+	return object;''',
     'crnet_wait_set': r'''
 	crnet_instance instance = make_net_instance();
 	if (!instance)

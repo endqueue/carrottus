@@ -1447,6 +1447,210 @@ static bool net_round(const idle_connection *c) {
 	       crnet_wait_set_wait(c->set, CRNET_NO_WAIT, events, 4, &count) == CR_RESULT_NET_TIMED_OUT;
 }
 
+#if CRNET_EXT_UDP
+
+/* UDP's steady state: datagrams sent and received on loopback with
+ * CRNET_NO_WAIT, the receiver in a wait set. One a frame, then sixteen a
+ * frame (eight peers at 120 Hz into a 60 Hz frame: two from each of eight
+ * sockets), each drained to TIMED_OUT. */
+#define UDP_PEERS 8
+
+typedef struct udp_frame {
+	crnet_udp_socket peers[UDP_PEERS];
+	crnet_udp_socket receiver;
+	crnet_address    to;
+	crnet_wait_set   set;
+	uint32_t         per_peer;
+	uint32_t         peers_sending;
+} udp_frame;
+
+static bool udp_round(const udp_frame *u) {
+	uint8_t datagram[64];
+	memset(datagram, 0x5A, sizeof(datagram));
+	// A limit on the send, not CRNET_NO_WAIT: a machine under load may have
+	// loopback's queue full for a moment (ENOBUFS), which waits without
+	// allocating.
+	for (uint32_t p = 0; p < u->peers_sending; ++p) {
+		for (uint32_t i = 0; i < u->per_peer; ++i) {
+			if (crnet_udp_socket_send_to(u->peers[p], &u->to, datagram, sizeof(datagram), 1000) != CR_SUCCESS)
+				return false;
+		}
+	}
+	// Loopback may hand the datagrams over a few at a time under load: wait
+	// and drain until every one is in, as a caller's frame would.
+	const uint32_t expected = u->peers_sending * u->per_peer;
+	uint32_t       received = 0;
+	for (int waits = 0; waits < 50 && received < expected; ++waits) {
+		crnet_wait_event events[2];
+		uint32_t         count = 0;
+		if (crnet_wait_set_wait(u->set, 1000, events, 2, &count) != CR_SUCCESS || count != 1)
+			return false;
+		uint8_t       buffer[256];
+		uint32_t      size = 0;
+		crnet_address from;
+		CR_RESULT     result;
+		while ((result = crnet_udp_socket_recv_from(u->receiver, buffer, sizeof(buffer), CRNET_NO_WAIT, &size, &from)) == CR_SUCCESS)
+			received++;
+		if (result != CR_RESULT_NET_TIMED_OUT)
+			return false;
+	}
+	return received == expected;
+}
+
+static void udp_measure(udp_frame *u, const char *what, uint32_t datagrams) {
+	bool ok = true;
+	for (int i = 0; i < WARM_UP && ok; ++i)
+		ok = udp_round(u);
+	CHECK(ok);
+	alloc_trace_start();
+	for (int i = 0; i < ITERATIONS && ok; ++i)
+		ok = udp_round(u);
+	alloc_trace_stop();
+	CHECK(ok);
+	report(what);
+	uint64_t best = UINT64_MAX;
+	for (int run = 0; run < TIMED_RUNS && ok; ++run) {
+		const uint64_t start = crperf_get_monotonic_time_ns();
+		for (int i = 0; i < TIMED_ITERATIONS && ok; ++i)
+			ok = udp_round(u);
+		const uint64_t took = crperf_get_monotonic_time_ns() - start;
+		if (took < best)
+			best = took;
+	}
+	if (ok) {
+		char line[160];
+		snprintf(line, sizeof(line), "Carrottus Net UDP frame of %u datagram%s (sends, a wait, receives to TIMED_OUT)", datagrams, datagrams == 1 ? "" : "s");
+		print_time(line, best, TIMED_ITERATIONS);
+		// Each datagram costs a send and a receive; the frame one wait and
+		// one receive more.
+		printf("cr_noalloc_tests: time: about %.2f us a datagram (a send and a receive) at %u a frame\n",
+		       (double)best / (double)TIMED_ITERATIONS / 1000.0 / (double)datagrams, datagrams);
+	}
+}
+
+static void test_net_udp(crnet_instance instance) {
+	udp_frame u;
+	memset(&u, 0, sizeof(u));
+	crnet_udp_socket_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type           = CR_STRUCT_TYPE_NET_UDP_SOCKET_DESC;
+	desc.sharing             = CRNET_UDP_PORT_SHARING_EXCLUSIVE;
+	desc.receive_buffer_size = 262144;
+	desc.send_buffer_size    = CRNET_SOCKET_BUFFER_SIZE_SYSTEM;
+	CHECK(crnet_address_from_string("127.0.0.1", 0, 0, &desc.local) == CR_SUCCESS);
+	bool made = crnet_udp_socket_create(instance, &desc, &u.receiver, NULL) == CR_SUCCESS;
+	for (int p = 0; p < UDP_PEERS && made; ++p)
+		made = crnet_udp_socket_create(instance, &desc, &u.peers[p], NULL) == CR_SUCCESS;
+	made = made && crnet_udp_socket_get_local_address(u.receiver, &u.to) == CR_SUCCESS && crnet_wait_set_create(instance, &u.set, NULL) == CR_SUCCESS;
+	static int tag;
+	made = made && crnet_wait_set_add_udp_socket(u.set, u.receiver, CRNET_WAIT_FOR_INCOMING, &tag) == CR_SUCCESS;
+	CHECK(made);
+	if (made) {
+		u.per_peer      = 1;
+		u.peers_sending = 1;
+		udp_measure(&u, "Carrottus Net's UDP: one datagram a frame sent and received on loopback with CRNET_NO_WAIT, a wait set's wait", 1);
+		u.per_peer      = 2;
+		u.peers_sending = UDP_PEERS;
+		udp_measure(&u, "Carrottus Net's UDP: sixteen datagrams a frame from eight sockets, a wait set's wait", 16);
+		crnet_wait_set_remove_udp_socket(u.set, u.receiver);
+	}
+	crnet_wait_set_destroy(u.set);
+	for (int p = 0; p < UDP_PEERS; ++p)
+		crnet_udp_socket_destroy(u.peers[p]);
+	crnet_udp_socket_destroy(u.receiver);
+}
+
+#endif
+
+#if CRNET_EXT_DISCOVERY
+
+/* Discovery's reads in their steady state: a browser and a resolver with
+ * nothing to hand over, each read with CRNET_NO_WAIT, both in a wait set
+ * waited on with CRNET_NO_WAIT. An event's arrival copies into a ring made
+ * at the create, so it allocates nothing of ours either; what dns_sd does
+ * inside DNSServiceProcessResult is the system's. */
+typedef struct discovery_idle {
+	crnet_service_browser  browser;
+	crnet_service_resolver resolver;
+	crnet_wait_set         set;
+} discovery_idle;
+
+static bool discovery_round(const discovery_idle *d) {
+	crnet_service_browse_event browse;
+	memset(&browse, 0, sizeof(browse));
+	browse.base.type = CR_STRUCT_TYPE_NET_SERVICE_BROWSE_EVENT;
+	crnet_service_resolve_event resolve;
+	memset(&resolve, 0, sizeof(resolve));
+	resolve.base.type = CR_STRUCT_TYPE_NET_SERVICE_RESOLVE_EVENT;
+	crnet_wait_event events[2];
+	uint32_t         count = 0;
+	return crnet_service_browser_next(d->browser, CRNET_NO_WAIT, &browse) == CR_RESULT_NET_TIMED_OUT &&
+	       crnet_service_resolver_next(d->resolver, CRNET_NO_WAIT, &resolve) == CR_RESULT_NET_TIMED_OUT &&
+	       crnet_wait_set_wait(d->set, CRNET_NO_WAIT, events, 2, &count) == CR_RESULT_NET_TIMED_OUT;
+}
+
+static void test_net_discovery(crnet_instance instance) {
+	discovery_idle d;
+	memset(&d, 0, sizeof(d));
+	crnet_service_browser_desc browser_desc;
+	memset(&browser_desc, 0, sizeof(browser_desc));
+	browser_desc.base.type      = CR_STRUCT_TYPE_NET_SERVICE_BROWSER_DESC;
+	browser_desc.type           = "_crnetnobody._udp";
+	browser_desc.scope          = CRNET_DISCOVERY_SCOPE_ALL_INTERFACES;
+	browser_desc.event_capacity = 16;
+	crnet_service_resolver_desc resolver_desc;
+	memset(&resolver_desc, 0, sizeof(resolver_desc));
+	resolver_desc.base.type      = CR_STRUCT_TYPE_NET_SERVICE_RESOLVER_DESC;
+	resolver_desc.name           = "nobody";
+	resolver_desc.type           = "_crnetnobody._udp";
+	resolver_desc.family         = CRNET_ADDRESS_FAMILY_ANY;
+	resolver_desc.event_capacity = 16;
+	if (crnet_service_browser_create(instance, &browser_desc, &d.browser, NULL) != CR_SUCCESS ||
+	    crnet_service_resolver_create(instance, &resolver_desc, &d.resolver, NULL) != CR_SUCCESS) {
+		printf("cr_noalloc_tests: Carrottus Net discovery: no system service, skipped\n");
+		crnet_service_browser_destroy(d.browser);
+		return;
+	}
+	static int browser_tag, resolver_tag;
+	CHECK(crnet_wait_set_create(instance, &d.set, NULL) == CR_SUCCESS);
+	CHECK(crnet_wait_set_add_service_browser(d.set, d.browser, &browser_tag) == CR_SUCCESS);
+	CHECK(crnet_wait_set_add_service_resolver(d.set, d.resolver, &resolver_tag) == CR_SUCCESS);
+	// Whatever mDNSResponder says first (a browse's first reply comes) is
+	// read before the counting starts.
+	for (int i = 0; i < 50; ++i) {
+		discovery_round(&d);
+		sleep_ms(10);
+	}
+	bool ok = true;
+	for (int i = 0; i < WARM_UP && ok; ++i)
+		ok = discovery_round(&d);
+	CHECK(ok);
+	alloc_trace_start();
+	for (int i = 0; i < ITERATIONS && ok; ++i)
+		ok = discovery_round(&d);
+	alloc_trace_stop();
+	CHECK(ok);
+	report("Carrottus Net's discovery reads: a browser's and a resolver's next with CRNET_NO_WAIT and nothing to hand over, a wait set's poll of both");
+	uint64_t best = UINT64_MAX;
+	for (int run = 0; run < TIMED_RUNS && ok; ++run) {
+		const uint64_t start = crperf_get_monotonic_time_ns();
+		for (int i = 0; i < TIMED_ITERATIONS && ok; ++i)
+			ok = discovery_round(&d);
+		const uint64_t took = crperf_get_monotonic_time_ns() - start;
+		if (took < best)
+			best = took;
+	}
+	if (ok)
+		print_time("Carrottus Net discovery idle round (two nexts, a wait set poll)", best, TIMED_ITERATIONS);
+	crnet_wait_set_remove_service_browser(d.set, d.browser);
+	crnet_wait_set_remove_service_resolver(d.set, d.resolver);
+	crnet_wait_set_destroy(d.set);
+	crnet_service_resolver_destroy(d.resolver);
+	crnet_service_browser_destroy(d.browser);
+}
+
+#endif
+
 static void test_net(void) {
 	const CR_ALLOCATOR allocator = cr_allocator_system();
 	crnet_instance_desc instance_desc;
@@ -1512,6 +1716,12 @@ static void test_net(void) {
 	}
 #if CRNET_EXT_WEBSOCKET
 	test_net_websocket(instance, listener, port);
+#endif
+#if CRNET_EXT_UDP
+	test_net_udp(instance);
+#endif
+#if CRNET_EXT_DISCOVERY
+	test_net_discovery(instance);
 #endif
 	crnet_wait_set_destroy(c.set);
 	crnet_tcp_socket_destroy(c.server);

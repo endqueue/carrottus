@@ -525,18 +525,44 @@ const CRINPUT_NATIVE_API_XINPUT = 3
 const CRNET_ADDRESS_FAMILY_ANY = 0
 const CRNET_ADDRESS_FAMILY_IPV4 = 1
 const CRNET_ADDRESS_FAMILY_IPV6 = 2
+const CRNET_DISCOVERY_SCOPE_ALL_INTERFACES = 1
+const CRNET_DISCOVERY_SCOPE_NONE = 0
+const CRNET_DISCOVERY_SCOPE_ONE_INTERFACE = 2
 const CRNET_ERROR_SIDE_RECEIVING = 0
 const CRNET_ERROR_SIDE_SENDING = 1
 const CRNET_HTTP_BODY_NONE = 0
 const CRNET_HTTP_BODY_SIZED = 1
 const CRNET_HTTP_BODY_UNSIZED = 2
+const CRNET_INTERFACE_FLAG_BROADCAST = 32
+const CRNET_INTERFACE_FLAG_LOOPBACK = 4
+const CRNET_INTERFACE_FLAG_MULTICAST = 16
+const CRNET_INTERFACE_FLAG_POINT_TO_POINT = 8
+const CRNET_INTERFACE_FLAG_RUNNING = 2
+const CRNET_INTERFACE_FLAG_UP = 1
 const CRNET_PROXY_EXPLICIT = 2
 const CRNET_PROXY_NONE = 1
 const CRNET_PROXY_SYSTEM = 0
+const CRNET_SERVICE_ADVERT_EVENT_LOCAL_NETWORK_NOT_ALLOWED = 2
+const CRNET_SERVICE_ADVERT_EVENT_NONE = 0
+const CRNET_SERVICE_ADVERT_EVENT_REGISTERED = 1
+const CRNET_SERVICE_BROWSE_EVENT_EVENTS_DROPPED = 3
+const CRNET_SERVICE_BROWSE_EVENT_FOUND = 1
+const CRNET_SERVICE_BROWSE_EVENT_LOCAL_NETWORK_NOT_ALLOWED = 4
+const CRNET_SERVICE_BROWSE_EVENT_LOST = 2
+const CRNET_SERVICE_BROWSE_EVENT_NONE = 0
+const CRNET_SERVICE_RESOLVE_EVENT_ADDRESS_ADDED = 2
+const CRNET_SERVICE_RESOLVE_EVENT_ADDRESS_REMOVED = 3
+const CRNET_SERVICE_RESOLVE_EVENT_EVENTS_DROPPED = 4
+const CRNET_SERVICE_RESOLVE_EVENT_LOCAL_NETWORK_NOT_ALLOWED = 5
+const CRNET_SERVICE_RESOLVE_EVENT_NONE = 0
+const CRNET_SERVICE_RESOLVE_EVENT_SERVICE = 1
 const CRNET_TLS_TRUST_ANY = 3
 const CRNET_TLS_TRUST_ROOTS = 1
 const CRNET_TLS_TRUST_SYSTEM = 0
 const CRNET_TLS_TRUST_SYSTEM_AND_ROOTS = 2
+const CRNET_UDP_PORT_SHARING_EXCLUSIVE = 1
+const CRNET_UDP_PORT_SHARING_NONE = 0
+const CRNET_UDP_PORT_SHARING_SHARED = 2
 const CRNET_WAIT_FOR_INCOMING = 1
 const CRNET_WAIT_FOR_ROOM = 2
 const CRNET_WEBSOCKET_MESSAGE_BINARY = 1
@@ -728,17 +754,30 @@ const CR_RESULT_MEM_NOT_PAGE_ALIGNED = 2028
 const CR_RESULT_MEM_NULL_ADDRESS = 2027
 const CR_RESULT_NET_ABORTED = 3022
 const CR_RESULT_NET_ACCEPT_FAILED = 3006
+const CR_RESULT_NET_ACCESS_DENIED = 3047
 const CR_RESULT_NET_ADDRESS_IN_USE = 3026
 const CR_RESULT_NET_ALREADY_IN_WAIT_SET = 3028
+const CR_RESULT_NET_BIND_FAILED = 3037
 const CR_RESULT_NET_CONNECT_FAILED = 3004
+const CR_RESULT_NET_DATAGRAM_TOO_BIG = 3038
+const CR_RESULT_NET_DATAGRAM_TRUNCATED = 3039
+const CR_RESULT_NET_DISCOVERY_DENIED = 3044
+const CR_RESULT_NET_DISCOVERY_FAILED = 3045
+const CR_RESULT_NET_DISCOVERY_UNAVAILABLE = 3043
 const CR_RESULT_NET_HTTP_FAILED = 3016
+const CR_RESULT_NET_INTERFACE_ENUMERATION_FAILED = 3035
 const CR_RESULT_NET_INVALID_ADDRESS = 3025
 const CR_RESULT_NET_INVALID_HTTP_CLIENT = 3012
 const CR_RESULT_NET_INVALID_HTTP_TRANSFER = 3032
 const CR_RESULT_NET_INVALID_INSTANCE = 3033
+const CR_RESULT_NET_INVALID_INTERFACE_LIST = 3034
 const CR_RESULT_NET_INVALID_RESOLVER = 3029
+const CR_RESULT_NET_INVALID_SERVICE_ADVERT = 3040
+const CR_RESULT_NET_INVALID_SERVICE_BROWSER = 3041
+const CR_RESULT_NET_INVALID_SERVICE_RESOLVER = 3042
 const CR_RESULT_NET_INVALID_TCP_LISTENER = 3024
 const CR_RESULT_NET_INVALID_TCP_SOCKET = 3002
+const CR_RESULT_NET_INVALID_UDP_SOCKET = 3036
 const CR_RESULT_NET_INVALID_URL = 3011
 const CR_RESULT_NET_INVALID_WAIT_SET = 3027
 const CR_RESULT_NET_INVALID_WEBSOCKET = 3013
@@ -746,6 +785,8 @@ const CR_RESULT_NET_LISTEN_FAILED = 3005
 const CR_RESULT_NET_RECV_FAILED = 3008
 const CR_RESULT_NET_RESOLVE_FAILED = 3003
 const CR_RESULT_NET_SEND_FAILED = 3007
+const CR_RESULT_NET_SERVICE_NAME_CONFLICT = 3046
+const CR_RESULT_NET_SERVICE_NOT_ANSWERING = 3048
 const CR_RESULT_NET_STACK_TIMED_OUT = 3031
 const CR_RESULT_NET_STARTUP_FAILED = 3001
 const CR_RESULT_NET_SYSTEM_TIMED_OUT = 3030
@@ -815,9 +856,18 @@ const CR_STRUCT_TYPE_MESSAGE = 1
 const CR_STRUCT_TYPE_NET_HTTP_CLIENT_DESC = 3003
 const CR_STRUCT_TYPE_NET_HTTP_TRANSFER_DESC = 3004
 const CR_STRUCT_TYPE_NET_INSTANCE_DESC = 3006
+const CR_STRUCT_TYPE_NET_INTERFACE_ADDRESS = 3008
+const CR_STRUCT_TYPE_NET_INTERFACE_PROPERTIES = 3007
 const CR_STRUCT_TYPE_NET_RESOLVER_DESC = 3000
+const CR_STRUCT_TYPE_NET_SERVICE_ADVERT_DESC = 3010
+const CR_STRUCT_TYPE_NET_SERVICE_ADVERT_EVENT = 3011
+const CR_STRUCT_TYPE_NET_SERVICE_BROWSER_DESC = 3012
+const CR_STRUCT_TYPE_NET_SERVICE_BROWSE_EVENT = 3013
+const CR_STRUCT_TYPE_NET_SERVICE_RESOLVER_DESC = 3014
+const CR_STRUCT_TYPE_NET_SERVICE_RESOLVE_EVENT = 3015
 const CR_STRUCT_TYPE_NET_TCP_LISTENER_DESC = 3001
 const CR_STRUCT_TYPE_NET_TCP_SOCKET_CONNECT_DESC = 3002
+const CR_STRUCT_TYPE_NET_UDP_SOCKET_DESC = 3009
 const CR_STRUCT_TYPE_NET_WEBSOCKET_CONNECT_DESC = 3005
 const CR_STRUCT_TYPE_UNKNOWN = 0
 const CR_SUCCESS = 0
@@ -1042,6 +1092,8 @@ fn crmem_get_page_size uint32_t (void)
 fn crmem_get_reserve_granularity uint32_t (void)
 fn crmem_release CR_RESULT (void *, uint64_t)
 fn crmem_reserve CR_RESULT (uint64_t, void **)
+fn crnet_address_from_string CR_RESULT (const char *, uint16_t, uint32_t, crnet_address *)
+fn crnet_address_to_string CR_RESULT (const crnet_address *, char *)
 fn crnet_http_client_create CR_RESULT (crnet_instance, const crnet_http_client_desc *, crnet_http_client *)
 fn crnet_http_client_destroy void (crnet_http_client)
 fn crnet_http_transfer_abort void (crnet_http_transfer)
@@ -1058,13 +1110,32 @@ fn crnet_http_transfer_send CR_RESULT (crnet_http_transfer, const void *, uint64
 fn crnet_http_transfer_start CR_RESULT (crnet_http_transfer, const crnet_http_transfer_desc *)
 fn crnet_instance_create CR_RESULT (const crnet_instance_desc *, crnet_instance *, crnet_error *)
 fn crnet_instance_destroy void (crnet_instance)
-fn crnet_instance_get_local_ipv4_addresses CR_RESULT (crnet_instance, char (*)[16], uint32_t, uint32_t *, crnet_error *)
+fn crnet_interface_enumerate CR_RESULT (crnet_instance, crnet_interface_list *, crnet_error *)
+fn crnet_interface_list_destroy void (crnet_interface_list)
+fn crnet_interface_list_get_address CR_RESULT (crnet_interface_list, uint32_t, uint32_t, crnet_interface_address *)
+fn crnet_interface_list_get_count CR_RESULT (crnet_interface_list, uint32_t *)
+fn crnet_interface_list_get_properties CR_RESULT (crnet_interface_list, uint32_t, crnet_interface_properties *)
 fn crnet_resolver_abort void (crnet_resolver)
 fn crnet_resolver_create CR_RESULT (crnet_instance, const crnet_resolver_desc *, crnet_resolver *)
 fn crnet_resolver_destroy void (crnet_resolver)
 fn crnet_resolver_get_error void (crnet_resolver, crnet_error *)
 fn crnet_resolver_run CR_RESULT (crnet_resolver)
 fn crnet_resolver_wait CR_RESULT (crnet_resolver, uint32_t, char (*)[46], uint32_t, uint32_t *)
+fn crnet_service_advert_abort void (crnet_service_advert)
+fn crnet_service_advert_create CR_RESULT (crnet_instance, const crnet_service_advert_desc *, crnet_service_advert *, crnet_error *)
+fn crnet_service_advert_destroy void (crnet_service_advert)
+fn crnet_service_advert_get_error void (crnet_service_advert, crnet_error *)
+fn crnet_service_advert_next CR_RESULT (crnet_service_advert, uint32_t, crnet_service_advert_event *)
+fn crnet_service_browser_abort void (crnet_service_browser)
+fn crnet_service_browser_create CR_RESULT (crnet_instance, const crnet_service_browser_desc *, crnet_service_browser *, crnet_error *)
+fn crnet_service_browser_destroy void (crnet_service_browser)
+fn crnet_service_browser_get_error void (crnet_service_browser, crnet_error *)
+fn crnet_service_browser_next CR_RESULT (crnet_service_browser, uint32_t, crnet_service_browse_event *)
+fn crnet_service_resolver_abort void (crnet_service_resolver)
+fn crnet_service_resolver_create CR_RESULT (crnet_instance, const crnet_service_resolver_desc *, crnet_service_resolver *, crnet_error *)
+fn crnet_service_resolver_destroy void (crnet_service_resolver)
+fn crnet_service_resolver_get_error void (crnet_service_resolver, crnet_error *)
+fn crnet_service_resolver_next CR_RESULT (crnet_service_resolver, uint32_t, crnet_service_resolve_event *)
 fn crnet_tcp_listener_abort void (crnet_tcp_listener)
 fn crnet_tcp_listener_accept CR_RESULT (crnet_tcp_listener, uint32_t, crnet_tcp_socket *)
 fn crnet_tcp_listener_create CR_RESULT (crnet_instance, const crnet_tcp_listener_desc *, crnet_tcp_listener *, crnet_error *)
@@ -1082,17 +1153,33 @@ fn crnet_tcp_socket_get_peer_address CR_RESULT (crnet_tcp_socket, char *, uint16
 fn crnet_tcp_socket_recv CR_RESULT (crnet_tcp_socket, void *, uint64_t, uint32_t, uint64_t *)
 fn crnet_tcp_socket_send CR_RESULT (crnet_tcp_socket, const void *, uint64_t, uint32_t, uint64_t *)
 fn crnet_tcp_socket_set_no_delay CR_RESULT (crnet_tcp_socket, bool)
+fn crnet_udp_socket_abort void (crnet_udp_socket)
+fn crnet_udp_socket_create CR_RESULT (crnet_instance, const crnet_udp_socket_desc *, crnet_udp_socket *, crnet_error *)
+fn crnet_udp_socket_destroy void (crnet_udp_socket)
+fn crnet_udp_socket_get_buffer_sizes CR_RESULT (crnet_udp_socket, uint32_t *, uint32_t *)
+fn crnet_udp_socket_get_error void (crnet_udp_socket, CRNET_ERROR_SIDE, crnet_error *)
+fn crnet_udp_socket_get_local_address CR_RESULT (crnet_udp_socket, crnet_address *)
+fn crnet_udp_socket_recv_from CR_RESULT (crnet_udp_socket, void *, uint32_t, uint32_t, uint32_t *, crnet_address *)
+fn crnet_udp_socket_send_to CR_RESULT (crnet_udp_socket, const crnet_address *, const void *, uint32_t, uint32_t)
 fn crnet_wait_set_abort void (crnet_wait_set)
 fn crnet_wait_set_add_http_transfer CR_RESULT (crnet_wait_set, crnet_http_transfer, uint32_t, void *)
+fn crnet_wait_set_add_service_advert CR_RESULT (crnet_wait_set, crnet_service_advert, void *)
+fn crnet_wait_set_add_service_browser CR_RESULT (crnet_wait_set, crnet_service_browser, void *)
+fn crnet_wait_set_add_service_resolver CR_RESULT (crnet_wait_set, crnet_service_resolver, void *)
 fn crnet_wait_set_add_tcp_listener CR_RESULT (crnet_wait_set, crnet_tcp_listener, void *)
 fn crnet_wait_set_add_tcp_socket CR_RESULT (crnet_wait_set, crnet_tcp_socket, uint32_t, void *)
+fn crnet_wait_set_add_udp_socket CR_RESULT (crnet_wait_set, crnet_udp_socket, uint32_t, void *)
 fn crnet_wait_set_add_websocket CR_RESULT (crnet_wait_set, crnet_websocket, uint32_t, void *)
 fn crnet_wait_set_create CR_RESULT (crnet_instance, crnet_wait_set *, crnet_error *)
 fn crnet_wait_set_destroy void (crnet_wait_set)
 fn crnet_wait_set_get_error void (crnet_wait_set, crnet_error *)
 fn crnet_wait_set_remove_http_transfer void (crnet_wait_set, crnet_http_transfer)
+fn crnet_wait_set_remove_service_advert void (crnet_wait_set, crnet_service_advert)
+fn crnet_wait_set_remove_service_browser void (crnet_wait_set, crnet_service_browser)
+fn crnet_wait_set_remove_service_resolver void (crnet_wait_set, crnet_service_resolver)
 fn crnet_wait_set_remove_tcp_listener void (crnet_wait_set, crnet_tcp_listener)
 fn crnet_wait_set_remove_tcp_socket void (crnet_wait_set, crnet_tcp_socket)
+fn crnet_wait_set_remove_udp_socket void (crnet_wait_set, crnet_udp_socket)
 fn crnet_wait_set_remove_websocket void (crnet_wait_set, crnet_websocket)
 fn crnet_wait_set_wait CR_RESULT (crnet_wait_set, uint32_t, crnet_wait_event *, uint32_t, uint32_t *)
 fn crnet_wait_set_wake void (crnet_wait_set)
@@ -1127,7 +1214,7 @@ macro CARROTTUS_VERSION_GET_MAJOR(version) ((uint32_t)(version) >> 22U)
 macro CARROTTUS_VERSION_GET_MINOR(version) (((uint32_t)(version) >> 12U) & 0x3FFU)
 macro CARROTTUS_VERSION_GET_PATCH(version) ((uint32_t)(version) & 0xFFFU)
 macro CARROTTUS_VERSION_MAJOR 0
-macro CARROTTUS_VERSION_MINOR 4
+macro CARROTTUS_VERSION_MINOR 5
 macro CARROTTUS_VERSION_PATCH 0
 [apple,windows] macro CRAUDIO_COMPILE_ALSA 0
 [linux] macro CRAUDIO_COMPILE_ALSA 1
@@ -1214,11 +1301,19 @@ macro CRMEM_GiB(n) ((uint64_t)(n) << 30)
 macro CRMEM_KiB(n) ((uint64_t)(n) << 10)
 macro CRMEM_MiB(n) ((uint64_t)(n) << 20)
 macro CRNET_ERROR_TEXT_SIZE 256
+macro CRNET_EXT_DISCOVERY 1
 macro CRNET_EXT_TCP 1
+macro CRNET_EXT_UDP 1
 macro CRNET_EXT_WEBSOCKET 1
+macro CRNET_INTERFACE_NAME_CAPACITY 256
+macro CRNET_INTERFACE_PREFIX_LENGTH_UNKNOWN 0xFFFFFFFFu
 macro CRNET_MAX_ADDRESS_STRING_LEN 46
-macro CRNET_MAX_IPV4_STRING_LEN 16
 macro CRNET_NO_WAIT 0u
+macro CRNET_SERVICE_HOST_CAPACITY 256
+macro CRNET_SERVICE_NAME_CAPACITY 64
+macro CRNET_SERVICE_TXT_CAPACITY 1300
+macro CRNET_SERVICE_TYPE_CAPACITY 32
+macro CRNET_SOCKET_BUFFER_SIZE_SYSTEM 0xFFFFFFFFu
 macro CRNET_TLS_PIN_SIZE 32
 macro CRNET_WAIT_FOREVER 0xFFFFFFFFu
 macro CR_FAILED(sr) ((sr) != CR_SUCCESS)
@@ -1265,9 +1360,14 @@ opaque crinput_instance_t
 opaque crnet_http_client_t
 opaque crnet_http_transfer_t
 opaque crnet_instance_t
+opaque crnet_interface_list_t
 opaque crnet_resolver_t
+opaque crnet_service_advert_t
+opaque crnet_service_browser_t
+opaque crnet_service_resolver_t
 opaque crnet_tcp_listener_t
 opaque crnet_tcp_socket_t
+opaque crnet_udp_socket_t
 opaque crnet_wait_set_t
 opaque crnet_websocket_t
 struct CRAUDIO_CALLBACK_INFO size=24 align=8
@@ -1877,6 +1977,12 @@ field crgpu_write_descriptor_set.buffer_info @40 const crgpu_descriptor_buffer_i
 field crgpu_write_descriptor_set.image_info @48 const crgpu_descriptor_image_info *
 field crgpu_write_descriptor_set.sampler @56 crgpu_sampler
 field crgpu_write_descriptor_set.acceleration_structures @64 const crgpu_acceleration_structure *
+struct crnet_address size=28 align=4
+field crnet_address.family @0 CRNET_ADDRESS_FAMILY
+field crnet_address.scope_id @4 uint32_t
+field crnet_address.bytes @8 uint8_t[16]
+field crnet_address.port @24 uint16_t
+field crnet_address.reserved @26 uint16_t
 struct crnet_error size=272 align=8
 field crnet_error.result @0 CR_RESULT
 field crnet_error.source @4 CR_PLATFORM_ERROR_SOURCE
@@ -1902,6 +2008,19 @@ field crnet_http_transfer_desc.timeout_ms @60 uint32_t
 struct crnet_instance_desc size=24 align=8
 field crnet_instance_desc.base @0 CR_STRUCT_BASE
 field crnet_instance_desc.allocator @16 const CR_ALLOCATOR *
+struct crnet_interface_address size=48 align=8
+field crnet_interface_address.base @0 CR_STRUCT_BASE_OUT
+field crnet_interface_address.address @16 crnet_address
+field crnet_interface_address.prefix_length @44 uint32_t
+struct crnet_interface_properties size=552 align=8
+field crnet_interface_properties.base @0 CR_STRUCT_BASE_OUT
+field crnet_interface_properties.name @16 char[256]
+field crnet_interface_properties.display_name @272 char[256]
+field crnet_interface_properties.index @528 uint32_t
+field crnet_interface_properties.ipv6_index @532 uint32_t
+field crnet_interface_properties.flags @536 uint32_t
+field crnet_interface_properties.mtu @540 uint32_t
+field crnet_interface_properties.address_count @544 uint32_t
 struct crnet_proxy_desc size=16 align=8
 field crnet_proxy_desc.mode @0 CRNET_PROXY
 field crnet_proxy_desc.url @8 const char *
@@ -1909,6 +2028,49 @@ struct crnet_resolver_desc size=32 align=8
 field crnet_resolver_desc.base @0 CR_STRUCT_BASE
 field crnet_resolver_desc.host @16 const char *
 field crnet_resolver_desc.family @24 CRNET_ADDRESS_FAMILY
+struct crnet_service_advert_desc size=64 align=8
+field crnet_service_advert_desc.base @0 CR_STRUCT_BASE
+field crnet_service_advert_desc.name @16 const char *
+field crnet_service_advert_desc.type @24 const char *
+field crnet_service_advert_desc.port @32 uint16_t
+field crnet_service_advert_desc.scope @36 CRNET_DISCOVERY_SCOPE
+field crnet_service_advert_desc.interface_index @40 uint32_t
+field crnet_service_advert_desc.txt_entries @48 const crnet_service_txt_entry *
+field crnet_service_advert_desc.txt_entry_count @56 uint32_t
+struct crnet_service_advert_event size=88 align=8
+field crnet_service_advert_event.base @0 CR_STRUCT_BASE_OUT
+field crnet_service_advert_event.kind @16 CRNET_SERVICE_ADVERT_EVENT_KIND
+field crnet_service_advert_event.name @20 char[64]
+struct crnet_service_browse_event size=88 align=8
+field crnet_service_browse_event.base @0 CR_STRUCT_BASE_OUT
+field crnet_service_browse_event.kind @16 CRNET_SERVICE_BROWSE_EVENT_KIND
+field crnet_service_browse_event.name @20 char[64]
+field crnet_service_browse_event.interface_index @84 uint32_t
+struct crnet_service_browser_desc size=40 align=8
+field crnet_service_browser_desc.base @0 CR_STRUCT_BASE
+field crnet_service_browser_desc.type @16 const char *
+field crnet_service_browser_desc.scope @24 CRNET_DISCOVERY_SCOPE
+field crnet_service_browser_desc.interface_index @28 uint32_t
+field crnet_service_browser_desc.event_capacity @32 uint32_t
+struct crnet_service_resolve_event size=1616 align=8
+field crnet_service_resolve_event.base @0 CR_STRUCT_BASE_OUT
+field crnet_service_resolve_event.kind @16 CRNET_SERVICE_RESOLVE_EVENT_KIND
+field crnet_service_resolve_event.host @20 char[256]
+field crnet_service_resolve_event.port @276 uint16_t
+field crnet_service_resolve_event.address @280 crnet_address
+field crnet_service_resolve_event.txt_size @308 uint32_t
+field crnet_service_resolve_event.txt_truncated @312 bool
+field crnet_service_resolve_event.txt @313 uint8_t[1300]
+struct crnet_service_resolver_desc size=48 align=8
+field crnet_service_resolver_desc.base @0 CR_STRUCT_BASE
+field crnet_service_resolver_desc.name @16 const char *
+field crnet_service_resolver_desc.type @24 const char *
+field crnet_service_resolver_desc.interface_index @32 uint32_t
+field crnet_service_resolver_desc.family @36 CRNET_ADDRESS_FAMILY
+field crnet_service_resolver_desc.event_capacity @40 uint32_t
+struct crnet_service_txt_entry size=16 align=8
+field crnet_service_txt_entry.key @0 const char *
+field crnet_service_txt_entry.value @8 const char *
 struct crnet_tcp_listener_desc size=32 align=8
 field crnet_tcp_listener_desc.base @0 CR_STRUCT_BASE
 field crnet_tcp_listener_desc.address @16 const char *
@@ -1931,6 +2093,12 @@ field crnet_tls_desc.pins @24 const crnet_tls_pin *
 field crnet_tls_desc.pin_count @32 uint32_t
 struct crnet_tls_pin size=32 align=1
 field crnet_tls_pin.sha256 @0 uint8_t[32]
+struct crnet_udp_socket_desc size=56 align=8
+field crnet_udp_socket_desc.base @0 CR_STRUCT_BASE
+field crnet_udp_socket_desc.local @16 crnet_address
+field crnet_udp_socket_desc.sharing @44 CRNET_UDP_PORT_SHARING
+field crnet_udp_socket_desc.receive_buffer_size @48 uint32_t
+field crnet_udp_socket_desc.send_buffer_size @52 uint32_t
 struct crnet_wait_event size=16 align=8
 field crnet_wait_event.user @0 void *
 field crnet_wait_event.ready @8 uint32_t
@@ -2046,10 +2214,15 @@ typedef CRINPUT_GAMEPAD_TOUCH_SURFACE = struct CRINPUT_GAMEPAD_TOUCH_SURFACE
 typedef CRINPUT_INSTANCE_DESC = struct CRINPUT_INSTANCE_DESC
 typedef CRINPUT_NATIVE_API = uint32_t
 typedef CRNET_ADDRESS_FAMILY = enum CRNET_ADDRESS_FAMILY
+typedef CRNET_DISCOVERY_SCOPE = enum CRNET_DISCOVERY_SCOPE
 typedef CRNET_ERROR_SIDE = enum CRNET_ERROR_SIDE
 typedef CRNET_HTTP_BODY = enum CRNET_HTTP_BODY
 typedef CRNET_PROXY = enum CRNET_PROXY
+typedef CRNET_SERVICE_ADVERT_EVENT_KIND = enum CRNET_SERVICE_ADVERT_EVENT_KIND
+typedef CRNET_SERVICE_BROWSE_EVENT_KIND = enum CRNET_SERVICE_BROWSE_EVENT_KIND
+typedef CRNET_SERVICE_RESOLVE_EVENT_KIND = enum CRNET_SERVICE_RESOLVE_EVENT_KIND
 typedef CRNET_TLS_TRUST = enum CRNET_TLS_TRUST
+typedef CRNET_UDP_PORT_SHARING = enum CRNET_UDP_PORT_SHARING
 typedef CRNET_WAIT_FOR = enum CRNET_WAIT_FOR
 typedef CRNET_WEBSOCKET_MESSAGE = enum CRNET_WEBSOCKET_MESSAGE
 typedef CR_ALLOCATE_FUNCTION = void *(*)(void *, size_t, size_t)
@@ -2153,6 +2326,7 @@ typedef crgpu_vertex_binding_desc = struct crgpu_vertex_binding_desc
 typedef crgpu_write_descriptor_set = struct crgpu_write_descriptor_set
 typedef crinput_gamepad_id = uint64_t
 typedef crinput_instance = struct crinput_instance_t *
+typedef crnet_address = struct crnet_address
 typedef crnet_error = struct crnet_error
 typedef crnet_header = struct crnet_header
 typedef crnet_http_client = struct crnet_http_client_t *
@@ -2161,9 +2335,22 @@ typedef crnet_http_transfer = struct crnet_http_transfer_t *
 typedef crnet_http_transfer_desc = struct crnet_http_transfer_desc
 typedef crnet_instance = struct crnet_instance_t *
 typedef crnet_instance_desc = struct crnet_instance_desc
+typedef crnet_interface_address = struct crnet_interface_address
+typedef crnet_interface_list = struct crnet_interface_list_t *
+typedef crnet_interface_properties = struct crnet_interface_properties
 typedef crnet_proxy_desc = struct crnet_proxy_desc
 typedef crnet_resolver = struct crnet_resolver_t *
 typedef crnet_resolver_desc = struct crnet_resolver_desc
+typedef crnet_service_advert = struct crnet_service_advert_t *
+typedef crnet_service_advert_desc = struct crnet_service_advert_desc
+typedef crnet_service_advert_event = struct crnet_service_advert_event
+typedef crnet_service_browse_event = struct crnet_service_browse_event
+typedef crnet_service_browser = struct crnet_service_browser_t *
+typedef crnet_service_browser_desc = struct crnet_service_browser_desc
+typedef crnet_service_resolve_event = struct crnet_service_resolve_event
+typedef crnet_service_resolver = struct crnet_service_resolver_t *
+typedef crnet_service_resolver_desc = struct crnet_service_resolver_desc
+typedef crnet_service_txt_entry = struct crnet_service_txt_entry
 typedef crnet_tcp_listener = struct crnet_tcp_listener_t *
 typedef crnet_tcp_listener_desc = struct crnet_tcp_listener_desc
 typedef crnet_tcp_socket = struct crnet_tcp_socket_t *
@@ -2171,6 +2358,8 @@ typedef crnet_tcp_socket_connect_desc = struct crnet_tcp_socket_connect_desc
 typedef crnet_tls_certificate = struct crnet_tls_certificate
 typedef crnet_tls_desc = struct crnet_tls_desc
 typedef crnet_tls_pin = struct crnet_tls_pin
+typedef crnet_udp_socket = struct crnet_udp_socket_t *
+typedef crnet_udp_socket_desc = struct crnet_udp_socket_desc
 typedef crnet_wait_event = struct crnet_wait_event
 typedef crnet_wait_set = struct crnet_wait_set_t *
 typedef crnet_websocket = struct crnet_websocket_t *

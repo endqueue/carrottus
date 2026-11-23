@@ -11,7 +11,13 @@
  *   message was;
  * - crnet_ascii_equal_no_case and crnet_url_has_scheme;
  * - crnet_headers_accept_encoding, over request headers made from the
- *   input.
+ *   input;
+ * - crnet_address_from_string and crnet_address_to_string (the address's
+ *   text forms, src/net/crnetinterfaces.c), against inet_pton itself: a
+ *   text with a '%' refused, every other the same answer, the scope refused
+ *   on IPv4, and an address made read back as text and made again equal
+ *   byte for byte; crnet_address_to_string over an address made from the
+ *   input's bytes, refused exactly when crnet_address_valid says.
  *
  * The input is: byte 0, where the input is split in two for the
  * comparisons; then the bytes.
@@ -20,6 +26,14 @@
 #include "crfuzz.h"
 
 #include "net/crnetshared.h"
+
+#if defined(_WIN32)
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#endif
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -169,6 +183,44 @@ static void check_accept_encoding(const uint8_t *data, size_t size) {
 	free(text);
 }
 
+
+static void check_address_text(const uint8_t *data, size_t size) {
+	char         *text  = crfuzz_terminated(data, size);
+	const uint32_t scope = size >= 2 ? (uint32_t)data[0] % 3 : 0;
+	crnet_address address;
+	memset(&address, 0xEE, sizeof(address));
+	const crnet_address untouched = address;
+	const CR_RESULT      made     = crnet_address_from_string(text, 4242, scope, &address);
+	uint8_t              four[4], six[16];
+	const bool           is_four  = inet_pton(AF_INET, text, four) == 1;
+	const bool           is_six   = !is_four && inet_pton(AF_INET6, text, six) == 1;
+	const bool           percent  = strchr(text, '%') != NULL;
+	const bool           want     = !percent && (is_six || (is_four && scope == 0));
+	CRFUZZ_CHECK((made == CR_SUCCESS) == want);
+	if (made != CR_SUCCESS) {
+		CRFUZZ_CHECK(made == CR_RESULT_NET_INVALID_ADDRESS && memcmp(&address, &untouched, sizeof(address)) == 0);
+	} else {
+		CRFUZZ_CHECK(crnet_address_valid(&address) && address.port == 4242 && address.reserved == 0);
+		CRFUZZ_CHECK(is_four ? memcmp(address.bytes, four, 4) == 0 : memcmp(address.bytes, six, 16) == 0);
+		char back[CRNET_MAX_ADDRESS_STRING_LEN];
+		CRFUZZ_CHECK(crnet_address_to_string(&address, back) == CR_SUCCESS && strlen(back) < sizeof(back));
+		crnet_address again;
+		CRFUZZ_CHECK(crnet_address_from_string(back, 4242, address.scope_id, &again) == CR_SUCCESS);
+		CRFUZZ_CHECK(memcmp(&again, &address, sizeof(again)) == 0);
+	}
+	free(text);
+
+	// The input's first bytes as an address value, valid or not.
+	crnet_address raw;
+	memset(&raw, 0, sizeof(raw));
+	memcpy(&raw, data, size < sizeof(raw) ? size : sizeof(raw));
+	char out[CRNET_MAX_ADDRESS_STRING_LEN];
+	memset(out, 'x', sizeof(out));
+	const CR_RESULT written = crnet_address_to_string(&raw, out);
+	CRFUZZ_CHECK((written == CR_SUCCESS) == crnet_address_valid(&raw));
+	CRFUZZ_CHECK(written == CR_SUCCESS ? memchr(out, '\0', sizeof(out)) != NULL : out[0] == 'x');
+}
+
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 	crfuzz_reader reader = {data, size};
 	const uint8_t   split  = crfuzz_byte(&reader);
@@ -184,6 +236,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
 	check_error_record(reader.data, reader.size);
 	check_accept_encoding(reader.data, reader.size);
+	check_address_text(reader.data, reader.size);
 
 	// The two halves compared without regard to case, over the shorter.
 	size_t first  = reader.size ? split % (reader.size + 1) : 0;

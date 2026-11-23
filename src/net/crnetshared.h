@@ -26,6 +26,7 @@
 
 #include "crnet.h"
 #include "../crallocator.h"
+#include "../crthread.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -348,6 +349,325 @@ CR_RESULT crnet_http_backend_recv(
     size_t size,
     uint32_t timeout_ms,
     size_t *out_received);
+
+// --------------------------------------------------------------------------
+// Addresses and the interface listing
+// --------------------------------------------------------------------------
+
+#if CRNET_EXT_TCP
+
+/* True for an address crnet.h takes: IPv4 or IPv6, `reserved` 0, and for
+ * IPv4 no scope and nothing past its fourth byte. False for NULL. */
+bool crnet_address_valid(const crnet_address *address);
+
+/* True for fe80::/10. */
+bool crnet_address_is_link_local(const uint8_t bytes[16]);
+
+/* Writes `address` as a sockaddr_in or sockaddr_in6 into `out_storage`
+ * (`capacity` bytes, a sockaddr_storage's worth) and returns its length; 0
+ * when it doesn't fit. `address` is valid. */
+uint32_t crnet_sockaddr_from_address(const crnet_address *address, void *out_storage, size_t capacity);
+
+/* Reads a sockaddr_in or sockaddr_in6 of `length` bytes (unaligned taken)
+ * into `out_address`, false for any other family or a short length. An IPv6
+ * link-local address's scope is its sin6_scope_id, or where that is 0 the
+ * interface index a KAME stack embeds in bytes 2 and 3 (and
+ * `*out_embedded_scope` is then true), or where both are 0
+ * `interface_index`; bytes 2 and 3 come back 0. Every other address has
+ * scope 0. */
+bool crnet_address_from_sockaddr(const void *sockaddr, size_t length, uint32_t interface_index, crnet_address *out_address, bool *out_embedded_scope);
+
+/* How many bits are set in a netmask sockaddr of the address family
+ * `family` (AF_INET or AF_INET6) and `length` bytes, or
+ * CRNET_INTERFACE_PREFIX_LENGTH_UNKNOWN for NULL or a short one. A mask
+ * whose ones aren't contiguous is counted as it is. */
+uint32_t crnet_netmask_prefix_length(const void *netmask, size_t length, int family);
+
+/* One interface of a listing. */
+struct crnet_interface_entry {
+	char     name[CRNET_INTERFACE_NAME_CAPACITY];
+	char     display_name[CRNET_INTERFACE_NAME_CAPACITY];
+	uint32_t index;
+	uint32_t ipv6_index;
+	uint32_t flags;
+	uint32_t mtu;
+	// Its addresses are `address_count` entries of the list's `addresses`
+	// from `first_address` on.
+	uint32_t first_address;
+	uint32_t address_count;
+};
+
+struct crnet_interface_address_entry {
+	crnet_address address;
+	uint32_t      prefix_length;
+};
+
+/* One block, made by crnet_interface_list_alloc: this, then the interfaces,
+ * then the addresses. Nothing in it changes once the backend has filled it,
+ * which is what lets the reads overlap (crnet.h, "Interfaces"). */
+struct crnet_interface_list_t {
+	cr_object_head                        head;
+	size_t                                block_size;
+	size_t                                block_alignment;
+	uint32_t                              interface_count;
+	uint32_t                              address_count;
+	struct crnet_interface_entry         *interfaces;
+	struct crnet_interface_address_entry *addresses;
+#if _DEBUG
+	// Reads inside now, which a destroy checks; destroys that found one;
+	// link-local addresses whose scope came embedded (C2.13).
+	volatile int32_t debug_readers;
+	volatile int32_t debug_overlaps;
+	uint32_t         debug_embedded_scopes;
+#endif
+};
+
+/* Makes a list with room for `interface_count` interfaces and
+ * `address_count` addresses, zeroed and empty (both counts 0), from the
+ * instance's allocator and in its quarantine. The backend fills it and
+ * counts what it filled. CR_RESULT_OUT_OF_MEMORY, `*out_list` NULL, when it
+ * can't be made. */
+CR_RESULT crnet_interface_list_alloc(crnet_instance instance, uint32_t interface_count, uint32_t address_count, struct crnet_interface_list_t **out_list);
+
+/* Frees a list the backend made and won't hand over. */
+void crnet_interface_list_free(struct crnet_interface_list_t *list);
+
+/* What each platform defines: the system's table read into a new list
+ * (crnet_interface_list_alloc), or a failure recorded in `out_error`. The
+ * front end has checked the arguments. */
+CR_RESULT crnet_interface_backend_enumerate(crnet_instance instance, struct crnet_interface_list_t **out_list, crnet_error *out_error);
+
+#endif // CRNET_EXT_TCP
+
+// --------------------------------------------------------------------------
+// Atomics for flags another thread sets (an abort)
+// --------------------------------------------------------------------------
+
+/* A 32-bit flag or count read and written whole and in order, from C on
+ * every compiler (MSVC's C has no <stdatomic.h> without a switch). */
+static inline int32_t crnet_atomic_load32(volatile int32_t *value) {
+#if defined(_MSC_VER)
+	return (int32_t)_InterlockedOr((volatile long *)value, 0);
+#else
+	return __atomic_load_n(value, __ATOMIC_SEQ_CST);
+#endif
+}
+
+static inline void crnet_atomic_store32(volatile int32_t *value, int32_t to) {
+#if defined(_MSC_VER)
+	_InterlockedExchange((volatile long *)value, to);
+#else
+	__atomic_store_n(value, to, __ATOMIC_SEQ_CST);
+#endif
+}
+
+// --------------------------------------------------------------------------
+// UDP
+// --------------------------------------------------------------------------
+
+#if CRNET_EXT_UDP
+
+/* A UDP socket (crnet.h, "UDP sockets"). The front end, src/net/crnetudp.c,
+ * makes it, checks every call and keeps its error records; the backend owns
+ * `native` and `wake`: on POSIX the descriptor and a pipe an abort writes
+ * to (-1 for none), on Windows whatever its backend keeps there. */
+struct crnet_udp_socket_t {
+	cr_object_head       head;
+	crnet_instance       instance;
+	CRNET_ADDRESS_FAMILY family;
+	// By CRNET_ERROR_SIDE; each written only by its side's caller.
+	crnet_error      errors[CRNET_ERROR_SIDE_COUNT];
+	intptr_t         native;
+	intptr_t         wake[2];
+	volatile int32_t aborted;
+};
+
+/* What each platform defines. The front end has checked every argument,
+ * and that the socket isn't aborted, before each. */
+
+/* Sets `native` and `wake` to "none", before open. */
+void crnet_udp_backend_reset(struct crnet_udp_socket_t *socket);
+/* Opens, sets up and binds the socket as the desc says. On failure the
+ * front end calls close, which takes whatever was made. */
+CR_RESULT crnet_udp_backend_open(struct crnet_udp_socket_t *socket, const crnet_udp_socket_desc *desc, crnet_error *out_error);
+void       crnet_udp_backend_close(struct crnet_udp_socket_t *socket);
+/* Ends a wait in progress; `aborted` is already set. From any thread. */
+void       crnet_udp_backend_wake(struct crnet_udp_socket_t *socket);
+CR_RESULT crnet_udp_backend_send_to(struct crnet_udp_socket_t *socket, const crnet_address *to, const void *data, uint32_t size, uint32_t timeout_ms);
+CR_RESULT crnet_udp_backend_recv_from(struct crnet_udp_socket_t *socket, void *buffer, uint32_t capacity, uint32_t timeout_ms, uint32_t *out_size,
+                                       crnet_address *out_from);
+CR_RESULT crnet_udp_backend_local_address(struct crnet_udp_socket_t *socket, crnet_address *out_address);
+CR_RESULT crnet_udp_backend_buffer_sizes(struct crnet_udp_socket_t *socket, uint32_t *out_receive_buffer_size, uint32_t *out_send_buffer_size);
+
+/* The instance the socket was made with. NULL for NULL. */
+crnet_instance crnet_udp_socket_instance(crnet_udp_socket socket);
+
+#endif // CRNET_EXT_UDP
+
+// --------------------------------------------------------------------------
+// Service discovery
+// --------------------------------------------------------------------------
+
+#if CRNET_EXT_DISCOVERY
+
+/* Declared again below, with the wait set. */
+struct crnet_wait_poll;
+struct crnet_wait_set_t;
+
+/* True for an instance name an advert takes: 1 to 63 bytes, UTF-8, no ASCII
+ * control character. `length` is its length without a terminator. */
+bool crnet_service_name_valid(const char *name, size_t length);
+
+/* True for a service type an advert takes: "_" and 1 to 15 letters, digits
+ * and hyphens, beginning and ending with a letter or digit, then "._udp" or
+ * "._tcp", no trailing dot. */
+bool crnet_service_type_valid(const char *type, size_t length);
+
+/* True when a type a system reported ("_x._udp.") is `type`, its trailing
+ * dot and ASCII case aside. */
+bool crnet_service_type_matches(const char *reported, const char *type);
+
+/* Reads one label of a DNS name in its escaped text form ("\.", "\\",
+ * "\032") from `text` (`length` bytes) into `out_label` (`capacity`
+ * bytes, no terminator). Returns the label's length and sets `*out_used`
+ * to how much text it took, up to the '.' after it or the end; SIZE_MAX
+ * for an escape cut short, a "\ddd" above 255 or a label past `capacity`. */
+size_t crnet_dns_label_unescape(const char *text, size_t length, char *out_label, size_t capacity, size_t *out_used);
+
+/* True when a full service name a system reported
+ * ("Living\032room._x._udp.local.") is instance `name` of `type`. */
+bool crnet_discovery_full_name_matches(const char *full_name, const char *name, const char *type);
+
+/* The checks on an advert's TXT entries (crnet.h, crnet_service_txt_entry):
+ * CR_SUCCESS and the record's size in wire form, or
+ * CR_RESULT_DESC_INVALID_PARAMETERS. */
+CR_RESULT crnet_service_txt_check(const crnet_service_txt_entry *entries, uint32_t count, size_t *out_size);
+
+/* Writes entries that passed the checks in wire form (a length byte and
+ * "key=value", each) and returns its size. */
+size_t crnet_service_txt_write(const crnet_service_txt_entry *entries, uint32_t count, uint8_t out_record[CRNET_SERVICE_TXT_CAPACITY]);
+
+/* A ring of one object's events, of one struct type each `slot_size`
+ * bytes, made at the create. Every push and pop is under `lock`, so a
+ * system thread may push while the caller pops. When it is full the oldest
+ * unread events are kept and a new one is dropped, and the next pop says so
+ * (CRNET_RING_DROPPED). `ended` is the object's end, handed over once every
+ * event before it has been. */
+struct crnet_event_ring {
+	cr_mutex  lock;
+	bool      lock_made;
+	uint8_t  *slots;
+	uint32_t  capacity;
+	size_t    slot_size;
+	size_t    kind_offset; // where each event's kind is: an int-sized enum
+	uint32_t  first;
+	uint32_t  count;
+	bool      dropped;
+	CR_RESULT ended; // CR_SUCCESS while the object goes on
+};
+
+enum crnet_ring_read {
+	CRNET_RING_EMPTY,
+	CRNET_RING_EVENT,
+	CRNET_RING_DROPPED,
+	CRNET_RING_ENDED,
+};
+
+/* False when out of memory (nothing is left made). */
+bool                 crnet_event_ring_init(struct crnet_event_ring *ring, const CR_ALLOCATOR *allocator, uint32_t capacity, size_t slot_size, size_t kind_offset);
+void                 crnet_event_ring_free(struct crnet_event_ring *ring, const CR_ALLOCATOR *allocator);
+/* With `replace_kind`, an unread event of the same kind is overwritten
+ * rather than a new one added. */
+void                 crnet_event_ring_push(struct crnet_event_ring *ring, const void *event, bool replace_kind);
+enum crnet_ring_read crnet_event_ring_pop(struct crnet_event_ring *ring, void *out_event, CR_RESULT *out_ended);
+/* Whether a pop would hand anything over. */
+bool                 crnet_event_ring_ready(struct crnet_event_ring *ring);
+
+enum crnet_discovery_kind {
+	CRNET_DISCOVERY_ADVERT,
+	CRNET_DISCOVERY_BROWSER,
+	CRNET_DISCOVERY_RESOLVER,
+};
+
+/* An advert, a browser or a resolver: the three public handles are this.
+ * The front end (src/net/crnetdiscovery.c) makes it and reads its ring;
+ * the backend keeps its own state behind `backend` and reports into the
+ * ring through crnet_discovery_report_*. */
+struct crnet_discovery_object {
+	cr_object_head            head;
+	crnet_instance            instance;
+	enum crnet_discovery_kind kind;
+	struct crnet_event_ring   ring;
+	// The most recent failure's record; written with `ring.ended`, under
+	// the ring's lock.
+	crnet_error      error;
+	volatile int32_t aborted;
+	// The one set it is in, or NULL; read and written under the ring's
+	// lock, so a backend that reports from a system thread wakes only a set
+	// the object is still in.
+	struct crnet_wait_set_t *wait_set;
+	// From the desc: what the backend asks the system for.
+	char                 name[CRNET_SERVICE_NAME_CAPACITY];
+	char                 type[CRNET_SERVICE_TYPE_CAPACITY];
+	uint32_t             interface_index;
+	uint16_t             port;
+	CRNET_ADDRESS_FAMILY family;
+	void                *backend;
+};
+
+struct crnet_service_advert_t {
+	struct crnet_discovery_object object;
+};
+struct crnet_service_browser_t {
+	struct crnet_discovery_object object;
+};
+struct crnet_service_resolver_t {
+	struct crnet_discovery_object object;
+};
+
+/* What a backend reports, from any thread, each under the ring's lock and
+ * waking the object's set. */
+void crnet_discovery_report_registered(struct crnet_discovery_object *object);
+void crnet_discovery_report_not_allowed(struct crnet_discovery_object *object);
+/* False, nothing reported, for a name no advert could carry or a reply of
+ * another type (`type` may be NULL where the system gives none). */
+bool crnet_discovery_report_found(struct crnet_discovery_object *object, bool added, uint32_t interface_index, const char *name, const char *type);
+/* False, nothing reported, for a full name (NULL where the system gives
+ * none) that isn't the instance resolved, or a host too long. */
+bool crnet_discovery_report_service(struct crnet_discovery_object *object, const char *full_name, const char *host, uint16_t port, const uint8_t *txt,
+                                    size_t txt_size);
+void crnet_discovery_report_address(struct crnet_discovery_object *object, bool added, const crnet_address *address);
+/* The object's end (the first one stands), its record filled. */
+void crnet_discovery_report_end(struct crnet_discovery_object *object, CR_RESULT result, CR_PLATFORM_ERROR_SOURCE source, int64_t code, const char *text);
+bool crnet_discovery_ended(struct crnet_discovery_object *object);
+
+/* What each platform defines. The starts begin the system's operation from
+ * the object's fields, `backend` holding whatever they made even on a
+ * failure, which stop then takes. */
+CR_RESULT crnet_discovery_backend_advert_start(struct crnet_discovery_object *object, const uint8_t *txt, size_t txt_size, crnet_error *out_error);
+CR_RESULT crnet_discovery_backend_browser_start(struct crnet_discovery_object *object, crnet_error *out_error);
+CR_RESULT crnet_discovery_backend_resolver_start(struct crnet_discovery_object *object, crnet_error *out_error);
+/* Ends the operation; after it returns nothing reports into the object. */
+void      crnet_discovery_backend_stop(struct crnet_discovery_object *object);
+/* Ends a wait in pump; `aborted` is already set. From any thread. */
+void      crnet_discovery_backend_wake(struct crnet_discovery_object *object);
+/* Waits up to `timeout_ms` for the system's replies and reads what has
+ * come into the ring: CR_SUCCESS when something was read (which may have
+ * made no event), CR_RESULT_NET_TIMED_OUT when nothing came,
+ * CR_RESULT_NET_ABORTED. */
+CR_RESULT crnet_discovery_backend_pump(struct crnet_discovery_object *object, uint32_t timeout_ms);
+/* What to poll for the object in a wait set, where the system has a
+ * descriptor; nothing where its callbacks wake the set themselves. */
+void      crnet_discovery_backend_wait_prepare(struct crnet_discovery_object *object, struct crnet_wait_poll *poll);
+
+/* The wait set's side: one set at most (CR_RESULT_NET_ALREADY_IN_WAIT_SET
+ * for a second), and the member's answer at each wait. */
+CR_RESULT crnet_discovery_wait_attach(struct crnet_discovery_object *object, struct crnet_wait_set_t *set);
+void       crnet_discovery_wait_detach(struct crnet_discovery_object *object);
+bool       crnet_discovery_wait_is_in(struct crnet_discovery_object *object, struct crnet_wait_set_t *set);
+uint32_t   crnet_discovery_wait_prepare(struct crnet_discovery_object *object, struct crnet_wait_poll *poll);
+
+#endif // CRNET_EXT_DISCOVERY
 
 // --------------------------------------------------------------------------
 // Wait set

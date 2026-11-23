@@ -1401,6 +1401,141 @@ reached: `crnet_interface_draft.h` 7, `crnet_udp_draft.h` 7,
   (C2.4 to C2.6, C2.10, C2.12, C2.13) are settled when each part is built
   on its platform.
 
+### Built on the Mac (2026-11-23, carrottus 0.5.0)
+
+By `../prompts/crnet_local_network_mac.md`; the step-by-step record, with
+every figure, is the meta repo's `prompts/crnet_local_network_record.md`.
+MacBook (Apple M5 Pro), macOS 27.0, Apple clang from Xcode.
+
+**What was built**, each declaration under its real name in `crnet.h`
+with the contract text as approved (marks removed):
+- The interface listing and addresses: `src/net/crnetinterfaces.c` (the
+  front end: every check, the list as one block in its instance's
+  quarantine, the sockaddr conversions UDP and discovery share) and
+  `backends/posix/crnetifaddrs.c` (getifaddrs; Linux's half written, not
+  compiled). `crnet_instance_get_local_ipv4_addresses()` and
+  CRNET_MAX_IPV4_STRING_LEN removed.
+- UDP sockets: `src/net/crnetudp.c` (front end) and
+  `backends/posix/crnetsockets.c` (BSD sockets, beside TCP).
+- Service discovery: `src/net/crnetdiscovery.c` (front end: checks, the
+  TXT record's wire form, the object and its ring, `_next`'s loop, the
+  report calls every backend hands replies to) and
+  `backends/apple/crnetdnssd.c` (dns_sd).
+- The wait set's UDP socket and three discovery kinds
+  (`src/net/crnetwaitset.c`).
+- Windows' listing and UDP verbs (`backends/windows/crnetwindowslocal.c`)
+  and Windows' and Linux's discovery (`backends/stub/crnetdiscoverystub.c`)
+  refuse with CR_RESULT_NOT_IMPLEMENTED_YET until their prompts build
+  them, so carrottus still builds there.
+
+**The tests' table.** One row per bullet of each draft's Tests section:
+see the record's "Run", "The tests' table". In short: every bullet is run
+on the Mac but those that are another platform's (Windows' UP read back
+off, BROADCAST on the Wi-Fi adapter, FriendlyName, SIO_UDP_CONNRESET seen
+failing first, the libdbus and dnsapi library tests and timing, Avahi's
+daemon stopped and restarted, NOT_ANSWERING on Avahi and Windows),
+Android's (card S47), or a device's (Local Network privacy, NoAuth for a
+type missing from NSBonjourServices: `../prompts/host_revamp_test.md`,
+"Carrottus Net: UDP, discovery, interfaces").
+
+**Settled and still owed:**
+- **C2.13 settled for macOS:** getifaddrs gives every link-local address
+  its scope in sin6_scope_id; none came with it embedded (macOS 27.0).
+  The extraction stays for a stack that embeds.
+- **Owed to a device app** (`../prompts/host_revamp_test.md`): C2.4 (iOS's
+  UDP send buffer), C2.6 (the errno of a send Local Network privacy
+  refuses), C2.12 (NoAuth for a type missing from NSBonjourServices). The
+  simulator runs on the Mac's kernel and has no such privacy.
+- **C2.10** is Windows' (the Windows prompt), **C2.5** Android's (card
+  S47).
+
+**What the Mac showed:**
+- UDP: the system's send buffer is 9216 bytes, which is Apple's largest
+  datagram (9217 is TOO_BIG, errno 40); with 65536 asked, 65507 goes.
+  192.0.2.1 is BIND_FAILED, errno 49. SHARED 127.0.0.1 over EXCLUSIVE
+  0.0.0.0 binds and takes every datagram to its address, as EXCLUSIVE's
+  comment says of Apple. No ICMP error reaches a later receive with no
+  option set.
+- Discovery: two identical adverts of one host (same name, port and TXT)
+  are one service to mDNSResponder, both REGISTERED; a second with
+  different records ends with NAME_CONFLICT (dns_sd -65548). The test uses
+  different records; the draft's "a second advert of the same name and
+  type" holds for different records only (for you, below).
+- Discovery: one FOUND per interface the service is on (lo0 and en0
+  here), one LOST for each when it goes, after a clean exit and after a
+  SIGKILL alike (LOST within about 1.2 s both ways).
+- A resolve on any interface (0) looks the host's addresses up on the
+  interface that answered first only; resolving on each FOUND's interface
+  gives each interface's addresses.
+
+**For you:**
+- **The UDP draft disagrees with itself over CR_RESULT_NET_ACCESS_DENIED.**
+  The result's own text (cycle 6) says Android's EPERM at a send or receive
+  is ACCESS_DENIED; `crnet_udp_socket_send_to()`'s and `_recv_from()`'s
+  approved texts list that EPERM under SEND_FAILED and don't name
+  ACCESS_DENIED. Built as the result's text has it, on Linux only (Apple
+  never returns it, as both say); the two calls' texts are as approved.
+  Settle which, and the header follows.
+- **The Threads text on Windows' callbacks:** the approved sentence has
+  crnet_wait_set_notify called after the ring's lock is released. The
+  build wakes the set under the lock, which `crnetshared.h`'s "Wait set"
+  rule asks of every member that notifies: a remove from the set takes the
+  same lock, so it is never followed by a wake of a set the object has
+  left, and may be gone. The header leaves the sentence's clause out;
+  approve the wording "under the lock", or say otherwise before the
+  Windows build.
+- **The conflict test's premise** (above): identical adverts aren't a
+  conflict to mDNSResponder. Avahi's and Windows' answers are their
+  prompts' to record.
+- **dns_sd's codes** are recorded under CR_PLATFORM_ERROR_SOURCE_OTHER with
+  text "dns_sd: DNSServiceErrorType <n>": crcore.h has no source for them
+  (nor for Avahi's). A source of their own is a public change, a draft of
+  its own if wanted.
+
+**The wait set's change** (Part 2 of the prompt): drafted as
+`crnet_wait_set_draft.h`, for your approval (below, "The wait set's
+draft").
+
+### The wait set's draft (2026-11-23, for your approval)
+
+What the Endqueue client's critique found missing (the meta repo's
+`prompts/eqc_v21_critique_record.md`, C4.5 and C5.10), with Pigeonous's
+local carrier as a second caller: `crnet_wait_set_draft.h`, version 4.
+
+- **A scratch check of today's code first** (the record's "Part 2: the
+  scratch check"): members of every kind churned in and out of one set at
+  or below its mark. The members' array never grows below its mark; a
+  wait's poll entries grow with the members' descriptors, which change
+  with the kinds in a set (a fresh set churned with its kinds swapped
+  allocated twice at the same member count).
+- **Drafted:** `crnet_wait_set_get_instance()`; `crnet_wait_set_reserve()`
+  taking member counts per kind (`crnet_wait_set_reserve_desc`, struct
+  type 3016), the set's own memory not growing within it, room the larger
+  of two reserves on totals, the set's owner reserving for everything in
+  it; the header's "Memory" paragraph with the remove-and-add promise and
+  its conditions; carrottus 0.6.0, no break. Compared: the promise alone,
+  a reserve (taken), a change of `wait_for` in place.
+- **Critiqued in three cycles**, each by an independent reader given the
+  files: (1) the library's rules (no caller named; counts per kind, not
+  descriptor macros a caller sums; the promise limited to the set's own
+  memory; the checks' order), (2) platform truth (figures at most per
+  member and owed where not built; libcurl's unbounded; the HTTP client's
+  array; the stacks' own allocations in a wait; one member bound), (3) the
+  callers' need (two reserves compose as the larger; who reserves; what
+  the callers owe themselves).
+- **Found and fixed in 0.5.0 on the way** (cycle 2): the poll's two arrays
+  checked one capacity and grew one after the other, so a failed second
+  growth left them out of step and a Release build could read past
+  `infos`. Both capacities are compared now, an entry pushed only when both
+  have room; `crnet_test`'s "udp" part refuses the second growth twice and
+  waits again.
+- **Waiting for your approval.** Its SHA-256 (carriage returns removed,
+  card X23) is recorded here at approval; version 4 reads
+  `b329252dbd523eec61756745f182d98287c0a7f30d260e87921f452f8fbccb65`.
+  Owed by its callers, not by it: their peak counts per kind in a lent set
+  (endqueue_client's and Pigeonous's drafts), and a result for a wait that
+  runs out of memory in `pgn_instance_wait()`.
+
 ## Order to do it in
 
 0. Compiled on macOS (2026-10-08), Linux and Windows with MSVC (2026-10-14).

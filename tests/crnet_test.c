@@ -11,7 +11,10 @@
  *
  *   crnet_test <info file>          every part
  *   crnet_test <info file> <part>   one of: tcp wait resolver http tls proxy websocket
- *                                   resumable (or internet, opt-in)
+ *                                   resumable interfaces udp discovery (or internet,
+ *                                   opt-in)
+ *   crnet_test - <part>             interfaces, udp or discovery alone, which need no
+ *                                   server (each a ctest of its own)
  *
  * tests/run_crnet_test.sh starts the server, runs this and stops the
  * server again.
@@ -24,6 +27,7 @@
  */
 
 #include <crnet.h>
+#include <crperf.h>
 
 #include "crtest_allocator.h"
 
@@ -33,6 +37,7 @@
 #include <string.h>
 
 #ifdef _WIN32
+#include <intrin.h>
 #include <windows.h>
 typedef HANDLE test_thread;
 typedef DWORD  test_thread_result;
@@ -45,6 +50,8 @@ static void thread_join(test_thread thread) {
 }
 static uint64_t now_ms(void) { return (uint64_t)GetTickCount64(); }
 #else
+#include <net/if.h>
+#include <unistd.h>
 #include <pthread.h>
 #include <time.h>
 typedef pthread_t test_thread;
@@ -69,6 +76,41 @@ static uint64_t now_ms(void) {
 
 // Long enough that only something broken runs into it.
 #define PATIENCE_MS 15000u
+
+// A sanitizer slows every call and reports a race made on purpose itself,
+// so the cases that time an upper bound or race on purpose ask.
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define CRNET_TEST_SANITIZED 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#define CRNET_TEST_SANITIZED 1
+#endif
+#endif
+#ifndef CRNET_TEST_SANITIZED
+#define CRNET_TEST_SANITIZED 0
+#endif
+
+#if _DEBUG
+#define CRNET_TEST_BUILD "Debug"
+#else
+#define CRNET_TEST_BUILD "Release"
+#endif
+
+/* A flag one thread sets and another reads, whole and in order. */
+static int32_t test_atomic_load(volatile int32_t *value) {
+#ifdef _MSC_VER
+	return (int32_t)_InterlockedOr((volatile long *)value, 0);
+#else
+	return __atomic_load_n(value, __ATOMIC_SEQ_CST);
+#endif
+}
+static void test_atomic_store(volatile int32_t *value, int32_t to) {
+#ifdef _MSC_VER
+	_InterlockedExchange((volatile long *)value, to);
+#else
+	__atomic_store_n(value, to, __ATOMIC_SEQ_CST);
+#endif
+}
 
 // --------------------------------------------------------------------------
 // Reporting
@@ -559,7 +601,7 @@ static bool error_is_empty(const crnet_error *error) {
 }
 
 static void test_records(void) {
-	part("Listener abort, error records, local addresses, debug names");
+	part("Listener abort, error records, debug names");
 	crnet_error error;
 
 #if CRNET_EXT_TCP
@@ -594,26 +636,6 @@ static void test_records(void) {
 	crnet_tcp_listener_get_error(NULL, &error);
 	check(error_is_empty(&error), "a NULL listener's error record is empty");
 
-	char addresses[8][CRNET_MAX_IPV4_STRING_LEN];
-	uint32_t count = 99;
-	expect(crnet_instance_get_local_ipv4_addresses(NULL, addresses, 8, &count, &error), CR_RESULT_NET_INVALID_INSTANCE, "local addresses with no instance");
-	expect(crnet_instance_get_local_ipv4_addresses(g_instance, NULL, 8, &count, &error), CR_RESULT_NULL_OUTPUT_PARAMETER, "local addresses with nowhere to put them");
-	expect(crnet_instance_get_local_ipv4_addresses(g_instance, addresses, 8, NULL, &error), CR_RESULT_NULL_OUTPUT_PARAMETER, "local addresses with nowhere to count them");
-	if (expect(crnet_instance_get_local_ipv4_addresses(g_instance, addresses, 8, &count, NULL), CR_SUCCESS, "this machine's IPv4 addresses")) {
-		check(count <= 8, "no more than there was room for (%u)", (unsigned)count);
-		bool well_formed = true;
-		for (uint32_t i = 0; i < count && i < 8; ++i) {
-			const size_t length = strnlen(addresses[i], CRNET_MAX_IPV4_STRING_LEN);
-			if (length == 0 || length == CRNET_MAX_IPV4_STRING_LEN || !strchr(addresses[i], '.'))
-				well_formed = false;
-			else
-				note("local address %s", addresses[i]);
-		}
-		check(well_formed, "each a terminated dotted address");
-	}
-	count = 99;
-	expect(crnet_instance_get_local_ipv4_addresses(g_instance, addresses, 0, &count, NULL), CR_SUCCESS, "local addresses with room for none");
-	check(count == 0, "write none (%u)", (unsigned)count);
 #endif
 
 	crnet_wait_set set = NULL;
@@ -3258,6 +3280,1685 @@ static void test_internet(void) {
 #endif
 }
 
+// --------------------------------------------------------------------------
+// Interfaces and addresses (crnet_interface_draft.h's tests)
+// --------------------------------------------------------------------------
+
+#if CRNET_EXT_TCP
+
+#if _DEBUG
+/* Debug-only counts the library keeps on a list (src/net/crnetinterfaces.c),
+ * declared here rather than in crnet.h: they are this test's, not a caller's. */
+uint32_t crnet_interface_list_debug_embedded_scopes(crnet_interface_list list);
+uint32_t crnet_interface_list_debug_overlaps(crnet_interface_list list);
+#endif
+
+/* True when [text] is null-terminated within [capacity] and valid UTF-8. */
+static bool text_ok(const char *text, size_t capacity) {
+	const size_t length = strnlen(text, capacity);
+	if (length == capacity)
+		return false;
+	size_t i = 0;
+	while (i < length) {
+		const unsigned char lead = (unsigned char)text[i];
+		size_t              follow = lead < 0x80 ? 0 : (lead >= 0xC2 && lead <= 0xDF) ? 1 : (lead >= 0xE0 && lead <= 0xEF) ? 2 : (lead >= 0xF0 && lead <= 0xF4) ? 3 : 99;
+		if (follow == 99 || i + follow >= length + (follow ? 0 : 1))
+			return false;
+		for (size_t k = 1; k <= follow; ++k) {
+			if (((unsigned char)text[i + k] & 0xC0) != 0x80)
+				return false;
+		}
+		i += follow + 1;
+	}
+	return true;
+}
+
+static crnet_interface_properties properties_struct(void) {
+	crnet_interface_properties properties;
+	memset(&properties, 0xA5, sizeof(properties));
+	properties.base.type = CR_STRUCT_TYPE_NET_INTERFACE_PROPERTIES;
+	properties.base.next = NULL;
+	return properties;
+}
+
+static crnet_interface_address address_struct(void) {
+	crnet_interface_address address;
+	memset(&address, 0xA5, sizeof(address));
+	address.base.type = CR_STRUCT_TYPE_NET_INTERFACE_ADDRESS;
+	address.base.next = NULL;
+	return address;
+}
+
+static const char *family_name(CRNET_ADDRESS_FAMILY family) { return family == CRNET_ADDRESS_FAMILY_IPV4 ? "IPv4" : family == CRNET_ADDRESS_FAMILY_IPV6 ? "IPv6" : "?"; }
+
+/* One pass of the listing's checks. False when an interface's index and
+ * if_nametoindex disagreed, which an interface coming or going (awdl) can
+ * cause: the caller lists again once before that is a failure.
+ * [report] says whether to print what is listed. */
+static bool interfaces_check_listing(crnet_interface_list list, bool report, bool final) {
+	uint32_t count = 99;
+	if (!expect(crnet_interface_list_get_count(list, &count), CR_SUCCESS, "the count"))
+		return true;
+	bool loopback_v4 = false, loopback_v6 = false, loopback = false;
+	bool indexes_ok = true, families_ok = true, prefixes_ok = true, ports_ok = true, link_local_ok = true, others_scope_ok = true;
+	bool names_ok = true, read_twice_ok = true;
+	bool index_mismatch = false;
+	for (uint32_t i = 0; i < count; ++i) {
+		crnet_interface_properties properties = properties_struct();
+		if (!expect(crnet_interface_list_get_properties(list, i, &properties), CR_SUCCESS, "an interface"))
+			return true;
+		crnet_interface_properties again = properties_struct();
+		crnet_interface_list_get_properties(list, i, &again);
+		if (memcmp(&properties, &again, sizeof(properties)) != 0)
+			read_twice_ok = false;
+		if (!text_ok(properties.name, sizeof(properties.name)) || properties.name[0] == '\0' || !text_ok(properties.display_name, sizeof(properties.display_name)))
+			names_ok = false;
+		if (properties.index == 0 || properties.ipv6_index != properties.index)
+			indexes_ok = false;
+#ifndef _WIN32
+		const unsigned system_index = if_nametoindex(properties.name);
+		if (system_index != properties.index) {
+			index_mismatch = true;
+			if (final)
+				note("%s: listed as index %u, if_nametoindex says %u", properties.name, properties.index, system_index);
+		}
+#endif
+		const bool is_loopback = (properties.flags & CRNET_INTERFACE_FLAG_LOOPBACK) != 0;
+		loopback |= is_loopback;
+		if (report)
+			note("%-10s index %2u mtu %5u flags%s%s%s%s%s%s, %u address%s", properties.name, properties.index, properties.mtu,
+			     properties.flags & CRNET_INTERFACE_FLAG_UP ? " UP" : "", properties.flags & CRNET_INTERFACE_FLAG_RUNNING ? " RUNNING" : "",
+			     is_loopback ? " LOOPBACK" : "", properties.flags & CRNET_INTERFACE_FLAG_POINT_TO_POINT ? " P2P" : "",
+			     properties.flags & CRNET_INTERFACE_FLAG_MULTICAST ? " MULTICAST" : "", properties.flags & CRNET_INTERFACE_FLAG_BROADCAST ? " BROADCAST" : "",
+			     properties.address_count, properties.address_count == 1 ? "" : "es");
+		for (uint32_t a = 0; a < properties.address_count; ++a) {
+			crnet_interface_address address = address_struct();
+			if (!expect(crnet_interface_list_get_address(list, i, a, &address), CR_SUCCESS, "an address"))
+				return true;
+			const crnet_address *value = &address.address;
+			char                 text[CRNET_MAX_ADDRESS_STRING_LEN] = "?";
+			crnet_address_to_string(value, text);
+			if (report)
+				note("    %s %s/%u scope %u", family_name(value->family), text, address.prefix_length, value->scope_id);
+			if (value->family != CRNET_ADDRESS_FAMILY_IPV4 && value->family != CRNET_ADDRESS_FAMILY_IPV6)
+				families_ok = false;
+			const uint32_t most = value->family == CRNET_ADDRESS_FAMILY_IPV4 ? 32 : 128;
+			if (address.prefix_length > most)
+				prefixes_ok = false; // UNKNOWN is Windows only
+			if (value->port != 0 || value->reserved != 0)
+				ports_ok = false;
+			const bool link_local = value->family == CRNET_ADDRESS_FAMILY_IPV6 && value->bytes[0] == 0xFE && (value->bytes[1] & 0xC0) == 0x80;
+			if (link_local && (value->bytes[2] != 0 || value->bytes[3] != 0 || value->scope_id == 0 || value->scope_id != properties.ipv6_index))
+				link_local_ok = false;
+			if (!link_local && value->scope_id != 0)
+				others_scope_ok = false;
+			if (is_loopback && value->family == CRNET_ADDRESS_FAMILY_IPV4 && memcmp(value->bytes, "\x7f\x00\x00\x01", 4) == 0 && address.prefix_length == 8)
+				loopback_v4 = true;
+			static const uint8_t one[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+			if (is_loopback && value->family == CRNET_ADDRESS_FAMILY_IPV6 && memcmp(value->bytes, one, 16) == 0 && address.prefix_length == 128)
+				loopback_v6 = true;
+		}
+	}
+	if (index_mismatch && !final)
+		return false;
+	check(count > 0, "at least one interface (%u)", count);
+	check(loopback, "one has the LOOPBACK flag");
+	check(loopback_v4, "loopback holds 127.0.0.1/8");
+	check(loopback_v6, "loopback holds ::1/128");
+	check(names_ok, "every name null-terminated, valid UTF-8, not empty; every display name null-terminated and valid UTF-8");
+	check(indexes_ok, "every index non-zero, ipv6_index the same");
+	check(!index_mismatch, "every index agrees with if_nametoindex");
+	check(families_ok, "every address IPv4 or IPv6");
+	check(prefixes_ok, "every prefix within 0-32 or 0-128");
+	check(ports_ok, "every address's port and reserved 0");
+	check(link_local_ok, "every fe80::/10 address has bytes 2 and 3 zero and its interface's ipv6_index as its scope");
+	check(others_scope_ok, "every other address has scope 0");
+	check(read_twice_ok, "an interface read twice gives the same answer");
+	return true;
+}
+
+struct interface_reader {
+	crnet_interface_list list;
+	uint32_t             rounds;
+	volatile int32_t     stop;
+	uint32_t             failures;
+};
+
+static test_thread_result TEST_THREAD_CALL interface_read_rounds(void *argument) {
+	struct interface_reader *reader = (struct interface_reader *)argument;
+	for (uint32_t round = 0; round < reader->rounds; ++round) {
+		uint32_t count = 0;
+		if (crnet_interface_list_get_count(reader->list, &count) != CR_SUCCESS)
+			reader->failures++;
+		for (uint32_t i = 0; i < count; ++i) {
+			crnet_interface_properties properties = properties_struct();
+			if (crnet_interface_list_get_properties(reader->list, i, &properties) != CR_SUCCESS)
+				reader->failures++;
+			for (uint32_t a = 0; a < properties.address_count; ++a) {
+				crnet_interface_address address = address_struct();
+				if (crnet_interface_list_get_address(reader->list, i, a, &address) != CR_SUCCESS)
+					reader->failures++;
+			}
+		}
+	}
+	return 0;
+}
+
+#if _DEBUG
+static test_thread_result TEST_THREAD_CALL interface_read_until_stopped(void *argument) {
+	struct interface_reader *reader = (struct interface_reader *)argument;
+	uint32_t                 count  = 0;
+	while (!test_atomic_load(&reader->stop))
+		crnet_interface_list_get_count(reader->list, &count);
+	return 0;
+}
+#endif
+
+static void address_round_trip(const char *text, uint32_t scope, CRNET_ADDRESS_FAMILY family) {
+	crnet_address address;
+	memset(&address, 0xA5, sizeof(address));
+	if (!expect(crnet_address_from_string(text, 4242, scope, &address), CR_SUCCESS, text))
+		return;
+	char back[CRNET_MAX_ADDRESS_STRING_LEN];
+	const bool converted = crnet_address_to_string(&address, back) == CR_SUCCESS;
+	check(converted && strcmp(back, text) == 0 && address.family == family && address.port == 4242 && address.scope_id == scope && address.reserved == 0,
+	      "%s reads back as \"%s\", %s, port 4242, scope %u, reserved 0", text, converted ? back : "?", family_name(address.family), address.scope_id);
+}
+
+static void test_interfaces(void) {
+	part("Interfaces and addresses");
+
+	// Addresses as values: round trips, and what is refused.
+	address_round_trip("127.0.0.1", 0, CRNET_ADDRESS_FAMILY_IPV4);
+	address_round_trip("::1", 0, CRNET_ADDRESS_FAMILY_IPV6);
+	address_round_trip("fe80::1", 7, CRNET_ADDRESS_FAMILY_IPV6);
+	address_round_trip("::ffff:1.2.3.4", 0, CRNET_ADDRESS_FAMILY_IPV6);
+	{
+		// The longest text inet_pton takes; inet_ntop writes it back in
+		// RFC 5952's form, which uses the dotted tail for ::ffff:0:0/96 only.
+		const char   *longest = "ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255";
+		crnet_address address;
+		char          back[CRNET_MAX_ADDRESS_STRING_LEN];
+		check(strlen(longest) + 1 == CRNET_MAX_ADDRESS_STRING_LEN, "the longest text fits CRNET_MAX_ADDRESS_STRING_LEN exactly");
+		const bool read = crnet_address_from_string(longest, 1, 0, &address) == CR_SUCCESS && crnet_address_to_string(&address, back) == CR_SUCCESS;
+		check(read && strcmp(back, "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff") == 0, "%s is taken and written back as RFC 5952 has it (%s)", longest, read ? back : "?");
+	}
+	{
+		crnet_address address, untouched;
+		memset(&address, 0x5A, sizeof(address));
+		untouched = address;
+		expect(crnet_address_from_string("localhost", 1, 0, &address), CR_RESULT_NET_INVALID_ADDRESS, "a name is refused");
+		expect(crnet_address_from_string("127.0.0.1", 1, 3, &address), CR_RESULT_NET_INVALID_ADDRESS, "a scope on IPv4 is refused");
+		expect(crnet_address_from_string("fe80::1%lo0", 1, 0, &address), CR_RESULT_NET_INVALID_ADDRESS, "text with a '%' is refused");
+		expect(crnet_address_from_string("fe80::1%1", 1, 1, &address), CR_RESULT_NET_INVALID_ADDRESS, "text with a '%' is refused, scope given too");
+		expect(crnet_address_from_string(NULL, 1, 0, &address), CR_RESULT_NET_INVALID_ADDRESS, "NULL text is refused");
+		expect(crnet_address_from_string("", 1, 0, &address), CR_RESULT_NET_INVALID_ADDRESS, "empty text is refused");
+		expect(crnet_address_from_string("1.2.3", 1, 0, &address), CR_RESULT_NET_INVALID_ADDRESS, "a short IPv4 address is refused");
+		check(memcmp(&address, &untouched, sizeof(address)) == 0, "the output is left as it was on each refusal");
+		expect(crnet_address_from_string("127.0.0.1", 1, 0, NULL), CR_RESULT_NULL_OUTPUT_PARAMETER, "nowhere to put it");
+
+		char text[CRNET_MAX_ADDRESS_STRING_LEN];
+		memset(text, 'x', sizeof(text));
+		crnet_address bad;
+		memset(&bad, 0, sizeof(bad));
+		expect(crnet_address_to_string(&bad, text), CR_RESULT_NET_INVALID_ADDRESS, "to text: family ANY refused");
+		bad.family = CRNET_ADDRESS_FAMILY_IPV4;
+		bad.scope_id = 1;
+		expect(crnet_address_to_string(&bad, text), CR_RESULT_NET_INVALID_ADDRESS, "to text: an IPv4 scope refused");
+		bad.scope_id  = 0;
+		bad.bytes[15] = 1;
+		expect(crnet_address_to_string(&bad, text), CR_RESULT_NET_INVALID_ADDRESS, "to text: IPv4 with bytes past the fourth refused");
+		bad.bytes[15] = 0;
+		bad.reserved  = 1;
+		expect(crnet_address_to_string(&bad, text), CR_RESULT_NET_INVALID_ADDRESS, "to text: reserved not 0 refused");
+		expect(crnet_address_to_string(NULL, text), CR_RESULT_NET_INVALID_ADDRESS, "to text: NULL refused");
+		check(text[0] == 'x', "to text: the output untouched on each refusal");
+		bad.reserved = 0;
+		expect(crnet_address_to_string(&bad, NULL), CR_RESULT_NULL_OUTPUT_PARAMETER, "to text: nowhere to put it");
+	}
+
+	// The calls' argument checks, in order.
+	crnet_error          error;
+	crnet_interface_list list = (crnet_interface_list)(uintptr_t)1;
+	expect(crnet_interface_enumerate(NULL, &list, &error), CR_RESULT_NET_INVALID_INSTANCE, "enumerate with no instance");
+	expect(crnet_interface_enumerate(g_instance, NULL, &error), CR_RESULT_NULL_OUTPUT_PARAMETER, "enumerate with nowhere to put the list");
+	{
+		uint32_t                   count      = 0;
+		crnet_interface_properties properties = properties_struct();
+		crnet_interface_address    address    = address_struct();
+		expect(crnet_interface_list_get_count(NULL, &count), CR_RESULT_NET_INVALID_INTERFACE_LIST, "count of no list");
+		expect(crnet_interface_list_get_properties(NULL, 0, &properties), CR_RESULT_NET_INVALID_INTERFACE_LIST, "properties of no list");
+		expect(crnet_interface_list_get_address(NULL, 0, 0, &address), CR_RESULT_NET_INVALID_INTERFACE_LIST, "an address of no list");
+		crnet_interface_list_destroy(NULL);
+	}
+
+	// The listing itself, against the system's own view.
+	list = NULL;
+	if (!expect(crnet_interface_enumerate(g_instance, &list, &error), CR_SUCCESS, "this machine's interfaces")) {
+		note_error("enumerate", &error);
+		return;
+	}
+	if (!interfaces_check_listing(list, false, false)) {
+		// An interface came or went between the listing and the checks:
+		// once more before that counts.
+		note("an index disagreed with if_nametoindex: listing again");
+		crnet_interface_list_destroy(list);
+		list = NULL;
+		if (!expect(crnet_interface_enumerate(g_instance, &list, &error), CR_SUCCESS, "this machine's interfaces, again"))
+			return;
+	}
+	interfaces_check_listing(list, true, true);
+#if _DEBUG
+	note("fe80:: addresses that came with the scope embedded (C2.13): %u", crnet_interface_list_debug_embedded_scopes(list));
+#endif
+
+	// Out of range and wrong structs.
+	{
+		uint32_t count = 0;
+		crnet_interface_list_get_count(list, &count);
+		crnet_interface_properties properties = properties_struct();
+		crnet_interface_address    address    = address_struct();
+		expect(crnet_interface_list_get_properties(list, count, &properties), CR_RESULT_INDEX_OUT_OF_RANGE, "properties past the last");
+		expect(crnet_interface_list_get_address(list, count, 0, &address), CR_RESULT_INDEX_OUT_OF_RANGE, "an address of an interface past the last");
+		expect(crnet_interface_list_get_count(list, NULL), CR_RESULT_NULL_OUTPUT_PARAMETER, "a count with nowhere to put it");
+		if (count > 0) {
+			crnet_interface_list_get_properties(list, 0, &properties);
+			expect(crnet_interface_list_get_address(list, 0, properties.address_count, &address), CR_RESULT_INDEX_OUT_OF_RANGE, "an address past an interface's last");
+			expect(crnet_interface_list_get_properties(list, 0, NULL), CR_RESULT_NULL_OUTPUT_PARAMETER, "properties with nowhere to put them");
+			properties.base.type = CR_STRUCT_TYPE_NET_INTERFACE_ADDRESS;
+			expect(crnet_interface_list_get_properties(list, 0, &properties), CR_RESULT_STRUCT_WRONG_TYPE, "properties into another struct's type");
+			properties.base.type = CR_STRUCT_TYPE_NET_INTERFACE_PROPERTIES;
+			properties.base.next = &properties.base;
+			expect(crnet_interface_list_get_properties(list, 0, &properties), CR_RESULT_STRUCT_UNKNOWN_IN_CHAIN, "properties with something chained on");
+			if (properties.address_count > 0) {
+				expect(crnet_interface_list_get_address(list, 0, 0, NULL), CR_RESULT_NULL_OUTPUT_PARAMETER, "an address with nowhere to put it");
+				address.base.type = CR_STRUCT_TYPE_NET_INTERFACE_PROPERTIES;
+				expect(crnet_interface_list_get_address(list, 0, 0, &address), CR_RESULT_STRUCT_WRONG_TYPE, "an address into another struct's type");
+				address.base.type = CR_STRUCT_TYPE_NET_INTERFACE_ADDRESS;
+				address.base.next = &address.base;
+				expect(crnet_interface_list_get_address(list, 0, 0, &address), CR_RESULT_STRUCT_UNKNOWN_IN_CHAIN, "an address with something chained on");
+			}
+		}
+	}
+
+	// Two lists taken in a row agree on loopback.
+	{
+		crnet_interface_list second = NULL;
+		if (expect(crnet_interface_enumerate(g_instance, &second, NULL), CR_SUCCESS, "a second listing")) {
+			bool     agree = false;
+			uint32_t one_count = 0, two_count = 0;
+			crnet_interface_list_get_count(list, &one_count);
+			crnet_interface_list_get_count(second, &two_count);
+			for (uint32_t i = 0; i < one_count && !agree; ++i) {
+				crnet_interface_properties one = properties_struct();
+				crnet_interface_list_get_properties(list, i, &one);
+				if (!(one.flags & CRNET_INTERFACE_FLAG_LOOPBACK))
+					continue;
+				for (uint32_t k = 0; k < two_count; ++k) {
+					crnet_interface_properties two = properties_struct();
+					crnet_interface_list_get_properties(second, k, &two);
+					if (strcmp(one.name, two.name) != 0)
+						continue;
+					bool same = one.index == two.index && one.flags == two.flags && one.address_count == two.address_count;
+					for (uint32_t a = 0; a < one.address_count && same; ++a) {
+						crnet_interface_address x = address_struct(), y = address_struct();
+						crnet_interface_list_get_address(list, i, a, &x);
+						crnet_interface_list_get_address(second, k, a, &y);
+						same = memcmp(&x.address, &y.address, sizeof(x.address)) == 0 && x.prefix_length == y.prefix_length;
+					}
+					agree = same;
+				}
+			}
+			check(agree, "two listings in a row agree on the loopback interface");
+			crnet_interface_list_destroy(second);
+		}
+	}
+
+	// Two threads reading one list at once: allowed, nothing reported
+	// (under -tsan, nothing from ThreadSanitizer either).
+	{
+		struct interface_reader one = {list, 200, 0, 0}, two = {list, 200, 0, 0};
+		test_thread             a = thread_start(interface_read_rounds, &one);
+		test_thread             b = thread_start(interface_read_rounds, &two);
+		thread_join(a);
+		thread_join(b);
+		check(one.failures == 0 && two.failures == 0, "two threads read one list at once, every read succeeding");
+	}
+	crnet_interface_list_destroy(list);
+
+	// A destroy overlapping a read is reported by the Debug overlap check.
+	// It races on purpose, so not under a sanitizer, which would report the
+	// race itself; and only in Debug, which has the check.
+#if _DEBUG && !CRNET_TEST_SANITIZED
+	{
+		uint32_t overlaps = 0;
+		uint32_t tries    = 0;
+		for (; tries < 200 && overlaps == 0; ++tries) {
+			crnet_interface_list racing = NULL;
+			if (crnet_interface_enumerate(g_instance, &racing, NULL) != CR_SUCCESS)
+				break;
+			struct interface_reader reader = {racing, 0, 0, 0};
+			test_thread             thread = thread_start(interface_read_until_stopped, &reader);
+			sleep_ms(1);
+			crnet_interface_list_destroy(racing);
+			test_atomic_store(&reader.stop, 1);
+			thread_join(thread);
+			// The block stays in the instance's quarantine (Debug), so its
+			// count can still be read.
+			overlaps = crnet_interface_list_debug_overlaps(racing);
+		}
+		check(overlaps > 0, "a destroy overlapping a read is reported by the Debug overlap check (after %u tr%s)", tries, tries == 1 ? "y" : "ies");
+	}
+#else
+	note("the destroy-overlapping-a-read case is Debug's, and not run under a sanitizer, which reports the race itself");
+#endif
+
+	// An injected out-of-memory at the listing's copy: OUT_OF_MEMORY, no
+	// list, nothing leaked.
+	{
+		crtest_allocator     tracker;
+		CR_ALLOCATOR         allocator = crtest_allocator_make(&tracker);
+		crnet_instance_desc desc      = instance_desc(&allocator);
+		crnet_instance       instance  = NULL;
+		if (expect(crnet_instance_create(&desc, &instance, NULL), CR_SUCCESS, "an instance on a counting allocator")) {
+			const size_t before        = tracker.given;
+			tracker.refuse_after        = before; // the next allocation is refused
+			crnet_interface_list failed = (crnet_interface_list)(uintptr_t)1;
+			expect(crnet_interface_enumerate(instance, &failed, NULL), CR_RESULT_OUT_OF_MEMORY, "a listing whose copy can't be allocated");
+			check(failed == NULL, "gives no list");
+			tracker.refuse_after = SIZE_MAX;
+			crnet_interface_list fine = NULL;
+			expect(crnet_interface_enumerate(instance, &fine, NULL), CR_SUCCESS, "and the next listing is made");
+			crnet_interface_list_destroy(fine);
+			crnet_instance_destroy(instance);
+			check(crtest_allocator_clean(&tracker), "nothing leaked, every free as allocated");
+		}
+	}
+}
+
+#endif // CRNET_EXT_TCP
+
+// --------------------------------------------------------------------------
+// UDP sockets (crnet_udp_draft.h's tests)
+// --------------------------------------------------------------------------
+
+#if CRNET_EXT_UDP
+
+static crnet_udp_socket_desc udp_desc(const char *address, uint16_t port, CRNET_UDP_PORT_SHARING sharing) {
+	crnet_udp_socket_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type = CR_STRUCT_TYPE_NET_UDP_SOCKET_DESC;
+	crnet_address_from_string(address, port, 0, &desc.local);
+	desc.sharing             = sharing;
+	desc.receive_buffer_size = CRNET_SOCKET_BUFFER_SIZE_SYSTEM;
+	desc.send_buffer_size    = CRNET_SOCKET_BUFFER_SIZE_SYSTEM;
+	return desc;
+}
+
+static crnet_udp_socket udp_open(const crnet_udp_socket_desc *desc, const char *what) {
+	crnet_udp_socket socket = NULL;
+	crnet_error      error;
+	if (!expect(crnet_udp_socket_create(g_instance, desc, &socket, &error), CR_SUCCESS, what))
+		note_error(what, &error);
+	return socket;
+}
+
+static crnet_address udp_local(crnet_udp_socket socket) {
+	crnet_address address;
+	memset(&address, 0, sizeof(address));
+	crnet_udp_socket_get_local_address(socket, &address);
+	return address;
+}
+
+/* Sends [size] bytes of the pattern from [from] to [to] and receives them
+ * there: the bytes, the size and the source (equal to the sender's local
+ * address, byte for byte) all checked. */
+static void udp_round_trip(crnet_udp_socket from, crnet_udp_socket to, uint32_t size, const char *family) {
+	static uint8_t sent[9000], got[9100];
+	for (uint32_t i = 0; i < size; ++i)
+		sent[i] = pattern_at(i + size);
+	const crnet_address target = udp_local(to);
+	if (!expect(crnet_udp_socket_send_to(from, &target, size ? sent : NULL, size, 1000), CR_SUCCESS, "a datagram sent"))
+		return;
+	uint32_t      received = 99999;
+	crnet_address source;
+	memset(&source, 0xA5, sizeof(source));
+	const CR_RESULT result = crnet_udp_socket_recv_from(to, got, sizeof(got), PATIENCE_MS, &received, &source);
+	const crnet_address expected = udp_local(from);
+	check(result == CR_SUCCESS && received == size && memcmp(got, sent, size) == 0 && memcmp(&source, &expected, sizeof(source)) == 0,
+	      "%s: %u bytes arrive whole (%s, %u), from the sender's own address byte for byte", family, size, cr_result_str(result), received);
+}
+
+struct udp_abort_later {
+	uint32_t         delay_ms;
+	crnet_udp_socket socket;
+};
+
+static test_thread_result TEST_THREAD_CALL udp_abort_later_run(void *argument) {
+	struct udp_abort_later *later = (struct udp_abort_later *)argument;
+	sleep_ms(later->delay_ms);
+	crnet_udp_socket_abort(later->socket);
+	return 0;
+}
+
+struct udp_sender {
+	crnet_udp_socket socket;
+	crnet_address    to;
+	uint32_t         count;
+	uint32_t         failures;
+};
+
+static test_thread_result TEST_THREAD_CALL udp_send_from_elsewhere(void *argument) {
+	struct udp_sender *sender = (struct udp_sender *)argument;
+	const uint8_t      byte   = 7;
+	for (uint32_t i = 0; i < sender->count; ++i) {
+		if (crnet_udp_socket_send_to(sender->socket, &sender->to, &byte, 1, 1000) != CR_SUCCESS)
+			sender->failures++;
+		sleep_ms(1);
+	}
+	return 0;
+}
+
+/* Receives with CRNET_NO_WAIT until nothing is left; how many came. */
+static uint32_t udp_drain(crnet_udp_socket socket) {
+	uint8_t       buffer[2048];
+	uint32_t      count = 0, size = 0;
+	crnet_address from;
+	for (;;) {
+		const CR_RESULT result = crnet_udp_socket_recv_from(socket, buffer, sizeof(buffer), CRNET_NO_WAIT, &size, &from);
+		if (result != CR_SUCCESS && result != CR_RESULT_NET_DATAGRAM_TRUNCATED)
+			return count;
+		count++;
+	}
+}
+
+static void test_udp(void) {
+	part("UDP sockets");
+	crnet_error error;
+
+	// Round trips over IPv4 and IPv6 loopback, 0, 1, 1200 and 9000 bytes
+	// each way. 9000 needs a send buffer above Apple's 9216 default's
+	// headroom only for IPv6's larger header: both have 65536.
+	static const char *const families[2] = {"127.0.0.1", "::1"};
+	for (int f = 0; f < 2; ++f) {
+		crnet_udp_socket_desc desc = udp_desc(families[f], 0, CRNET_UDP_PORT_SHARING_EXCLUSIVE);
+		desc.send_buffer_size      = 65536;
+		desc.receive_buffer_size   = 262144;
+		crnet_udp_socket a         = udp_open(&desc, families[f]);
+		crnet_udp_socket b         = udp_open(&desc, families[f]);
+		if (!a || !b) {
+			crnet_udp_socket_destroy(a);
+			crnet_udp_socket_destroy(b);
+			continue;
+		}
+		const crnet_address local = udp_local(a);
+		check(local.port != 0 && local.family == desc.local.family && memcmp(local.bytes, desc.local.bytes, 16) == 0, "%s: port 0 got a port (%u)", families[f],
+		      local.port);
+		static const uint32_t sizes[4] = {0, 1, 1200, 9000};
+		for (int s = 0; s < 4; ++s) {
+			udp_round_trip(a, b, sizes[s], families[f]);
+			udp_round_trip(b, a, sizes[s], families[f]);
+		}
+
+		// The same address and port again: EXCLUSIVE is refused.
+		crnet_udp_socket_desc same = udp_desc(families[f], local.port, CRNET_UDP_PORT_SHARING_EXCLUSIVE);
+		crnet_udp_socket      c    = NULL;
+		expect(crnet_udp_socket_create(g_instance, &same, &c, &error), CR_RESULT_NET_ADDRESS_IN_USE, "the same address and port again, EXCLUSIVE");
+		check(c == NULL, "gives no socket");
+		same.sharing = CRNET_UDP_PORT_SHARING_SHARED;
+		expect(crnet_udp_socket_create(g_instance, &same, &c, &error), CR_RESULT_NET_ADDRESS_IN_USE, "SHARED over an EXCLUSIVE holder");
+		crnet_udp_socket_destroy(a);
+		crnet_udp_socket_destroy(b);
+	}
+
+	// SHARED on both: both bind.
+	{
+		crnet_udp_socket_desc desc  = udp_desc("127.0.0.1", 0, CRNET_UDP_PORT_SHARING_SHARED);
+		crnet_udp_socket      first = udp_open(&desc, "a SHARED socket");
+		if (first) {
+			desc.local.port           = udp_local(first).port;
+			crnet_udp_socket second = udp_open(&desc, "a second SHARED socket on the same port binds");
+			crnet_udp_socket_destroy(second);
+			crnet_udp_socket_destroy(first);
+		}
+	}
+
+	// Port sharing across addresses: recorded against EXCLUSIVE's comment
+	// (Apple binds both; Windows the wildcard over the specific; Linux
+	// neither).
+	{
+		crnet_udp_socket_desc wild = udp_desc("0.0.0.0", 0, CRNET_UDP_PORT_SHARING_EXCLUSIVE);
+		crnet_udp_socket      any  = udp_open(&wild, "EXCLUSIVE on 0.0.0.0");
+		if (any) {
+			crnet_udp_socket_desc specific = udp_desc("127.0.0.1", udp_local(any).port, CRNET_UDP_PORT_SHARING_SHARED);
+			crnet_udp_socket      over     = NULL;
+			const CR_RESULT       result   = crnet_udp_socket_create(g_instance, &specific, &over, NULL);
+#if defined(__APPLE__)
+			expect(result, CR_SUCCESS, "SHARED on 127.0.0.1 over EXCLUSIVE 0.0.0.0, same port (Apple binds both)");
+#elif defined(__linux__)
+			expect(result, CR_RESULT_NET_ADDRESS_IN_USE, "SHARED on 127.0.0.1 over EXCLUSIVE 0.0.0.0, same port (Linux refuses)");
+#else
+			note("SHARED on 127.0.0.1 over EXCLUSIVE 0.0.0.0, same port: %s", cr_result_str(result));
+#endif
+			if (over && result == CR_SUCCESS) {
+				// The more specific socket takes what is sent to its address.
+				crnet_udp_socket_desc sender_desc = udp_desc("127.0.0.1", 0, CRNET_UDP_PORT_SHARING_EXCLUSIVE);
+				crnet_udp_socket      sender      = udp_open(&sender_desc, "a sender");
+				if (sender) {
+					crnet_address target = udp_local(over);
+					const uint8_t byte   = 1;
+					for (int i = 0; i < 10; ++i)
+						crnet_udp_socket_send_to(sender, &target, &byte, 1, 1000);
+					sleep_ms(50);
+					const uint32_t at_specific = udp_drain(over), at_wildcard = udp_drain(any);
+					note("ten datagrams to 127.0.0.1: %u reached the specific socket, %u the wildcard", at_specific, at_wildcard);
+					crnet_udp_socket_destroy(sender);
+				}
+			}
+			crnet_udp_socket_destroy(over);
+			crnet_udp_socket_destroy(any);
+		}
+		crnet_udp_socket_desc specific = udp_desc("127.0.0.1", 0, CRNET_UDP_PORT_SHARING_EXCLUSIVE);
+		crnet_udp_socket      one      = udp_open(&specific, "EXCLUSIVE on 127.0.0.1");
+		if (one) {
+			crnet_udp_socket_desc wildcard = udp_desc("0.0.0.0", udp_local(one).port, CRNET_UDP_PORT_SHARING_SHARED);
+			crnet_udp_socket      over     = NULL;
+			const CR_RESULT       result   = crnet_udp_socket_create(g_instance, &wildcard, &over, NULL);
+#if defined(__APPLE__)
+			expect(result, CR_SUCCESS, "SHARED on 0.0.0.0 over EXCLUSIVE 127.0.0.1, same port (Apple binds both)");
+#elif defined(_WIN32)
+			expect(result, CR_SUCCESS, "SHARED on 0.0.0.0 over EXCLUSIVE 127.0.0.1, same port (Windows binds the wildcard)");
+#else
+			expect(result, CR_RESULT_NET_ADDRESS_IN_USE, "SHARED on 0.0.0.0 over EXCLUSIVE 127.0.0.1, same port (Linux refuses)");
+#endif
+			crnet_udp_socket_destroy(over);
+			crnet_udp_socket_destroy(one);
+		}
+	}
+
+	// Truncation: 1200 bytes into 100, then the next datagram whole.
+	{
+		crnet_udp_socket_desc desc = udp_desc("127.0.0.1", 0, CRNET_UDP_PORT_SHARING_EXCLUSIVE);
+		crnet_udp_socket      a    = udp_open(&desc, "a sender");
+		crnet_udp_socket      b    = udp_open(&desc, "a receiver");
+		if (a && b) {
+			uint8_t big[1200], small[100], next[16];
+			for (uint32_t i = 0; i < sizeof(big); ++i)
+				big[i] = pattern_at(i);
+			memset(next, 0x42, sizeof(next));
+			const crnet_address target = udp_local(b);
+			crnet_udp_socket_send_to(a, &target, big, sizeof(big), 1000);
+			crnet_udp_socket_send_to(a, &target, next, sizeof(next), 1000);
+			uint32_t      size = 0;
+			crnet_address from;
+			memset(&from, 0xA5, sizeof(from));
+			expect(crnet_udp_socket_recv_from(b, small, sizeof(small), PATIENCE_MS, &size, &from), CR_RESULT_NET_DATAGRAM_TRUNCATED,
+			       "1200 bytes into a 100-byte buffer");
+			const crnet_address source = udp_local(a);
+			check(size == 100 && memcmp(small, big, 100) == 0 && memcmp(&from, &source, sizeof(from)) == 0, "its first 100 bytes and its source handed over");
+			uint8_t buffer[2048];
+			expect(crnet_udp_socket_recv_from(b, buffer, sizeof(buffer), PATIENCE_MS, &size, &from), CR_SUCCESS, "the next receive");
+			check(size == sizeof(next) && memcmp(buffer, next, sizeof(next)) == 0, "gets the next datagram, not the rest");
+		}
+		crnet_udp_socket_destroy(a);
+		crnet_udp_socket_destroy(b);
+	}
+
+	// Too big: Apple's default send buffer is the largest datagram.
+	{
+		crnet_udp_socket_desc desc = udp_desc("127.0.0.1", 0, CRNET_UDP_PORT_SHARING_EXCLUSIVE);
+		desc.receive_buffer_size   = 262144;
+		crnet_udp_socket a         = udp_open(&desc, "a socket with the system's send buffer");
+		desc.send_buffer_size      = 65536;
+		crnet_udp_socket big       = udp_open(&desc, "a socket with a 65536-byte send buffer");
+		static uint8_t   bytes[70000];
+		if (a && big) {
+			const crnet_address target = udp_local(big);
+			uint32_t            receive = 0, send = 0;
+			crnet_udp_socket_get_buffer_sizes(a, &receive, &send);
+			note("the system's send buffer: %u bytes", send);
+#if defined(__APPLE__)
+			expect(crnet_udp_socket_send_to(a, &target, bytes, 9216, 1000), CR_SUCCESS, "9216 bytes with the system's send buffer");
+			expect(crnet_udp_socket_send_to(a, &target, bytes, 9217, 1000), CR_RESULT_NET_DATAGRAM_TOO_BIG, "9217 bytes with it");
+			crnet_error record;
+			crnet_udp_socket_get_error(a, CRNET_ERROR_SIDE_SENDING, &record);
+			note_error("9217 bytes", &record);
+#endif
+			const crnet_address back = udp_local(a);
+			expect(crnet_udp_socket_send_to(big, &back, bytes, 65507, 1000), CR_SUCCESS, "65507 bytes with a 65536-byte send buffer");
+			expect(crnet_udp_socket_send_to(big, &back, bytes, 65508, 1000), CR_RESULT_NET_DATAGRAM_TOO_BIG, "65508 bytes with it");
+			expect(crnet_udp_socket_send_to(big, &back, bytes, 70000, 1000), CR_RESULT_NET_DATAGRAM_TOO_BIG, "70000 bytes");
+			udp_drain(a);
+			udp_drain(big);
+		}
+		crnet_udp_socket_destroy(a);
+		crnet_udp_socket_destroy(big);
+	}
+
+	// The ICMP rule: a send to a port nobody holds, then a receive, is
+	// TIMED_OUT, and the next send goes.
+	{
+		crnet_udp_socket_desc desc   = udp_desc("127.0.0.1", 0, CRNET_UDP_PORT_SHARING_EXCLUSIVE);
+		crnet_udp_socket      a      = udp_open(&desc, "a socket");
+		crnet_udp_socket      gone   = udp_open(&desc, "a socket to close");
+		if (a && gone) {
+			const crnet_address nobody = udp_local(gone);
+			crnet_udp_socket_destroy(gone);
+			gone               = NULL;
+			const uint8_t byte = 1;
+			expect(crnet_udp_socket_send_to(a, &nobody, &byte, 1, 1000), CR_SUCCESS, "a send to a port nobody holds");
+			sleep_ms(50);
+			uint8_t       buffer[16];
+			uint32_t      size = 0;
+			crnet_address from;
+			expect(crnet_udp_socket_recv_from(a, buffer, sizeof(buffer), CRNET_NO_WAIT, &size, &from), CR_RESULT_NET_TIMED_OUT, "then a receive: TIMED_OUT, no failure");
+			expect(crnet_udp_socket_send_to(a, &nobody, &byte, 1, 1000), CR_SUCCESS, "and the next send goes");
+		}
+		crnet_udp_socket_destroy(gone);
+		crnet_udp_socket_destroy(a);
+	}
+
+	// Families: each socket refuses the other family; an IPv6 socket on ::
+	// receives nothing sent to 127.0.0.1.
+	{
+		crnet_udp_socket_desc four_desc = udp_desc("127.0.0.1", 0, CRNET_UDP_PORT_SHARING_EXCLUSIVE);
+		crnet_udp_socket_desc six_desc  = udp_desc("::", 0, CRNET_UDP_PORT_SHARING_EXCLUSIVE);
+		crnet_udp_socket      four      = udp_open(&four_desc, "an IPv4 socket");
+		crnet_udp_socket      six       = udp_open(&six_desc, "an IPv6 socket on ::");
+		if (four && six) {
+			crnet_address six_target, four_target;
+			crnet_address_from_string("::1", udp_local(six).port, 0, &six_target);
+			crnet_address_from_string("127.0.0.1", udp_local(six).port, 0, &four_target);
+			const uint8_t byte = 1;
+			expect(crnet_udp_socket_send_to(four, &six_target, &byte, 1, 1000), CR_RESULT_NET_INVALID_ADDRESS, "an IPv4 socket refuses an IPv6 destination");
+			crnet_address four_local = udp_local(four);
+			expect(crnet_udp_socket_send_to(six, &four_local, &byte, 1, 1000), CR_RESULT_NET_INVALID_ADDRESS, "an IPv6 socket refuses an IPv4 destination");
+			expect(crnet_udp_socket_send_to(four, &four_target, &byte, 1, 1000), CR_SUCCESS, "a send to 127.0.0.1 on the IPv6 socket's port");
+			uint8_t       buffer[16];
+			uint32_t      size = 0;
+			crnet_address from;
+			expect(crnet_udp_socket_recv_from(six, buffer, sizeof(buffer), 100, &size, &from), CR_RESULT_NET_TIMED_OUT, "the IPv6 socket on :: receives none of it (V6ONLY)");
+		}
+		crnet_udp_socket_destroy(four);
+		crnet_udp_socket_destroy(six);
+	}
+
+	// Buffer sizes.
+	{
+		crnet_udp_socket_desc desc = udp_desc("127.0.0.1", 0, CRNET_UDP_PORT_SHARING_EXCLUSIVE);
+		crnet_udp_socket      sys  = udp_open(&desc, "the system's buffer sizes");
+		desc.receive_buffer_size   = 262144;
+		desc.send_buffer_size      = 262144;
+		crnet_udp_socket asked     = udp_open(&desc, "262144-byte buffers asked for");
+		if (sys && asked) {
+			uint32_t receive = 0, send = 0;
+			expect(crnet_udp_socket_get_buffer_sizes(sys, &receive, &send), CR_SUCCESS, "the system's sizes read back");
+			note("the system's: receive %u, send %u", receive, send);
+			check(receive > 0 && send > 0, "both non-zero");
+			expect(crnet_udp_socket_get_buffer_sizes(asked, &receive, &send), CR_SUCCESS, "the asked-for sizes read back");
+			note("asked 262144: receive %u, send %u", receive, send);
+			check(receive >= 262144 && send >= 262144, "at least what was asked (no system cap reached here)");
+			expect(crnet_udp_socket_get_buffer_sizes(asked, NULL, &send), CR_RESULT_NULL_OUTPUT_PARAMETER, "with nowhere to put the receive size");
+			expect(crnet_udp_socket_get_buffer_sizes(asked, &receive, NULL), CR_RESULT_NULL_OUTPUT_PARAMETER, "with nowhere to put the send size");
+		}
+		crnet_udp_socket_destroy(sys);
+		crnet_udp_socket_destroy(asked);
+	}
+
+	// Time limits and aborts.
+	{
+		crnet_udp_socket_desc desc = udp_desc("127.0.0.1", 0, CRNET_UDP_PORT_SHARING_EXCLUSIVE);
+		crnet_udp_socket      a    = udp_open(&desc, "a socket to wait on");
+		if (a) {
+			uint8_t        buffer[16];
+			uint32_t       size = 99;
+			crnet_address  from;
+			const uint64_t started = now_ms();
+			expect(crnet_udp_socket_recv_from(a, buffer, sizeof(buffer), 50, &size, &from), CR_RESULT_NET_TIMED_OUT, "a receive with 50 ms on an empty socket");
+			const uint64_t took = now_ms() - started;
+#if CRNET_TEST_SANITIZED
+			check(took >= 50, "after 50 ms at least (%llu ms; the upper bound is checked in plain builds only, a sanitizer slows every call)",
+			      (unsigned long long)took);
+#else
+			check(took >= 50 && took <= 100, "in 50-100 ms (%llu)", (unsigned long long)took);
+#endif
+			check(size == 0, "out_size 0 on a failure");
+
+			struct udp_abort_later later  = {200, a};
+			test_thread            thread = thread_start(udp_abort_later_run, &later);
+			const uint64_t         begun  = now_ms();
+			expect(crnet_udp_socket_recv_from(a, buffer, sizeof(buffer), CRNET_WAIT_FOREVER, &size, &from), CR_RESULT_NET_ABORTED,
+			       "a receive waiting forever, aborted from another thread");
+			check(now_ms() - begun < 5000, "came back promptly");
+			thread_join(thread);
+			crnet_address target = udp_local(a);
+			const uint8_t byte   = 1;
+			expect(crnet_udp_socket_recv_from(a, buffer, sizeof(buffer), CRNET_NO_WAIT, &size, &from), CR_RESULT_NET_ABORTED, "every receive after: ABORTED");
+			expect(crnet_udp_socket_send_to(a, &target, &byte, 1, CRNET_NO_WAIT), CR_RESULT_NET_ABORTED, "every send after: ABORTED");
+		}
+		crnet_udp_socket_destroy(a);
+	}
+
+	// Wait set: INCOMING when a datagram waits, drained, not named again
+	// until the next; ROOM at once; a UDP socket, a TCP socket and a listener
+	// in one set; a send from another thread overlapping a wait; one socket
+	// in two sets.
+	{
+		crnet_udp_socket_desc desc = udp_desc("127.0.0.1", 0, CRNET_UDP_PORT_SHARING_EXCLUSIVE);
+		crnet_udp_socket      a    = udp_open(&desc, "a sender");
+		crnet_udp_socket      b    = udp_open(&desc, "a socket in a set");
+		crnet_wait_set        set = NULL, other = NULL;
+		crnet_wait_set_create(g_instance, &set, NULL);
+		crnet_wait_set_create(g_instance, &other, NULL);
+		crnet_tcp_listener_desc listen_desc;
+		memset(&listen_desc, 0, sizeof(listen_desc));
+		listen_desc.base.type        = CR_STRUCT_TYPE_NET_TCP_LISTENER_DESC;
+		listen_desc.address          = "127.0.0.1";
+		listen_desc.backlog          = 4;
+		crnet_tcp_listener listener = NULL;
+		crnet_tcp_listener_create(g_instance, &listen_desc, &listener, NULL);
+		if (a && b && set && other && listener) {
+			int  b_tag = 0, a_tag = 0, listener_tag = 0, socket_tag = 0;
+			expect(crnet_wait_set_add_udp_socket(set, b, CRNET_WAIT_FOR_INCOMING, &b_tag), CR_SUCCESS, "a UDP socket added for INCOMING");
+			expect(crnet_wait_set_add_udp_socket(set, b, CRNET_WAIT_FOR_INCOMING, &b_tag), CR_RESULT_NET_ALREADY_IN_WAIT_SET, "the same socket again");
+			expect(crnet_wait_set_add_udp_socket(other, b, CRNET_WAIT_FOR_INCOMING, &b_tag), CR_SUCCESS, "and in a second set");
+			expect(crnet_wait_set_add_tcp_listener(set, listener, &listener_tag), CR_SUCCESS, "a listener beside it");
+			uint16_t listen_port = 0;
+			crnet_tcp_listener_get_port(listener, &listen_port);
+			crnet_tcp_socket              tcp = NULL;
+			crnet_tcp_socket_create(g_instance, &tcp);
+			crnet_tcp_socket_connect_desc connect_desc;
+			memset(&connect_desc, 0, sizeof(connect_desc));
+			connect_desc.base.type  = CR_STRUCT_TYPE_NET_TCP_SOCKET_CONNECT_DESC;
+			connect_desc.address    = "127.0.0.1";
+			connect_desc.port       = listen_port;
+			connect_desc.timeout_ms = 1000;
+			crnet_tcp_socket_connect(tcp, &connect_desc);
+			expect(crnet_wait_set_add_tcp_socket(set, tcp, CRNET_WAIT_FOR_INCOMING, &socket_tag), CR_SUCCESS, "a TCP socket beside them");
+
+			crnet_wait_event events[8];
+			uint32_t         count = 0;
+			// The listener has its connection waiting: named, accepted.
+			crnet_wait_set_wait(set, 1000, events, 8, &count);
+			crnet_tcp_socket accepted = NULL;
+			crnet_tcp_listener_accept(listener, CRNET_NO_WAIT, &accepted);
+			expect(crnet_wait_set_wait(set, 50, events, 8, &count), CR_RESULT_NET_TIMED_OUT, "nothing for the UDP socket yet");
+
+			const crnet_address target = udp_local(b);
+			const uint8_t       byte   = 5;
+			crnet_udp_socket_send_to(a, &target, &byte, 1, 1000);
+			bool named = false;
+			if (expect(crnet_wait_set_wait(set, PATIENCE_MS, events, 8, &count), CR_SUCCESS, "a datagram waiting")) {
+				for (uint32_t i = 0; i < count; ++i)
+					named |= events[i].user == &b_tag && events[i].ready == CRNET_WAIT_FOR_INCOMING;
+			}
+			check(named, "names the UDP socket for INCOMING");
+			named = false;
+			if (crnet_wait_set_wait(other, PATIENCE_MS, events, 8, &count) == CR_SUCCESS)
+				named = count == 1 && events[0].user == &b_tag;
+			check(named, "the second set names it too");
+			check(udp_drain(b) == 1, "drained: one datagram");
+			expect(crnet_wait_set_wait(set, 50, events, 8, &count), CR_RESULT_NET_TIMED_OUT, "and not named again until the next");
+
+			expect(crnet_wait_set_add_udp_socket(set, a, CRNET_WAIT_FOR_ROOM, &a_tag), CR_SUCCESS, "a socket added for ROOM");
+			named = false;
+			if (crnet_wait_set_wait(set, 0, events, 8, &count) == CR_SUCCESS) {
+				for (uint32_t i = 0; i < count; ++i)
+					named |= events[i].user == &a_tag && events[i].ready == CRNET_WAIT_FOR_ROOM;
+			}
+			check(named, "ROOM named at once on an idle socket");
+			crnet_wait_set_remove_udp_socket(set, a);
+
+			// A send from another thread overlapping a wait (allowed).
+			struct udp_sender sender = {a, target, 20, 0};
+			test_thread       thread = thread_start(udp_send_from_elsewhere, &sender);
+			uint32_t          got    = 0;
+			const uint64_t    start  = now_ms();
+			while (got < 20 && now_ms() - start < PATIENCE_MS) {
+				if (crnet_wait_set_wait(set, 1000, events, 8, &count) == CR_SUCCESS)
+					got += udp_drain(b);
+			}
+			thread_join(thread);
+			check(sender.failures == 0 && got == 20, "20 datagrams sent from another thread while the set waited, all named and drained (%u)", got);
+
+			crnet_wait_set_remove_udp_socket(set, b);
+			crnet_wait_set_remove_udp_socket(other, b);
+			crnet_wait_set_remove_udp_socket(set, b); // not in it: ignored
+			crnet_wait_set_remove_udp_socket(NULL, b);
+			crnet_wait_set_remove_udp_socket(set, NULL);
+			crnet_wait_set_remove_tcp_socket(set, tcp);
+			crnet_wait_set_remove_tcp_listener(set, listener);
+			crnet_tcp_socket_destroy(accepted);
+			crnet_tcp_socket_destroy(tcp);
+		}
+		crnet_tcp_listener_destroy(listener);
+		crnet_wait_set_destroy(other);
+		crnet_wait_set_destroy(set);
+		crnet_udp_socket_destroy(a);
+		crnet_udp_socket_destroy(b);
+	}
+
+	// Argument checks, in order, and the other refusals.
+	{
+		crnet_udp_socket_desc desc   = udp_desc("127.0.0.1", 0, CRNET_UDP_PORT_SHARING_EXCLUSIVE);
+		crnet_udp_socket      socket = (crnet_udp_socket)(uintptr_t)1;
+		expect(crnet_udp_socket_create(NULL, &desc, &socket, &error), CR_RESULT_NET_INVALID_INSTANCE, "create: no instance");
+		expect(crnet_udp_socket_create(g_instance, NULL, &socket, &error), CR_RESULT_NULL_DESC, "create: no desc");
+		desc.base.type = CR_STRUCT_TYPE_NET_TCP_LISTENER_DESC;
+		expect(crnet_udp_socket_create(g_instance, &desc, &socket, &error), CR_RESULT_STRUCT_WRONG_TYPE, "create: another desc's type");
+		desc.base.type                   = CR_STRUCT_TYPE_NET_UDP_SOCKET_DESC;
+		const CR_STRUCT_BASE chained    = {CR_STRUCT_TYPE_NET_RESOLVER_DESC, NULL};
+		desc.base.next                   = &chained;
+		expect(crnet_udp_socket_create(g_instance, &desc, &socket, &error), CR_RESULT_STRUCT_UNKNOWN_IN_CHAIN, "create: something chained on");
+		desc.base.next = NULL;
+		expect(crnet_udp_socket_create(g_instance, &desc, NULL, &error), CR_RESULT_NULL_OUTPUT_PARAMETER, "create: nowhere to put the socket");
+		crnet_udp_socket_desc bad = desc;
+		bad.local.family          = CRNET_ADDRESS_FAMILY_ANY;
+		expect(crnet_udp_socket_create(g_instance, &bad, &socket, &error), CR_RESULT_NET_INVALID_ADDRESS, "create: family ANY");
+		check(socket == NULL, "create: no socket on a refusal");
+		bad              = desc;
+		bad.local.reserved = 1;
+		expect(crnet_udp_socket_create(g_instance, &bad, &socket, &error), CR_RESULT_NET_INVALID_ADDRESS, "create: reserved not 0");
+		bad                = desc;
+		bad.local.scope_id = 1;
+		expect(crnet_udp_socket_create(g_instance, &bad, &socket, &error), CR_RESULT_NET_INVALID_ADDRESS, "create: IPv4 with a scope");
+		bad          = desc;
+		bad.sharing  = CRNET_UDP_PORT_SHARING_NONE;
+		expect(crnet_udp_socket_create(g_instance, &bad, &socket, &error), CR_RESULT_DESC_INVALID_PARAMETERS, "create: sharing NONE");
+		bad.sharing  = (CRNET_UDP_PORT_SHARING)7;
+		expect(crnet_udp_socket_create(g_instance, &bad, &socket, &error), CR_RESULT_DESC_INVALID_PARAMETERS, "create: sharing no value of its enum");
+		bad                     = desc;
+		bad.receive_buffer_size = 0;
+		expect(crnet_udp_socket_create(g_instance, &bad, &socket, &error), CR_RESULT_DESC_INVALID_PARAMETERS, "create: a receive buffer of 0");
+		bad                  = desc;
+		bad.send_buffer_size = 0;
+		expect(crnet_udp_socket_create(g_instance, &bad, &socket, &error), CR_RESULT_DESC_INVALID_PARAMETERS, "create: a send buffer of 0");
+		crnet_udp_socket_desc unheld = udp_desc("192.0.2.1", 0, CRNET_UDP_PORT_SHARING_EXCLUSIVE);
+		if (expect(crnet_udp_socket_create(g_instance, &unheld, &socket, &error), CR_RESULT_NET_BIND_FAILED, "create: an address this machine doesn't hold (192.0.2.1)"))
+			note_error("192.0.2.1", &error);
+
+		crnet_udp_socket a = udp_open(&desc, "a socket for the call checks");
+		if (a) {
+			crnet_address  to   = udp_local(a);
+			uint8_t        byte = 0;
+			uint32_t       size = 77;
+			crnet_address  from;
+			memset(&from, 0x5A, sizeof(from));
+			const crnet_address untouched = from;
+			expect(crnet_udp_socket_send_to(NULL, &to, &byte, 1, 0), CR_RESULT_NET_INVALID_UDP_SOCKET, "send: no socket");
+			expect(crnet_udp_socket_send_to(a, NULL, &byte, 1, 0), CR_RESULT_NET_INVALID_ADDRESS, "send: no destination");
+			crnet_address zero_port = to;
+			zero_port.port          = 0;
+			expect(crnet_udp_socket_send_to(a, &zero_port, &byte, 1, 0), CR_RESULT_NET_INVALID_ADDRESS, "send: port 0");
+			expect(crnet_udp_socket_send_to(a, &to, NULL, 1, 0), CR_RESULT_ZERO_SIZE, "send: NULL data with a size");
+			expect(crnet_udp_socket_send_to(a, &to, NULL, 0, 0), CR_SUCCESS, "send: NULL and 0, an empty datagram");
+			uint8_t buffer[8];
+			expect(crnet_udp_socket_recv_from(a, buffer, sizeof(buffer), PATIENCE_MS, &size, &from), CR_SUCCESS, "which arrives");
+			check(size == 0, "empty");
+			expect(crnet_udp_socket_recv_from(a, buffer, sizeof(buffer), 0, NULL, &from), CR_RESULT_NULL_OUTPUT_PARAMETER, "receive: nowhere for the size");
+			size = 77;
+			expect(crnet_udp_socket_recv_from(NULL, buffer, sizeof(buffer), 0, &size, &from), CR_RESULT_NET_INVALID_UDP_SOCKET, "receive: no socket");
+			check(size == 0, "receive: the size 0 on a failure");
+			memcpy(&from, &untouched, sizeof(from));
+			expect(crnet_udp_socket_recv_from(a, NULL, 8, 0, &size, &from), CR_RESULT_ZERO_SIZE, "receive: into NULL");
+			expect(crnet_udp_socket_recv_from(a, buffer, 0, 0, &size, &from), CR_RESULT_ZERO_SIZE, "receive: into 0 bytes");
+			expect(crnet_udp_socket_recv_from(a, buffer, sizeof(buffer), 0, &size, NULL), CR_RESULT_NULL_OUTPUT_PARAMETER, "receive: nowhere for the source");
+			expect(crnet_udp_socket_recv_from(a, buffer, sizeof(buffer), CRNET_NO_WAIT, &size, &from), CR_RESULT_NET_TIMED_OUT, "receive: nothing there");
+			check(memcmp(&from, &untouched, sizeof(from)) == 0, "receive: the source untouched on each of those");
+			expect(crnet_udp_socket_get_local_address(NULL, &to), CR_RESULT_NET_INVALID_UDP_SOCKET, "local address: no socket");
+			expect(crnet_udp_socket_get_local_address(a, NULL), CR_RESULT_NULL_OUTPUT_PARAMETER, "local address: nowhere to put it");
+			uint32_t r = 0, s = 0;
+			expect(crnet_udp_socket_get_buffer_sizes(NULL, &r, &s), CR_RESULT_NET_INVALID_UDP_SOCKET, "buffer sizes: no socket");
+			crnet_error record;
+			memset(&record, 0xA5, sizeof(record));
+			crnet_udp_socket_get_error(NULL, CRNET_ERROR_SIDE_SENDING, &record);
+			check(error_is_empty(&record), "a NULL socket's error record is empty");
+			crnet_udp_socket_abort(NULL);
+			crnet_udp_socket_destroy(NULL);
+
+			crnet_wait_set set = NULL;
+			crnet_wait_set_create(g_instance, &set, NULL);
+			int tag = 0;
+			expect(crnet_wait_set_add_udp_socket(NULL, a, CRNET_WAIT_FOR_INCOMING, &tag), CR_RESULT_NET_INVALID_WAIT_SET, "add: no set");
+			expect(crnet_wait_set_add_udp_socket(set, NULL, CRNET_WAIT_FOR_INCOMING, &tag), CR_RESULT_NET_INVALID_UDP_SOCKET, "add: no socket");
+			expect(crnet_wait_set_add_udp_socket(set, a, 0, &tag), CR_RESULT_DESC_INVALID_PARAMETERS, "add: wait_for 0");
+			expect(crnet_wait_set_add_udp_socket(set, a, 4, &tag), CR_RESULT_DESC_INVALID_PARAMETERS, "add: a bit that isn't CRNET_WAIT_FOR's");
+			crnet_instance_desc other_desc = instance_desc(&g_system);
+			crnet_instance      other      = NULL;
+			if (crnet_instance_create(&other_desc, &other, NULL) == CR_SUCCESS) {
+				crnet_wait_set other_set = NULL;
+				crnet_wait_set_create(other, &other_set, NULL);
+				expect(crnet_wait_set_add_udp_socket(other_set, a, CRNET_WAIT_FOR_INCOMING, &tag), CR_RESULT_NET_INVALID_INSTANCE, "add: a set of another instance");
+				crnet_wait_set_destroy(other_set);
+				crnet_instance_destroy(other);
+			}
+			crnet_wait_set_destroy(set);
+		}
+		crnet_udp_socket_destroy(a);
+	}
+
+	// An injected out-of-memory at the create and at the wait set's add.
+	{
+		crtest_allocator     tracker;
+		CR_ALLOCATOR         allocator = crtest_allocator_make(&tracker);
+		crnet_instance_desc idesc     = instance_desc(&allocator);
+		crnet_instance       instance  = NULL;
+		if (expect(crnet_instance_create(&idesc, &instance, NULL), CR_SUCCESS, "an instance on a counting allocator")) {
+			crnet_udp_socket_desc desc = udp_desc("127.0.0.1", 0, CRNET_UDP_PORT_SHARING_EXCLUSIVE);
+			crnet_udp_socket      s    = (crnet_udp_socket)(uintptr_t)1;
+			tracker.refuse_after        = tracker.given;
+			expect(crnet_udp_socket_create(instance, &desc, &s, NULL), CR_RESULT_OUT_OF_MEMORY, "a create whose socket can't be allocated");
+			check(s == NULL, "gives no socket");
+			tracker.refuse_after = SIZE_MAX;
+			crnet_wait_set set   = NULL;
+			if (expect(crnet_udp_socket_create(instance, &desc, &s, NULL), CR_SUCCESS, "then a socket") &&
+			    expect(crnet_wait_set_create(instance, &set, NULL), CR_SUCCESS, "and a set")) {
+				int tag              = 0;
+				tracker.refuse_after = tracker.given;
+				expect(crnet_wait_set_add_udp_socket(set, s, CRNET_WAIT_FOR_INCOMING, &tag), CR_RESULT_OUT_OF_MEMORY, "an add the set can't grow for");
+				tracker.refuse_after = SIZE_MAX;
+				crnet_wait_event events[2];
+				uint32_t         count = 0;
+				expect(crnet_wait_set_wait(set, 0, events, 2, &count), CR_RESULT_NET_TIMED_OUT, "the set is as it was: empty");
+				expect(crnet_wait_set_add_udp_socket(set, s, CRNET_WAIT_FOR_INCOMING, &tag), CR_SUCCESS, "and the next add goes");
+				crnet_wait_set_remove_udp_socket(set, s);
+
+				// A wait's two arrays of poll entries growing, the second
+				// refused, twice: the set's next wait works and reads
+				// nothing past either (ASan sees any such read).
+				crnet_udp_socket many[20] = {0};
+				int              tags[20];
+				bool             made = true;
+				for (int i = 0; i < 20 && made; ++i)
+					made = crnet_udp_socket_create(instance, &desc, &many[i], NULL) == CR_SUCCESS &&
+					       crnet_wait_set_add_udp_socket(set, many[i], CRNET_WAIT_FOR_INCOMING, &tags[i]) == CR_SUCCESS;
+				if (expect(made ? CR_SUCCESS : CR_RESULT_OUT_OF_MEMORY, CR_SUCCESS, "twenty sockets in the set")) {
+					crnet_wait_event events2[4];
+					uint32_t         count2 = 0;
+					// The set has waited before, so it has 16 entries' room;
+					// this wait needs 21: 32 each, the second (the second
+					// array's) refused.
+					tracker.refuse_only = tracker.asked + 2;
+					expect(crnet_wait_set_wait(set, 0, events2, 4, &count2), CR_RESULT_OUT_OF_MEMORY, "a wait whose second array can't grow");
+					tracker.refuse_only = tracker.asked + 1;
+					expect(crnet_wait_set_wait(set, 0, events2, 4, &count2), CR_RESULT_OUT_OF_MEMORY, "the next, its growth refused again");
+					tracker.refuse_only = 0;
+					expect(crnet_wait_set_wait(set, 0, events2, 4, &count2), CR_RESULT_NET_TIMED_OUT, "then a wait with room: nothing to name");
+				}
+				for (int i = 0; i < 20; ++i) {
+					crnet_wait_set_remove_udp_socket(set, many[i]);
+					crnet_udp_socket_destroy(many[i]);
+				}
+			}
+			crnet_wait_set_destroy(set);
+			crnet_udp_socket_destroy(s);
+			crnet_instance_destroy(instance);
+			check(crtest_allocator_clean(&tracker), "nothing leaked, every free as allocated");
+		}
+	}
+}
+
+#endif // CRNET_EXT_UDP
+
+// --------------------------------------------------------------------------
+// Service discovery (crnet_discovery_draft.h's tests)
+// --------------------------------------------------------------------------
+
+#if CRNET_EXT_DISCOVERY
+
+// Every wait for an event is bounded: a refused permission or a stopped
+// mDNSResponder fails the check rather than hanging the test.
+#define DISCOVERY_BOUND_MS 5000u
+#define DISCOVERY_TYPE     "_crnettest._udp"
+
+static char g_discovery_name[CRNET_SERVICE_NAME_CAPACITY];
+
+static crnet_service_advert_desc advert_desc(const char *name, uint16_t port, const crnet_service_txt_entry *entries, uint32_t count) {
+	crnet_service_advert_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type       = CR_STRUCT_TYPE_NET_SERVICE_ADVERT_DESC;
+	desc.name            = name;
+	desc.type            = DISCOVERY_TYPE;
+	desc.port            = port;
+	desc.scope           = CRNET_DISCOVERY_SCOPE_ALL_INTERFACES;
+	desc.txt_entries     = entries;
+	desc.txt_entry_count = count;
+	return desc;
+}
+
+static crnet_service_browser_desc browser_desc(const char *type, uint32_t capacity) {
+	crnet_service_browser_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type      = CR_STRUCT_TYPE_NET_SERVICE_BROWSER_DESC;
+	desc.type           = type;
+	desc.scope          = CRNET_DISCOVERY_SCOPE_ALL_INTERFACES;
+	desc.event_capacity = capacity;
+	return desc;
+}
+
+static crnet_service_resolver_desc resolver_desc(const char *name, uint32_t interface_index, CRNET_ADDRESS_FAMILY family, uint32_t capacity) {
+	crnet_service_resolver_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type       = CR_STRUCT_TYPE_NET_SERVICE_RESOLVER_DESC;
+	desc.name            = name;
+	desc.type            = DISCOVERY_TYPE;
+	desc.interface_index = interface_index;
+	desc.family          = family;
+	desc.event_capacity  = capacity;
+	return desc;
+}
+
+static crnet_service_advert_event advert_event(void) {
+	crnet_service_advert_event event;
+	memset(&event, 0xA5, sizeof(event));
+	event.base.type = CR_STRUCT_TYPE_NET_SERVICE_ADVERT_EVENT;
+	event.base.next = NULL;
+	return event;
+}
+
+static crnet_service_browse_event browse_event(void) {
+	crnet_service_browse_event event;
+	memset(&event, 0xA5, sizeof(event));
+	event.base.type = CR_STRUCT_TYPE_NET_SERVICE_BROWSE_EVENT;
+	event.base.next = NULL;
+	return event;
+}
+
+static crnet_service_resolve_event resolve_event(void) {
+	crnet_service_resolve_event event;
+	memset(&event, 0xA5, sizeof(event));
+	event.base.type = CR_STRUCT_TYPE_NET_SERVICE_RESOLVE_EVENT;
+	event.base.next = NULL;
+	return event;
+}
+
+/* Waits up to the bound for the advert's REGISTERED, passing over a
+ * LOCAL_NETWORK_NOT_ALLOWED; the result of the last next. */
+static CR_RESULT advert_wait_registered(crnet_service_advert advert, uint64_t *out_ms) {
+	const uint64_t start = now_ms();
+	for (;;) {
+		const uint64_t elapsed = now_ms() - start;
+		if (elapsed >= DISCOVERY_BOUND_MS)
+			return CR_RESULT_NET_TIMED_OUT;
+		crnet_service_advert_event event  = advert_event();
+		const CR_RESULT            result = crnet_service_advert_next(advert, (uint32_t)(DISCOVERY_BOUND_MS - elapsed), &event);
+		if (result != CR_SUCCESS)
+			return result;
+		if (event.kind == CRNET_SERVICE_ADVERT_EVENT_LOCAL_NETWORK_NOT_ALLOWED) {
+			note("LOCAL_NETWORK_NOT_ALLOWED: answer the Local Network question for this program's parent app");
+			continue;
+		}
+		if (event.kind == CRNET_SERVICE_ADVERT_EVENT_REGISTERED) {
+			if (out_ms)
+				*out_ms = now_ms() - start;
+			return CR_SUCCESS;
+		}
+	}
+}
+
+/* Reads a browser's events for up to `ms`, counting FOUND and LOST for
+ * `name` (another machine's adverts of the type are passed over). Returns
+ * early once `found_at_least` FOUND (and `lost_at_least` LOST) are in. */
+static void browse_count(crnet_service_browser browser, const char *name, uint32_t ms, uint32_t found_at_least, uint32_t lost_at_least, uint32_t *found,
+                         uint32_t *lost, uint32_t *first_interface, uint32_t *dropped) {
+	const uint64_t start = now_ms();
+	while (now_ms() - start < ms) {
+		if (*found >= found_at_least && *lost >= lost_at_least && found_at_least + lost_at_least > 0)
+			return;
+		crnet_service_browse_event event  = browse_event();
+		const uint32_t             left   = (uint32_t)(ms - (now_ms() - start));
+		const CR_RESULT            result = crnet_service_browser_next(browser, left > 100 ? 100 : left, &event);
+		if (result == CR_RESULT_NET_TIMED_OUT)
+			continue;
+		if (result != CR_SUCCESS) {
+			note("browser_next: %s", cr_result_str(result));
+			return;
+		}
+		if (event.kind == CRNET_SERVICE_BROWSE_EVENT_EVENTS_DROPPED) {
+			if (dropped)
+				(*dropped)++;
+			continue;
+		}
+		if (strcmp(event.name, name) != 0)
+			continue;
+		if (event.kind == CRNET_SERVICE_BROWSE_EVENT_FOUND) {
+			if (*found == 0 && first_interface)
+				*first_interface = event.interface_index;
+			note("FOUND %s on interface %u", event.name, event.interface_index);
+			(*found)++;
+		} else if (event.kind == CRNET_SERVICE_BROWSE_EVENT_LOST) {
+			note("LOST %s on interface %u", event.name, event.interface_index);
+			(*lost)++;
+		}
+	}
+}
+
+/* True when `address` is one the interface listing holds (port aside). */
+static bool listed_address(const crnet_address *address) {
+	crnet_interface_list list = NULL;
+	if (crnet_interface_enumerate(g_instance, &list, NULL) != CR_SUCCESS)
+		return false;
+	bool     found = false;
+	uint32_t count = 0;
+	crnet_interface_list_get_count(list, &count);
+	for (uint32_t i = 0; i < count && !found; ++i) {
+		crnet_interface_properties properties = properties_struct();
+		crnet_interface_list_get_properties(list, i, &properties);
+		for (uint32_t a = 0; a < properties.address_count && !found; ++a) {
+			crnet_interface_address held = address_struct();
+			crnet_interface_list_get_address(list, i, a, &held);
+			found = held.address.family == address->family && memcmp(held.address.bytes, address->bytes, 16) == 0 && held.address.scope_id == address->scope_id;
+		}
+	}
+	crnet_interface_list_destroy(list);
+	return found;
+}
+
+struct discovery_abort_later {
+	uint32_t delay_ms;
+	void (*abort)(void *);
+	void *object;
+};
+
+static void abort_browser(void *object) { crnet_service_browser_abort((crnet_service_browser)object); }
+
+static test_thread_result TEST_THREAD_CALL discovery_abort_later_run(void *argument) {
+	struct discovery_abort_later *later = (struct discovery_abort_later *)argument;
+	sleep_ms(later->delay_ms);
+	later->abort(later->object);
+	return 0;
+}
+
+static void test_discovery(void) {
+	part("Service discovery");
+	crnet_error error;
+#ifdef _WIN32
+	snprintf(g_discovery_name, sizeof(g_discovery_name), "crnettest-%lu", (unsigned long)GetCurrentProcessId());
+#else
+	snprintf(g_discovery_name, sizeof(g_discovery_name), "crnettest-%ld", (long)getpid());
+#endif
+	note("instance name %s, type %s", g_discovery_name, DISCOVERY_TYPE);
+
+	// A zeroed event of each kind reads NONE.
+	{
+		crnet_service_advert_event  a;
+		crnet_service_browse_event  b;
+		crnet_service_resolve_event r;
+		memset(&a, 0, sizeof(a));
+		memset(&b, 0, sizeof(b));
+		memset(&r, 0, sizeof(r));
+		check(a.kind == CRNET_SERVICE_ADVERT_EVENT_NONE && b.kind == CRNET_SERVICE_BROWSE_EVENT_NONE && r.kind == CRNET_SERVICE_RESOLVE_EVENT_NONE,
+		      "a zeroed event of each kind reads NONE");
+	}
+
+	// The create's time, once, Apple's baseline (dns_sd is in libSystem,
+	// always loaded).
+	{
+		crnet_service_browser_desc desc    = browser_desc("_crnetnobody._udp", 4);
+		crnet_service_browser      browser = NULL;
+		const uint64_t             start   = (crperf_get_monotonic_time_ns() / 1000u);
+		const CR_RESULT            result  = crnet_service_browser_create(g_instance, &desc, &browser, &error);
+		const uint64_t             took    = (crperf_get_monotonic_time_ns() / 1000u) - start;
+		if (expect(result, CR_SUCCESS, "a browser for a type nobody advertises"))
+			note("a browser's create took %llu us (%s build)", (unsigned long long)took, CRNET_TEST_BUILD);
+		else
+			note_error("browser create", &error);
+
+		// Time limits and aborts.
+		if (browser) {
+			crnet_service_browse_event event   = browse_event();
+			const uint64_t             started = now_ms();
+			expect(crnet_service_browser_next(browser, 50, &event), CR_RESULT_NET_TIMED_OUT, "next with 50 ms and nothing to read");
+			const uint64_t took_ms = now_ms() - started;
+			check(took_ms >= 50, "after 50 ms at least (%llu)", (unsigned long long)took_ms);
+			expect(crnet_service_browser_next(browser, CRNET_NO_WAIT, &event), CR_RESULT_NET_TIMED_OUT, "next with CRNET_NO_WAIT and nothing to read");
+			struct discovery_abort_later later  = {200, abort_browser, browser};
+			test_thread                  thread = thread_start(discovery_abort_later_run, &later);
+			const uint64_t               begun  = now_ms();
+			expect(crnet_service_browser_next(browser, CRNET_WAIT_FOREVER, &event), CR_RESULT_NET_ABORTED, "next waiting forever, aborted from another thread");
+			check(now_ms() - begun < 5000, "came back promptly");
+			thread_join(thread);
+			expect(crnet_service_browser_next(browser, CRNET_NO_WAIT, &event), CR_RESULT_NET_ABORTED, "every next after: ABORTED");
+			crnet_service_browser_destroy(browser);
+		}
+	}
+
+	// The round: advertise, browse, resolve, and the advert gone.
+	crnet_udp_socket_desc socket_desc = udp_desc("0.0.0.0", 0, CRNET_UDP_PORT_SHARING_EXCLUSIVE);
+	crnet_udp_socket      socket      = udp_open(&socket_desc, "a UDP socket to advertise");
+	const uint16_t        port        = socket ? udp_local(socket).port : 9;
+	static const crnet_service_txt_entry entries[2] = {{"v", "1"}, {"note", "caf\xC3\xA9"}};
+	crnet_service_advert_desc            desc       = advert_desc(g_discovery_name, port, entries, 2);
+	crnet_service_advert                 advert     = NULL;
+	crnet_service_browser_desc           bdesc      = browser_desc(DISCOVERY_TYPE, 64);
+	crnet_service_browser                browser    = NULL;
+	expect(crnet_service_browser_create(g_instance, &bdesc, &browser, &error), CR_SUCCESS, "a browser of the type");
+	{
+		const uint64_t  start  = (crperf_get_monotonic_time_ns() / 1000u);
+		const CR_RESULT result = crnet_service_advert_create(g_instance, &desc, &advert, &error);
+		const uint64_t  took   = (crperf_get_monotonic_time_ns() / 1000u) - start;
+		if (!expect(result, CR_SUCCESS, "an advert")) {
+			note_error("advert create", &error);
+		} else {
+			note("an advert's create took %llu us (%s build)", (unsigned long long)took, CRNET_TEST_BUILD);
+		}
+	}
+	uint64_t registered_ms = 0;
+	if (advert && expect(advert_wait_registered(advert, &registered_ms), CR_SUCCESS, "REGISTERED within 5 s"))
+		note("REGISTERED after %llu ms", (unsigned long long)registered_ms);
+
+	uint32_t found = 0, lost = 0, interface_index = 0;
+	if (browser) {
+		// Every interface the system reports it on: wait a moment past the
+		// first so the others come too.
+		browse_count(browser, g_discovery_name, DISCOVERY_BOUND_MS, 1, 0, &found, &lost, &interface_index, NULL);
+		check(found >= 1, "the browser FOUND it (%u)", found);
+		browse_count(browser, g_discovery_name, 500, 99, 0, &found, &lost, NULL, NULL);
+	}
+
+	if (found > 0) {
+		crnet_service_resolver_desc rdesc    = resolver_desc(g_discovery_name, interface_index, CRNET_ADDRESS_FAMILY_ANY, 32);
+		crnet_service_resolver      resolver = NULL;
+		if (expect(crnet_service_resolver_create(g_instance, &rdesc, &resolver, &error), CR_SUCCESS, "a resolver of it")) {
+			bool           service = false, address = false, address_listed = false;
+			const uint64_t start   = now_ms();
+			while (now_ms() - start < DISCOVERY_BOUND_MS && !(service && address)) {
+				crnet_service_resolve_event event  = resolve_event();
+				const CR_RESULT             result = crnet_service_resolver_next(resolver, 100, &event);
+				if (result == CR_RESULT_NET_TIMED_OUT)
+					continue;
+				if (result != CR_SUCCESS) {
+					note("resolver_next: %s", cr_result_str(result));
+					break;
+				}
+				if (event.kind == CRNET_SERVICE_RESOLVE_EVENT_SERVICE) {
+					static const uint8_t wire[] = "\x03v=1\x0anote=caf\xC3\xA9";
+					note("SERVICE host %s port %u, TXT %u bytes", event.host, event.port, event.txt_size);
+					check(event.port == port, "SERVICE: the port advertised (%u)", event.port);
+					check(event.txt_size == sizeof(wire) - 1 && !event.txt_truncated && memcmp(event.txt, wire, sizeof(wire) - 1) == 0,
+					      "SERVICE: the TXT entries back in wire form");
+					check(strlen(event.host) > 0 && strlen(event.host) < CRNET_SERVICE_HOST_CAPACITY, "SERVICE: a host name");
+					service = true;
+				} else if (event.kind == CRNET_SERVICE_RESOLVE_EVENT_ADDRESS_ADDED) {
+					char text[CRNET_MAX_ADDRESS_STRING_LEN] = "?";
+					crnet_address_to_string(&event.address, text);
+					const bool listed = listed_address(&event.address);
+					note("ADDRESS_ADDED %s port %u scope %u%s", text, event.address.port, event.address.scope_id, listed ? ", listed by the interfaces" : "");
+					check(event.address.port == port, "ADDRESS_ADDED: the service's port");
+					address        = true;
+					address_listed = address_listed || listed;
+				}
+			}
+			check(service, "the resolver gave SERVICE");
+			check(address, "and at least one ADDRESS_ADDED");
+			check(address_listed, "an address crnet_interface_enumerate() lists");
+			crnet_service_resolver_destroy(resolver);
+		}
+	}
+
+	// Conflict: the same name and type again on the same machine.
+	if (advert) {
+		// Another port, so its records differ from the first's: two identical
+		// registrations of one host are one service to mDNSResponder.
+		crnet_service_advert      second      = NULL;
+		crnet_service_advert_desc second_desc = advert_desc(g_discovery_name, (uint16_t)(port + 1), NULL, 0);
+		if (expect(crnet_service_advert_create(g_instance, &second_desc, &second, &error), CR_SUCCESS, "a second advert of the same name, another port")) {
+			const CR_RESULT result = advert_wait_registered(second, NULL);
+			expect(result, CR_RESULT_NET_SERVICE_NAME_CONFLICT, "ends with NAME_CONFLICT");
+			crnet_error record;
+			crnet_service_advert_get_error(second, &record);
+			note_error("the conflict", &record);
+			crnet_service_advert_event event = advert_event();
+			expect(crnet_service_advert_next(second, CRNET_NO_WAIT, &event), CR_RESULT_NET_SERVICE_NAME_CONFLICT, "and every next after it");
+			crnet_service_advert_destroy(second);
+		}
+	}
+
+	// The advert gone: LOST as many times as FOUND.
+	if (advert && browser && found > 0) {
+		crnet_service_advert_destroy(advert);
+		advert = NULL;
+		browse_count(browser, g_discovery_name, DISCOVERY_BOUND_MS, found, found, &found, &lost, NULL, NULL);
+		check(lost == found, "the advert destroyed, the browser LOST it as many times as it FOUND it (%u of %u)", lost, found);
+	}
+	crnet_service_advert_destroy(advert);
+	crnet_service_browser_destroy(browser);
+
+	// The ring: a browser of capacity 1 and twenty adverts gives
+	// EVENTS_DROPPED, then events again.
+	{
+		crnet_service_browser_desc small_desc = browser_desc(DISCOVERY_TYPE, 1);
+		crnet_service_browser      small      = NULL;
+		crnet_service_advert       many[20]   = {0};
+		char                       names[20][CRNET_SERVICE_NAME_CAPACITY];
+		if (expect(crnet_service_browser_create(g_instance, &small_desc, &small, NULL), CR_SUCCESS, "a browser with room for one event")) {
+			for (int i = 0; i < 20; ++i) {
+				snprintf(names[i], sizeof(names[i]), "%s-%02d", g_discovery_name, i);
+				crnet_service_advert_desc one = advert_desc(names[i], port, NULL, 0);
+				crnet_service_advert_create(g_instance, &one, &many[i], NULL);
+			}
+			for (int i = 0; i < 20; ++i) {
+				if (many[i])
+					advert_wait_registered(many[i], NULL);
+			}
+			sleep_ms(1000);
+			crnet_service_browse_event event   = browse_event();
+			bool                       dropped = false, then_event = false;
+			for (int reads = 0; reads < 200; ++reads) {
+				const CR_RESULT result = crnet_service_browser_next(small, 200, &event);
+				if (result != CR_SUCCESS)
+					break;
+				if (event.kind == CRNET_SERVICE_BROWSE_EVENT_EVENTS_DROPPED) {
+					check(event.name[0] == '\0', "EVENTS_DROPPED's name is empty");
+					dropped = true;
+				} else if (dropped && (event.kind == CRNET_SERVICE_BROWSE_EVENT_FOUND || event.kind == CRNET_SERVICE_BROWSE_EVENT_LOST)) {
+					then_event = true;
+					break;
+				}
+			}
+			check(dropped, "twenty adverts into a ring of one: EVENTS_DROPPED");
+			check(then_event, "then events again");
+			for (int i = 0; i < 20; ++i)
+				crnet_service_advert_destroy(many[i]);
+			crnet_service_browser_destroy(small);
+		}
+	}
+
+	// The resolver's EVENTS_DROPPED: room for one, and a SERVICE and its
+	// addresses to come.
+	{
+		crnet_service_advert_desc one    = advert_desc(g_discovery_name, port, NULL, 0);
+		crnet_service_advert      advert2 = NULL;
+		if (crnet_service_advert_create(g_instance, &one, &advert2, NULL) == CR_SUCCESS && advert_wait_registered(advert2, NULL) == CR_SUCCESS) {
+			crnet_service_resolver_desc rdesc    = resolver_desc(g_discovery_name, 0, CRNET_ADDRESS_FAMILY_ANY, 1);
+			crnet_service_resolver      resolver = NULL;
+			if (expect(crnet_service_resolver_create(g_instance, &rdesc, &resolver, NULL), CR_SUCCESS, "a resolver with room for one event, any interface")) {
+				sleep_ms(1000);
+				bool dropped = false, service = false;
+				for (int reads = 0; reads < 50; ++reads) {
+					crnet_service_resolve_event event  = resolve_event();
+					const CR_RESULT             result = crnet_service_resolver_next(resolver, 200, &event);
+					if (result != CR_SUCCESS)
+						break;
+					dropped |= event.kind == CRNET_SERVICE_RESOLVE_EVENT_EVENTS_DROPPED;
+					service |= event.kind == CRNET_SERVICE_RESOLVE_EVENT_SERVICE;
+				}
+				check(service, "the resolver of interface 0 resolved on any interface");
+				check(dropped, "and dropped what didn't fit: EVENTS_DROPPED");
+				crnet_service_resolver_destroy(resolver);
+			}
+		}
+		crnet_service_advert_destroy(advert2);
+	}
+
+	// Wait set: each object named once it has an event, drained to
+	// TIMED_OUT; one set at most; another instance's set refused. A type of
+	// this process's own, so that no other process's adverts (another run
+	// of this test, the two-process test, another machine) name the browser
+	// while the case waits for it not to be named.
+	{
+		char own_type[CRNET_SERVICE_TYPE_CAPACITY];
+#ifdef _WIN32
+		snprintf(own_type, sizeof(own_type), "_cw%lu._udp", (unsigned long)(GetCurrentProcessId() % 1000000u));
+#else
+		snprintf(own_type, sizeof(own_type), "_cw%ld._udp", (long)(getpid() % 1000000));
+#endif
+		crnet_wait_set set = NULL, other = NULL;
+		crnet_wait_set_create(g_instance, &set, NULL);
+		crnet_wait_set_create(g_instance, &other, NULL);
+		crnet_service_browser_desc wdesc     = browser_desc(own_type, 64);
+		crnet_service_browser      watcher   = NULL;
+		crnet_service_advert_desc  one       = advert_desc(g_discovery_name, port, NULL, 0);
+		one.type                             = own_type;
+		crnet_service_advert       announced = NULL;
+		crnet_service_browser_create(g_instance, &wdesc, &watcher, NULL);
+		crnet_service_advert_create(g_instance, &one, &announced, NULL);
+		if (set && other && watcher && announced) {
+			int advert_tag = 0, browser_tag = 0;
+			expect(crnet_wait_set_add_service_advert(set, announced, &advert_tag), CR_SUCCESS, "an advert in a set");
+			expect(crnet_wait_set_add_service_browser(set, watcher, &browser_tag), CR_SUCCESS, "a browser in the same set");
+			expect(crnet_wait_set_add_service_advert(set, announced, &advert_tag), CR_RESULT_NET_ALREADY_IN_WAIT_SET, "the advert in the set again");
+			expect(crnet_wait_set_add_service_browser(other, watcher, &browser_tag), CR_RESULT_NET_ALREADY_IN_WAIT_SET, "the browser in a second set");
+			bool           advert_named = false, browser_named = false, registered = false, seen = false;
+			const uint64_t start = now_ms();
+			while (now_ms() - start < DISCOVERY_BOUND_MS && !(registered && seen)) {
+				crnet_wait_event events[4];
+				uint32_t         count = 0;
+				if (crnet_wait_set_wait(set, 500, events, 4, &count) != CR_SUCCESS)
+					continue;
+				for (uint32_t i = 0; i < count; ++i) {
+					if (events[i].user == &advert_tag) {
+						advert_named                     = true;
+						crnet_service_advert_event event = advert_event();
+						while (crnet_service_advert_next(announced, CRNET_NO_WAIT, &event) == CR_SUCCESS)
+							registered |= event.kind == CRNET_SERVICE_ADVERT_EVENT_REGISTERED;
+					} else if (events[i].user == &browser_tag) {
+						browser_named                    = true;
+						crnet_service_browse_event event = browse_event();
+						while (crnet_service_browser_next(watcher, CRNET_NO_WAIT, &event) == CR_SUCCESS)
+							seen |= event.kind == CRNET_SERVICE_BROWSE_EVENT_FOUND && strcmp(event.name, g_discovery_name) == 0;
+					}
+				}
+			}
+			check(advert_named && registered, "the advert named, drained, and REGISTERED among what it had");
+			check(browser_named && seen, "the browser named, drained, and FOUND among what it had");
+			crnet_wait_event events[4];
+			uint32_t         count = 0;
+			sleep_ms(200);
+			// Drain what came after the loop, then nothing more is named.
+			crnet_service_browse_event bevent = browse_event();
+			while (crnet_service_browser_next(watcher, CRNET_NO_WAIT, &bevent) == CR_SUCCESS) {
+			}
+			expect(crnet_wait_set_wait(set, 300, events, 4, &count), CR_RESULT_NET_TIMED_OUT, "drained, nothing is named again");
+			crnet_wait_set_remove_service_advert(set, announced);
+			crnet_wait_set_remove_service_browser(set, watcher);
+			crnet_wait_set_remove_service_browser(set, watcher); // not in it: ignored
+			expect(crnet_wait_set_add_service_browser(other, watcher, &browser_tag), CR_SUCCESS, "once removed, into another set");
+			crnet_wait_set_remove_service_browser(other, watcher);
+
+			crnet_instance_desc idesc    = instance_desc(&g_system);
+			crnet_instance      instance = NULL;
+			if (crnet_instance_create(&idesc, &instance, NULL) == CR_SUCCESS) {
+				crnet_wait_set foreign = NULL;
+				crnet_wait_set_create(instance, &foreign, NULL);
+				expect(crnet_wait_set_add_service_browser(foreign, watcher, &browser_tag), CR_RESULT_NET_INVALID_INSTANCE, "a set of another instance");
+				crnet_wait_set_destroy(foreign);
+				crnet_instance_destroy(instance);
+			}
+		}
+		crnet_service_advert_destroy(announced);
+		crnet_service_browser_destroy(watcher);
+		crnet_wait_set_destroy(other);
+		crnet_wait_set_destroy(set);
+	}
+
+	// Desc checks.
+	{
+		crnet_service_advert advert3 = (crnet_service_advert)(uintptr_t)1;
+		struct {
+			const char *name, *type;
+			const char *what;
+		} cases[] = {
+		    {"", DISCOVERY_TYPE, "a name of 0 bytes"},
+		    {"0123456789012345678901234567890123456789012345678901234567890123", DISCOVERY_TYPE, "a name of 64 bytes"},
+		    {"bad\x01name", DISCOVERY_TYPE, "a name with a control character"},
+		    {"bad\x7fname", DISCOVERY_TYPE, "a name with DEL"},
+		    {"bad\xC3name", DISCOVERY_TYPE, "a name that isn't UTF-8"},
+		    {"ok", "crnettest._udp", "a type without a leading underscore"},
+		    {"ok", "_0123456789abcdef._udp", "a type of 16 characters"},
+		    {"ok", "_x._sctp", "a type of _sctp"},
+		    {"ok", "_-x._udp", "a type beginning with a hyphen"},
+		    {"ok", "_x-._udp", "a type ending with a hyphen"},
+		    {"ok", "_x._udp.", "a type with a trailing dot"},
+		    {"ok", "_x_y._udp", "a type with an underscore inside"},
+		};
+		for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+			crnet_service_advert_desc bad = advert_desc(cases[i].name, 9, NULL, 0);
+			bad.type                      = cases[i].type;
+			expect(crnet_service_advert_create(g_instance, &bad, &advert3, NULL), CR_RESULT_DESC_INVALID_PARAMETERS, cases[i].what);
+		}
+		check(advert3 == NULL, "no advert on a refusal");
+		crnet_service_advert_desc bad = advert_desc("ok", 0, NULL, 0);
+		expect(crnet_service_advert_create(g_instance, &bad, &advert3, NULL), CR_RESULT_DESC_INVALID_PARAMETERS, "port 0");
+		bad       = advert_desc("ok", 9, NULL, 0);
+		bad.scope = CRNET_DISCOVERY_SCOPE_NONE;
+		expect(crnet_service_advert_create(g_instance, &bad, &advert3, NULL), CR_RESULT_DESC_INVALID_PARAMETERS, "scope NONE");
+		bad.scope           = CRNET_DISCOVERY_SCOPE_ONE_INTERFACE;
+		bad.interface_index = 0;
+		expect(crnet_service_advert_create(g_instance, &bad, &advert3, NULL), CR_RESULT_DESC_INVALID_PARAMETERS, "one interface, index 0");
+		bad.scope           = CRNET_DISCOVERY_SCOPE_ALL_INTERFACES;
+		bad.interface_index = 1;
+		expect(crnet_service_advert_create(g_instance, &bad, &advert3, NULL), CR_RESULT_DESC_INVALID_PARAMETERS, "all interfaces with an index");
+
+		static char long_value[260];
+		memset(long_value, 'v', 254); // "k=" and 254: 256 bytes
+		long_value[254] = '\0';
+		static char big_values[6][250];
+		crnet_service_txt_entry big[6];
+		for (int i = 0; i < 6; ++i) {
+			memset(big_values[i], 'b', 230);
+			big_values[i][230] = '\0';
+			static char keys[6][4];
+			snprintf(keys[i], sizeof(keys[i]), "k%d", i);
+			big[i].key   = keys[i];
+			big[i].value = big_values[i];
+		}
+		struct {
+			crnet_service_txt_entry entries[2];
+			uint32_t                count;
+			const char             *what;
+		} txt[] = {
+		    {{{"novalue", ""}, {"", "x"}}, 2, "a TXT entry with an empty key"},
+		    {{{"a=b", "x"}}, 1, "a TXT key with '='"},
+		    {{{"a\x01", "x"}}, 1, "a TXT key with a control character"},
+		    {{{"k", long_value}}, 1, "a TXT entry of 256 bytes"},
+		    {{{"k", "x"}, {"K", "y"}}, 2, "two TXT keys differing only in case"},
+		    {{{"k", "\xC3"}}, 1, "a TXT value that isn't UTF-8"},
+		    {{{"k", NULL}}, 1, "a TXT value of NULL"},
+		};
+		for (size_t i = 0; i < sizeof(txt) / sizeof(txt[0]); ++i) {
+			bad = advert_desc("ok", 9, txt[i].entries, txt[i].count);
+			expect(crnet_service_advert_create(g_instance, &bad, &advert3, NULL), CR_RESULT_DESC_INVALID_PARAMETERS, txt[i].what);
+		}
+		bad = advert_desc("ok", 9, big, 6);
+		expect(crnet_service_advert_create(g_instance, &bad, &advert3, NULL), CR_RESULT_DESC_INVALID_PARAMETERS, "a TXT record over CRNET_SERVICE_TXT_CAPACITY");
+		bad = advert_desc("ok", 9, NULL, 1);
+		expect(crnet_service_advert_create(g_instance, &bad, &advert3, NULL), CR_RESULT_DESC_INVALID_PARAMETERS, "a TXT count with no entries");
+		bad = advert_desc("ok", 9, big, 0);
+		expect(crnet_service_advert_create(g_instance, &bad, &advert3, NULL), CR_RESULT_DESC_INVALID_PARAMETERS, "TXT entries with a count of 0");
+
+		crnet_service_browser      browser2 = (crnet_service_browser)(uintptr_t)1;
+		crnet_service_browser_desc b        = browser_desc(DISCOVERY_TYPE, 0);
+		expect(crnet_service_browser_create(g_instance, &b, &browser2, NULL), CR_RESULT_DESC_INVALID_PARAMETERS, "a browser's event_capacity 0");
+		b = browser_desc("udp", 4);
+		expect(crnet_service_browser_create(g_instance, &b, &browser2, NULL), CR_RESULT_DESC_INVALID_PARAMETERS, "a browser of a bad type");
+		b       = browser_desc(DISCOVERY_TYPE, 4);
+		b.scope = CRNET_DISCOVERY_SCOPE_NONE;
+		expect(crnet_service_browser_create(g_instance, &b, &browser2, NULL), CR_RESULT_DESC_INVALID_PARAMETERS, "a browser of scope NONE");
+		crnet_service_resolver      resolver2 = (crnet_service_resolver)(uintptr_t)1;
+		crnet_service_resolver_desc r         = resolver_desc("ok", 0, CRNET_ADDRESS_FAMILY_ANY, 0);
+		expect(crnet_service_resolver_create(g_instance, &r, &resolver2, NULL), CR_RESULT_DESC_INVALID_PARAMETERS, "a resolver's event_capacity 0");
+		r        = resolver_desc("ok", 0, (CRNET_ADDRESS_FAMILY)9, 4);
+		expect(crnet_service_resolver_create(g_instance, &r, &resolver2, NULL), CR_RESULT_DESC_INVALID_PARAMETERS, "a resolver's family no value of its enum");
+		r = resolver_desc("", 0, CRNET_ADDRESS_FAMILY_ANY, 4);
+		expect(crnet_service_resolver_create(g_instance, &r, &resolver2, NULL), CR_RESULT_DESC_INVALID_PARAMETERS, "a resolver of an empty name");
+
+		// The calls' own checks, in order.
+		desc = advert_desc("ok", 9, NULL, 0);
+		expect(crnet_service_advert_create(NULL, &desc, &advert3, NULL), CR_RESULT_NET_INVALID_INSTANCE, "advert: no instance");
+		expect(crnet_service_advert_create(g_instance, NULL, &advert3, NULL), CR_RESULT_NULL_DESC, "advert: no desc");
+		desc.base.type = CR_STRUCT_TYPE_NET_SERVICE_BROWSER_DESC;
+		expect(crnet_service_advert_create(g_instance, &desc, &advert3, NULL), CR_RESULT_STRUCT_WRONG_TYPE, "advert: another desc's type");
+		desc.base.type = CR_STRUCT_TYPE_NET_SERVICE_ADVERT_DESC;
+		expect(crnet_service_advert_create(g_instance, &desc, NULL, NULL), CR_RESULT_NULL_OUTPUT_PARAMETER, "advert: nowhere to put it");
+		crnet_service_advert_event   aevent = advert_event();
+		crnet_service_browse_event   bevent = browse_event();
+		crnet_service_resolve_event  revent = resolve_event();
+		expect(crnet_service_advert_next(NULL, 0, &aevent), CR_RESULT_NET_INVALID_SERVICE_ADVERT, "advert next: no advert");
+		expect(crnet_service_browser_next(NULL, 0, &bevent), CR_RESULT_NET_INVALID_SERVICE_BROWSER, "browser next: no browser");
+		expect(crnet_service_resolver_next(NULL, 0, &revent), CR_RESULT_NET_INVALID_SERVICE_RESOLVER, "resolver next: no resolver");
+		crnet_service_browser_desc quiet = browser_desc("_crnetnobody._udp", 4);
+		crnet_service_browser      q     = NULL;
+		if (crnet_service_browser_create(g_instance, &quiet, &q, NULL) == CR_SUCCESS) {
+			expect(crnet_service_browser_next(q, 0, NULL), CR_RESULT_NULL_OUTPUT_PARAMETER, "browser next: nowhere to put the event");
+			bevent.base.type = CR_STRUCT_TYPE_NET_SERVICE_ADVERT_EVENT;
+			expect(crnet_service_browser_next(q, 0, &bevent), CR_RESULT_STRUCT_WRONG_TYPE, "browser next: another event's type");
+			bevent           = browse_event();
+			bevent.base.next = &bevent.base;
+			expect(crnet_service_browser_next(q, 0, &bevent), CR_RESULT_STRUCT_UNKNOWN_IN_CHAIN, "browser next: something chained on");
+			crnet_service_browser_destroy(q);
+		}
+		crnet_service_advert_abort(NULL);
+		crnet_service_browser_abort(NULL);
+		crnet_service_resolver_abort(NULL);
+		crnet_error record;
+		memset(&record, 0xA5, sizeof(record));
+		crnet_service_resolver_get_error(NULL, &record);
+		check(error_is_empty(&record), "a NULL resolver's error record is empty");
+		crnet_service_advert_destroy(NULL);
+		crnet_service_browser_destroy(NULL);
+		crnet_service_resolver_destroy(NULL);
+		int tag = 0;
+		expect(crnet_wait_set_add_service_advert(NULL, NULL, &tag), CR_RESULT_NET_INVALID_WAIT_SET, "add advert: no set");
+		crnet_wait_set set = NULL;
+		crnet_wait_set_create(g_instance, &set, NULL);
+		expect(crnet_wait_set_add_service_advert(set, NULL, &tag), CR_RESULT_NET_INVALID_SERVICE_ADVERT, "add advert: no advert");
+		expect(crnet_wait_set_add_service_browser(set, NULL, &tag), CR_RESULT_NET_INVALID_SERVICE_BROWSER, "add browser: no browser");
+		expect(crnet_wait_set_add_service_resolver(set, NULL, &tag), CR_RESULT_NET_INVALID_SERVICE_RESOLVER, "add resolver: no resolver");
+		crnet_wait_set_destroy(set);
+	}
+
+	// An injected out-of-memory at each allocation of each create: nothing
+	// made, nothing left.
+	{
+		crtest_allocator     tracker;
+		CR_ALLOCATOR         allocator = crtest_allocator_make(&tracker);
+		crnet_instance_desc idesc     = instance_desc(&allocator);
+		crnet_instance       instance  = NULL;
+		if (expect(crnet_instance_create(&idesc, &instance, NULL), CR_SUCCESS, "an instance on a counting allocator")) {
+			const char *const kinds[3]   = {"advert", "browser", "resolver"};
+			for (int kind = 0; kind < 3; ++kind) {
+				uint32_t refusals = 0;
+				bool     clean    = true;
+				for (size_t nth = 1; nth < 16; ++nth) {
+					tracker.refuse_only = tracker.asked + nth;
+					CR_RESULT result    = CR_SUCCESS;
+					if (kind == 0) {
+						crnet_service_advert_desc d = advert_desc("crnettest-oom", 9, NULL, 0);
+						crnet_service_advert      o = (crnet_service_advert)(uintptr_t)1;
+						result                       = crnet_service_advert_create(instance, &d, &o, NULL);
+						clean &= result == CR_SUCCESS ? o != NULL : o == NULL;
+						crnet_service_advert_destroy(result == CR_SUCCESS ? o : NULL);
+					} else if (kind == 1) {
+						crnet_service_browser_desc d = browser_desc("_crnetnobody._udp", 8);
+						crnet_service_browser      o = (crnet_service_browser)(uintptr_t)1;
+						result                        = crnet_service_browser_create(instance, &d, &o, NULL);
+						clean &= result == CR_SUCCESS ? o != NULL : o == NULL;
+						crnet_service_browser_destroy(result == CR_SUCCESS ? o : NULL);
+					} else {
+						crnet_service_resolver_desc d = resolver_desc("crnettest-oom", 0, CRNET_ADDRESS_FAMILY_ANY, 8);
+						crnet_service_resolver      o = (crnet_service_resolver)(uintptr_t)1;
+						result                         = crnet_service_resolver_create(instance, &d, &o, NULL);
+						clean &= result == CR_SUCCESS ? o != NULL : o == NULL;
+						crnet_service_resolver_destroy(result == CR_SUCCESS ? o : NULL);
+					}
+					tracker.refuse_only = 0;
+					if (result == CR_SUCCESS)
+						break;
+					clean &= result == CR_RESULT_OUT_OF_MEMORY;
+					refusals++;
+				}
+				check(refusals > 0 && clean, "%s: each of its %u allocations refused in turn is OUT_OF_MEMORY with nothing made", kinds[kind], refusals);
+			}
+			crnet_instance_destroy(instance);
+			check(crtest_allocator_clean(&tracker), "nothing leaked, every free as allocated");
+		}
+	}
+	crnet_udp_socket_destroy(socket);
+}
+
+#endif // CRNET_EXT_DISCOVERY
+
 static void test_struct_bases(void) {
 	part("Struct bases");
 
@@ -3339,10 +5040,17 @@ static void test_struct_bases(void) {
 
 int main(int argc, char **argv) {
 	if (argc < 2) {
-		fprintf(stderr, "usage: crnet_test <info file> [instance|bases|records|tcp|wait|resolver|http|tls|proxy|websocket|resumable|internet]\n");
+		fprintf(stderr, "usage: crnet_test <info file> [instance|bases|records|tcp|wait|resolver|http|tls|proxy|websocket|resumable|interfaces|udp|discovery|internet]\n"
+		                "       crnet_test - interfaces|udp|discovery\n");
 		return 2;
 	}
-	if (!read_info(argv[1])) {
+	// "-" for the parts that need no server: those only.
+	const bool no_server = strcmp(argv[1], "-") == 0;
+	if (no_server && (argc < 3 || (strcmp(argv[2], "interfaces") != 0 && strcmp(argv[2], "udp") != 0 && strcmp(argv[2], "discovery") != 0))) {
+		fprintf(stderr, "crnet_test: with no server's info file, name one of interfaces, udp and discovery\n");
+		return 2;
+	}
+	if (!no_server && !read_info(argv[1])) {
 		fprintf(stderr, "crnet_test: couldn't read the server's info file '%s'\n", argv[1]);
 		return 2;
 	}
@@ -3377,6 +5085,15 @@ int main(int argc, char **argv) {
 	RUN("websocket", test_websocket);
 #endif
 	RUN("resumable", test_resumable);
+#if CRNET_EXT_TCP
+	RUN("interfaces", test_interfaces);
+#endif
+#if CRNET_EXT_UDP
+	RUN("udp", test_udp);
+#endif
+#if CRNET_EXT_DISCOVERY
+	RUN("discovery", test_discovery);
+#endif
 
 	crnet_instance_destroy(g_instance);
 	printf("\n%d passed, %d failed\n", g_passed, g_failed);

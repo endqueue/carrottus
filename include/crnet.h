@@ -34,8 +34,10 @@ extern "C" {
  * | Part             | Windows  | Linux       | Apple        |
  * |------------------|----------|-------------|--------------|
  * | TCP sockets      | Winsock2 | BSD sockets | BSD sockets  |
+ * | UDP sockets      | Winsock2 | BSD sockets | BSD sockets  |
  * | HTTP client      | WinHTTP  | libcurl     | NSURLSession |
  * | WebSocket client | WinHTTP  | libcurl (*) | NSURLSession |
+ * | Service discovery | DNS-SD API (dnsapi) | Avahi | dns_sd |
  *
  * (*) libcurl 8.11 or later. Against an older one, or one built without
  * WebSocket, crnet_websocket_create() returns
@@ -47,8 +49,9 @@ extern "C" {
  * CR_RESULT_NET_UNSUPPORTED on one built without it
  * (@ref crnet_instances "Instance" has why).
  *
- * Not every part is on every platform: CRNET_EXT_TCP and
- * CRNET_EXT_WEBSOCKET say which of the first and the last this build has
+ * Not every part is on every platform: CRNET_EXT_TCP, CRNET_EXT_UDP,
+ * CRNET_EXT_WEBSOCKET and CRNET_EXT_DISCOVERY say which of them this build
+ * has
  * (@ref crnet_parts "Which parts this build has"). HTTP is on all of them.
  *
  * The HTTP and WebSocket clients don't sit on the TCP sockets here. TLS,
@@ -93,8 +96,8 @@ extern "C" {
 /**
  * @defgroup crnet_parts Which parts this build has
  * @ingroup crnet
- * @brief Compile-time macros that say whether this build has TCP sockets and
- * the WebSocket client.
+ * @brief Compile-time macros that say whether this build has TCP sockets, UDP
+ * sockets, the WebSocket client and service discovery.
  *
  * carrottus is built for one platform at a time, and the build says which by
  * defining one of CARROTTUS_PLATFORM_WIN32, CARROTTUS_PLATFORM_LINUX and
@@ -102,7 +105,8 @@ extern "C" {
  * Carrottus Net has to tell one of them apart, so a build for Apple Watch also
  * defines CARROTTUS_PLATFORM_WATCHOS as 1. Anything not defined is 0.
  *
- * Each of CRNET_EXT_TCP and CRNET_EXT_WEBSOCKET is 1 where the platform
+ * Each of CRNET_EXT_TCP, CRNET_EXT_UDP, CRNET_EXT_WEBSOCKET and
+ * CRNET_EXT_DISCOVERY is 1 where the platform
  * lets an ordinary application use that part and 0 where it doesn't, and
  * everything belonging to a part is declared only when its macro is 1 - so
  * code that uses a part the platform doesn't have fails to compile there,
@@ -111,12 +115,13 @@ extern "C" {
  * second platform comes to lack a part, that is one line changed here and
  * nothing to hunt for anywhere else.
  *
- * | Platform                 | TCP | WebSocket |
- * |--------------------------|-----|-----------|
- * | Windows                  | 1   | 1         |
- * | Linux                    | 1   | 1 (*)     |
- * | Apple other than watchOS | 1   | 1         |
- * | watchOS                  | 0   | 0         |
+ * | Platform                 | TCP | UDP | WebSocket | Discovery |
+ * |--------------------------|-----|-----|-----------|-----------|
+ * | Windows                  | 1   | 1   | 1         | 1         |
+ * | Linux                    | 1   | 1   | 1 (*)     | 1         |
+ * | Android                  | 1   | 1   | 1         | 0         |
+ * | Apple other than watchOS | 1   | 1   | 1         | 1         |
+ * | watchOS                  | 0   | 0   | 0         | 0         |
  *
  * (*) The macro says the platform has it. Whether the libcurl carrottus was
  * built against does is found out when crnet_websocket_create() is called
@@ -166,7 +171,8 @@ extern "C" {
 /**
  * @def CRNET_EXT_TCP
  * @brief 1 when this build has TCP sockets and listeners, the resolver that
- * finds addresses for them, the local address query, and a wait set's calls
+ * finds addresses for them, the interface listing
+ * (crnet_interface_enumerate()) and crnet_address, and a wait set's calls
  * for both; 0 when it has none of them.
  */
 #if CARROTTUS_PLATFORM_WIN32 || CARROTTUS_PLATFORM_LINUX || (CARROTTUS_PLATFORM_APPLE && !CARROTTUS_PLATFORM_WATCHOS)
@@ -189,6 +195,47 @@ extern "C" {
 #define CRNET_EXT_WEBSOCKET 0
 #endif
 
+/**
+ * @def CRNET_EXT_UDP
+ * @brief 1 when this build has UDP sockets and a wait set's calls for them;
+ * 0 when it has neither. The same platforms as CRNET_EXT_TCP, for the same
+ * reason, and its own macro so that a platform that came to allow one and
+ * not the other is one line here.
+ */
+#if CARROTTUS_PLATFORM_WIN32 || CARROTTUS_PLATFORM_LINUX || (CARROTTUS_PLATFORM_APPLE && !CARROTTUS_PLATFORM_WATCHOS)
+#define CRNET_EXT_UDP 1
+#else
+#define CRNET_EXT_UDP 0
+#endif
+
+/* crnet_address is declared under CRNET_EXT_TCP; UDP needs it wherever UDP
+ * is. */
+#if CRNET_EXT_UDP && !CRNET_EXT_TCP
+#error "Carrottus Net: CRNET_EXT_UDP needs crnet_address, declared with CRNET_EXT_TCP."
+#endif
+
+/**
+ * @def CRNET_EXT_DISCOVERY
+ * @brief 1 when this build has service discovery (adverts, browsers,
+ * resolvers) and a wait set's calls for them; 0 when it has none. 0 on
+ * watchOS, which refuses it to ordinary applications, and on Android, whose
+ * discovery service is Java only. An Android build is told by the system's
+ * own macro, __ANDROID__ (which the NDK's compiler always defines), as a
+ * watchOS build is by TargetConditionals.h, because no CARROTTUS_PLATFORM_
+ * macro names Android yet; once one does, the test reads it, with
+ * __ANDROID__ kept as the same guard TargetConditionals.h is for watchOS.
+ */
+#if !defined(__ANDROID__) && (CARROTTUS_PLATFORM_WIN32 || CARROTTUS_PLATFORM_LINUX || (CARROTTUS_PLATFORM_APPLE && !CARROTTUS_PLATFORM_WATCHOS))
+#define CRNET_EXT_DISCOVERY 1
+#else
+#define CRNET_EXT_DISCOVERY 0
+#endif
+
+/* crnet_address is declared under CRNET_EXT_TCP. */
+#if CRNET_EXT_DISCOVERY && !CRNET_EXT_TCP
+#error "Carrottus Net: CRNET_EXT_DISCOVERY needs crnet_address, declared with CRNET_EXT_TCP."
+#endif
+
 /** @} */
 
 /**
@@ -207,7 +254,12 @@ extern "C" {
  *   how many there are, what they cost and when they end is not Carrottus Net's
  *   to decide. (The platform's HTTP stack has threads and queues of its
  *   own. They are the stack's, and nothing of the caller's, its allocator
- *   included, is called on them.) A step begun and left
+ *   included, is called on them. So are Windows' DNS-SD calls, which call
+ *   back on threads of their own: each callback copies into its object's
+ *   ring of events under the ring's lock - held only for a fixed-size copy,
+ *   at most a resolve event's 1.6 KB, nothing allocated under it - and
+ *   wakes the object's wait set, and calls nothing of the caller's; the
+ *   caller's `_next` takes the same lock for its copy out.) A step begun and left
  *   (@ref crnet_time "Time limits") goes on where the stack goes on by
  *   itself - WinHTTP's and NSURLSession's threads, the system's TCP
  *   connect - and otherwise in the caller's next call on the object:
@@ -265,8 +317,9 @@ extern "C" {
  *   waits, and it takes NULL (the record comes back empty).
  *
  * A call that fails without leaving an object to ask -
- * crnet_instance_create(), crnet_instance_get_local_ipv4_addresses(),
- * crnet_tcp_listener_create() - takes an `out_error` instead, which may be
+ * crnet_instance_create(), crnet_interface_enumerate(),
+ * crnet_tcp_listener_create(), crnet_udp_socket_create() - takes an
+ * `out_error` instead, which may be
  * NULL. The other `_create` calls fail only for want of memory or over a bad
  * desc, and take none.
  * @{
@@ -590,8 +643,9 @@ void crnet_instance_destroy(crnet_instance instance);
  * that has an `_abort`.
  *
  * Those objects are crnet_resolver, crnet_tcp_socket,
- * crnet_tcp_listener, crnet_http_transfer, crnet_websocket and
- * crnet_wait_set.
+ * crnet_tcp_listener, crnet_udp_socket, crnet_http_transfer,
+ * crnet_websocket, crnet_service_advert, crnet_service_browser,
+ * crnet_service_resolver and crnet_wait_set.
  *
  * Thread: an `_abort` may be called at any point after `_create`, from any
  * thread, overlapping any call on its object but `_destroy`. Whatever call
@@ -613,7 +667,7 @@ void crnet_instance_destroy(crnet_instance instance);
  * @ingroup crnet
  * @brief Winsock2 / BSD sockets: plain TCP over IPv4 or IPv6, no TLS. Known
  * problems: there is no keep-alive option, no local address for an outgoing
- * connection, no query for a socket's own local address and no UDP; and TCP
+ * connection and no query for a socket's own local address; and TCP
  * differs from the WebSocket client in two ways a caller has to remember:
  * its send is partial where a WebSocket's is a whole message, and the end of
  * a connection is 0 bytes with CR_SUCCESS here and
@@ -1386,67 +1440,1333 @@ void crnet_tcp_socket_destroy(crnet_tcp_socket socket);
 /** @} */
 
 /**
- * @defgroup crnet_local Local address discovery
+ * @defgroup crnet_addresses Addresses
  * @ingroup crnet_tcp
- * @brief This machine's own addresses, for display and sharing. Known
- * problem: the one call here is IPv4-only, goes through the system resolver
- * with no time limit, and doesn't follow the `crnet_<object>_<verb>`
- * pattern; a real interface enumeration should replace it.
+ * @brief An IP address and a port as a value: what the interface listing,
+ * UDP sockets and service discovery hand over and take.
  *
- * For display/sharing (e.g. "here's the IP to type into the other machine's
- * Join field"), not used by connect/listen themselves.
+ * Why a value and not text: a datagram's source is read on every receive
+ * and compared with the peers the caller knows, and an IPv6 link-local
+ * address is only usable with its interface (its scope), which text
+ * carries as a suffix ("fe80::1%en0") the platforms parse differently.
+ * TCP keeps its numeric strings for now.
+ *
+ * Two crnet_address values Carrottus Net made for one address and port
+ * are equal byte for byte: unused bytes and `reserved` are always 0. So a
+ * caller may compare them with memcmp and hash their bytes.
  * @{
  */
 
-/** @brief Room for any IPv4 address as text, with its terminator. */
-#define CRNET_MAX_IPV4_STRING_LEN 16 /* "255.255.255.255\0" */
+/**
+ * @brief One IPv4 or IPv6 address and a port.
+ */
+/* Frozen: a value type, passed in and filled in alike. It never changes; a new need gets a new type. */
+typedef struct crnet_address {
+	/** CRNET_ADDRESS_FAMILY_IPV4 or CRNET_ADDRESS_FAMILY_IPV6. ANY is never
+	 * an address's family and is refused wherever one is taken. */
+	CRNET_ADDRESS_FAMILY family;
+	/** IPv6: the interface index a link-local (fe80::/10) or other scoped
+	 * address is used through, as sin6_scope_id has it; 0 for a global
+	 * address. IPv4: always 0. */
+	uint32_t scope_id;
+	/** The address in network byte order, as on the wire: IPv4 in the first
+	 * 4 bytes and the other 12 zero, IPv6 in all 16. */
+	uint8_t bytes[16];
+	/** The port in the machine's own byte order; 0 where no port belongs
+	 * (an interface's address) or where 0 asks the system for one (a UDP
+	 * socket's local address). */
+	uint16_t port;
+	/** Always 0, so that equal addresses are equal byte for byte. Refused
+	 * when not. */
+	uint16_t reserved;
+} crnet_address;
 
 /**
- * @brief Lists this machine's own IPv4 addresses. Known problem: it blocks
- * in the system's resolver for as long as that takes, with no time limit and
- * no abort, and it reports IPv4 only.
+ * @brief Makes an address from numeric text. Pure: no system state, no
+ * instance, never blocks; inet_pton on every platform.
  *
- * The addresses are deduplicated, and loopback (127.x) is excluded - never
- * useful to hand to another machine. Resolver-based (gethostname +
- * getaddrinfo), so on a machine with several adapters it reflects whatever
- * the OS resolver associates with the local hostname - a diagnostic/display
- * helper, not an exhaustive adapter enumeration. Unlike a crnet_resolver
- * it is one call with no time limit.
+ * Only a numeric address is taken, never a name ("localhost" is refused:
+ * a name is the resolver's). No '%' suffix is taken either: the scope is
+ * its own argument, an interface index as crnet_interface_properties has
+ * it, so it means the same on every platform.
  *
- * @param[in]  instance      An instance; the query needs the platform's
- *                           networking started.
- * @param[out] out_addresses Receives up to `out_capacity` addresses, each a
- *                           null-terminated string.
- * @param[in]  out_capacity  How many addresses `out_addresses` has room for.
- *                           With 0 nothing is looked up.
- * @param[out] out_count     Receives how many addresses were written, which
- *                           may be less than `out_capacity`, or 0 on a
- *                           machine with no non-loopback IPv4 interface
- *                           (offline, for one).
- * @param[out] out_error     Receives the system's reason for a failure. May
- *                           be NULL. See
- *                           @ref crnet_error_detail "Error detail".
+ * @param[in]  text        "192.168.1.20", "::1", "fe80::1c2b:..."; UTF-8
+ *                         and null-terminated. NULL is refused.
+ * @param[in]  port        The port, in the machine's byte order.
+ * @param[in]  scope_id    0, or for IPv6 the interface index; non-zero with
+ *                         an IPv4 address is refused.
+ * @param[out] out_address Receives the address. Left as it was on a
+ *                         failure.
  *
- * @retval CR_SUCCESS `out_count` addresses were written; 0 is a valid
- *         answer, not a failure.
- * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_addresses` or `out_count` is
- *         NULL.
- * @retval CR_RESULT_NET_INVALID_INSTANCE `instance` is NULL.
- * @retval CR_RESULT_NET_RESOLVE_FAILED The system couldn't name this
- *         machine or look that name up.
+ * @retval CR_SUCCESS `out_address` was written.
+ * @retval CR_RESULT_NET_INVALID_ADDRESS `text` is NULL, not a numeric IPv4
+ *         or IPv6 address, holds a '%', or is IPv4 with a non-zero
+ *         `scope_id`.
+ * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_address` is NULL.
  */
-CR_RESULT crnet_instance_get_local_ipv4_addresses(
+CR_RESULT crnet_address_from_string(
+    const char *text,
+    uint16_t port,
+    uint32_t scope_id,
+    crnet_address *out_address);
+
+/**
+ * @brief Writes an address's numeric text, without its port or scope:
+ * inet_ntop on every platform, so IPv6 in RFC 5952's form (the longest run
+ * of zeroes as "::", lower case), and an IPv4-mapped IPv6 address as
+ * "::ffff:1.2.3.4". Pure, never blocks.
+ *
+ * @param[in]  address  The address. NULL is refused.
+ * @param[out] out_text Receives the text, null-terminated; room for
+ *                      CRNET_MAX_ADDRESS_STRING_LEN bytes. Untouched on
+ *                      failure.
+ *
+ * @retval CR_SUCCESS `out_text` was written.
+ * @retval CR_RESULT_NET_INVALID_ADDRESS `address` is NULL, or its family
+ *         is neither IPv4 nor IPv6, or its `reserved`, or an IPv4
+ *         address's last 12 bytes or scope, aren't 0.
+ * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_text` is NULL.
+ */
+CR_RESULT crnet_address_to_string(
+    const crnet_address *address,
+    char out_text[CRNET_MAX_ADDRESS_STRING_LEN]);
+
+/** @} */
+
+/**
+ * @defgroup crnet_interfaces Interfaces
+ * @ingroup crnet_tcp
+ * @brief This machine's network interfaces and the addresses each holds,
+ * as the system's own table has them at one moment: getifaddrs on Apple,
+ * Linux and Android, GetAdaptersAddresses on Windows. Known problems: on
+ * Android 11 and later an interface with no address is missing; on Windows
+ * a prefix length may be unknown (CRNET_INTERFACE_PREFIX_LENGTH_UNKNOWN).
+ *
+ * Nothing is left out, sorted or folded: loopback is listed, an interface
+ * that is down is listed, and an address the system holds twice is listed
+ * twice. Which interface to use, advertise on or show is the caller's.
+ * The listing never blocks and never asks the resolver: both systems read
+ * the kernel's tables.
+ *
+ * A listing is a snapshot. It doesn't change when the system's table
+ * does, and nothing here says when that happens (no change notification);
+ * a caller that wants a fresh view takes a new listing.
+ *
+ * Thread: a list is one caller at a time, as every object is, but for
+ * its three reads, which change nothing and may overlap each other (each
+ * marked Thread:), so a snapshot can be handed to jobs. Its Debug overlap
+ * check opens on the destroy only (each read adds one to an atomic reader
+ * count and takes it off, which the destroy checks, and writes nothing
+ * else): a destroy overlapping a read is reported.
+ * @{
+ */
+
+/** @brief Opaque handle to one snapshot of the interface table. */
+typedef struct crnet_interface_list_t *crnet_interface_list;
+
+/** @brief Room for an interface's name or display name, with its
+ * terminator. A Windows GUID string is 38 bytes; a FriendlyName is
+ * whatever the person typed, cut to fit at a UTF-8 character's boundary. */
+#define CRNET_INTERFACE_NAME_CAPACITY 256
+
+/** @brief A prefix_length the system doesn't know. Its own value, not 0,
+ * since 0 is a real prefix (the default route's). */
+#define CRNET_INTERFACE_PREFIX_LENGTH_UNKNOWN 0xFFFFFFFFu
+
+/** @brief Bits of crnet_interface_properties::flags. Each is the system's
+ * own: IFF_* from getifaddrs; on Windows UP from the administrative state
+ * (MIB_IF_ROW2::AdminStatus), RUNNING from OperStatus, LOOPBACK from
+ * IfType, POINT_TO_POINT from IfType PPP or tunnel, MULTICAST from the
+ * absence of IP_ADAPTER_NO_MULTICAST, and BROADCAST from a broadcast prefix
+ * in FirstPrefix. */
+enum {
+	CRNET_INTERFACE_FLAG_UP             = 0x01, /**< Up: IFF_UP; Windows' AdminStatus up. */
+	CRNET_INTERFACE_FLAG_RUNNING        = 0x02, /**< Carrying traffic: IFF_RUNNING; Windows' OperStatus up. */
+	CRNET_INTERFACE_FLAG_LOOPBACK       = 0x04, /**< This machine only. */
+	CRNET_INTERFACE_FLAG_POINT_TO_POINT = 0x08, /**< A link with one peer (PPP, a tunnel, some VPNs). */
+	CRNET_INTERFACE_FLAG_MULTICAST      = 0x10, /**< Takes multicast (which DNS-SD uses). */
+	CRNET_INTERFACE_FLAG_BROADCAST      = 0x20, /**< Takes IPv4 broadcast: IFF_BROADCAST; on Windows a broadcast prefix. */
+};
+
+/** @brief One interface of a listing, filled by
+ * crnet_interface_list_get_properties(). */
+typedef struct crnet_interface_properties {
+	/** `type` is CR_STRUCT_TYPE_NET_INTERFACE_PROPERTIES; `next` is NULL
+	 * (nothing is chained onto this struct yet). The caller sets the type;
+	 * Carrottus Net fills in the rest. See CR_STRUCT_BASE. */
+	CR_STRUCT_BASE_OUT base;
+	/** The system's name for it, UTF-8, null-terminated: ifa_name ("en0"),
+	 * or on Windows AdapterName, the adapter's GUID string. Stable while the
+	 * interface exists; what a caller keeps to find it again. */
+	char name[CRNET_INTERFACE_NAME_CAPACITY];
+	/** The name a person knows it by, UTF-8, null-terminated, cut to fit:
+	 * Windows' FriendlyName ("Wi-Fi", "Ethernet 2"). Empty on Apple, Linux
+	 * and Android, which keep none at this level; a caller shows `name`
+	 * there. */
+	char display_name[CRNET_INTERFACE_NAME_CAPACITY];
+	/** The interface's index (if_nametoindex; Windows' IfIndex). Never 0.
+	 * What a crnet_address's scope_id and the discovery descs take. */
+	uint32_t index;
+	/** The index IPv6 uses for it: Windows' Ipv6IfIndex, which may differ
+	 * from IfIndex; elsewhere the same as `index`. 0 on Windows for an
+	 * interface without IPv6. */
+	uint32_t ipv6_index;
+	/** CRNET_INTERFACE_FLAG_* bits. */
+	uint32_t flags;
+	/** The largest IP packet the link takes, in bytes, as the system
+	 * reports it; 0 where it reported none. */
+	uint32_t mtu;
+	/** How many addresses crnet_interface_list_get_address() has for it; 0
+	 * for an interface with none. */
+	uint32_t address_count;
+} crnet_interface_properties;
+
+/** @brief One address an interface holds, filled by
+ * crnet_interface_list_get_address(). */
+typedef struct crnet_interface_address {
+	/** `type` is CR_STRUCT_TYPE_NET_INTERFACE_ADDRESS; `next` is NULL
+	 * (nothing is chained onto this struct yet). The caller sets the type;
+	 * Carrottus Net fills in the rest. See CR_STRUCT_BASE. */
+	CR_STRUCT_BASE_OUT base;
+	/** The address, port 0. An IPv6 link-local address has its interface's
+	 * ipv6_index as its scope_id, ready to be sent to. */
+	crnet_address address;
+	/** How many leading bits are the network's: 0-32 for IPv4, 0-128 for
+	 * IPv6 (24 for a /24), or CRNET_INTERFACE_PREFIX_LENGTH_UNKNOWN where
+	 * the system holds none (Windows' OnLinkPrefixLength 255, "an illegal
+	 * value"). */
+	uint32_t prefix_length;
+} crnet_interface_address;
+
+/**
+ * @brief Takes a snapshot of this machine's interfaces and their
+ * addresses: getifaddrs, or GetAdaptersAddresses(AF_UNSPEC,
+ * GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
+ * GAA_FLAG_SKIP_DNS_SERVER | GAA_FLAG_INCLUDE_PREFIX) and GetIfTable2()
+ * for the administrative state, copied into the list through the
+ * instance's allocator and the system's own memory given back before it
+ * returns. Never blocks on the network.
+ *
+ * @param[in]  instance  The instance the list is made with; destroyed after
+ *                       it.
+ * @param[out] out_list  Receives the list, the caller's to destroy with
+ *                       crnet_interface_list_destroy(). NULL on failure.
+ * @param[out] out_error Receives the system's reason when it refuses. May
+ *                       be NULL. See @ref crnet_error_detail "Error detail".
+ *                       Once card S10 is built, the same platform error
+ *                       also goes to the instance's message callback, inside
+ *                       this call, as every platform failure does there.
+ *
+ * @retval CR_SUCCESS The list was made. A machine with no interface at all
+ *         gives an empty list, not a failure.
+ * @retval CR_RESULT_NET_INVALID_INSTANCE `instance` is NULL.
+ * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_list` is NULL.
+ * @retval CR_RESULT_OUT_OF_MEMORY The list could not be allocated.
+ * @retval CR_RESULT_NET_INTERFACE_ENUMERATION_FAILED getifaddrs or
+ *         GetAdaptersAddresses failed; `out_error` has its reason (errno,
+ *         or the Win32 error).
+ */
+CR_RESULT crnet_interface_enumerate(
     crnet_instance instance,
-    char out_addresses[][CRNET_MAX_IPV4_STRING_LEN],
-    uint32_t out_capacity,
-    uint32_t *out_count,
+    crnet_interface_list *out_list,
     crnet_error *out_error);
+
+/**
+ * @brief Reads how many interfaces the list holds.
+ *
+ * Thread: a read; may overlap any other read of the same list (the three
+ * reads change nothing), never its destroy.
+ *
+ * @param[in]  list      The list to read.
+ * @param[out] out_count Receives the count; 0 for an empty list.
+ *
+ * @retval CR_SUCCESS `out_count` was written.
+ * @retval CR_RESULT_NET_INVALID_INTERFACE_LIST `list` is NULL.
+ * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_count` is NULL.
+ */
+CR_RESULT crnet_interface_list_get_count(
+    crnet_interface_list list,
+    uint32_t *out_count);
+
+/**
+ * @brief Reads one interface of the list.
+ *
+ * Thread: a read, as crnet_interface_list_get_count().
+ *
+ * @param[in]  list           The list to read.
+ * @param[in]  position       Which interface, from 0 to the count less 1,
+ *                            in the system's order. Not an interface index.
+ * @param[out] out_properties Receives the interface; its `base.type` set by
+ *                            the caller.
+ *
+ * @retval CR_SUCCESS `out_properties` was written.
+ * @retval CR_RESULT_NET_INVALID_INTERFACE_LIST `list` is NULL.
+ * @retval CR_RESULT_INDEX_OUT_OF_RANGE `position` is past the last.
+ * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_properties` is NULL.
+ * @retval CR_RESULT_STRUCT_WRONG_TYPE `out_properties->base.type` is not
+ *         CR_STRUCT_TYPE_NET_INTERFACE_PROPERTIES.
+ * @retval CR_RESULT_STRUCT_UNKNOWN_IN_CHAIN `out_properties->base.next` is
+ *         not NULL.
+ */
+CR_RESULT crnet_interface_list_get_properties(
+    crnet_interface_list list,
+    uint32_t position,
+    crnet_interface_properties *out_properties);
+
+/**
+ * @brief Reads one address of one interface of the list, in the order the
+ * system gave them.
+ *
+ * Thread: a read, as crnet_interface_list_get_count().
+ *
+ * @param[in]  list             The list to read.
+ * @param[in]  position         Which interface, as for
+ *                              crnet_interface_list_get_properties().
+ * @param[in]  address_position Which of its addresses, from 0 to its
+ *                              `address_count` less 1.
+ * @param[out] out_address      Receives the address; its `base.type` set
+ *                              by the caller.
+ *
+ * @retval CR_SUCCESS `out_address` was written.
+ * @retval CR_RESULT_NET_INVALID_INTERFACE_LIST `list` is NULL.
+ * @retval CR_RESULT_INDEX_OUT_OF_RANGE `position` or `address_position` is
+ *         past the last.
+ * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_address` is NULL.
+ * @retval CR_RESULT_STRUCT_WRONG_TYPE `out_address->base.type` is not
+ *         CR_STRUCT_TYPE_NET_INTERFACE_ADDRESS.
+ * @retval CR_RESULT_STRUCT_UNKNOWN_IN_CHAIN `out_address->base.next` is not
+ *         NULL.
+ */
+CR_RESULT crnet_interface_list_get_address(
+    crnet_interface_list list,
+    uint32_t position,
+    uint32_t address_position,
+    crnet_interface_address *out_address);
+
+/**
+ * @brief Frees the list.
+ *
+ * @param[in] list The list to destroy. NULL is taken and nothing is done
+ *                 with it.
+ */
+void crnet_interface_list_destroy(crnet_interface_list list);
 
 /** @} */
 
 /** @} */
 
 #endif // CRNET_EXT_TCP
+
+#if CRNET_EXT_UDP
+
+/**
+ * @defgroup crnet_udp UDP sockets
+ * @ingroup crnet
+ * @brief Winsock2 / BSD sockets: datagrams over IPv4 or IPv6, sent to an
+ * address and received with their source, no connection. Known problems:
+ * on iOS, iPadOS and macOS 15 and later a send to the local network before
+ * the person has allowed it fails like a missing route, and can't be told
+ * from one; Apple sends no datagram larger than the socket's send buffer,
+ * 9216 bytes unless send_buffer_size raises it; on iOS a suspended app's
+ * sockets may be reclaimed, after which only their destroy is of use;
+ * EXCLUSIVE keeps the same address and port only (CRNET_UDP_PORT_SHARING).
+ *
+ * A translation of the platform's datagram socket (bind, sendto,
+ * recvfrom), not a protocol. Nothing is ordered, acknowledged, sent again,
+ * split or joined: a datagram may arrive twice, late, out of order or not
+ * at all, and that is the caller's to handle. Nothing is sealed either;
+ * anything private is sealed by the caller before it is sent.
+ *
+ * One object, a crnet_udp_socket, bound to one local address and port when
+ * it is made. It sends to any address of its family and receives from any.
+ *
+ * The rules that hold on every platform, whatever each does underneath:
+ *
+ * - A send takes the whole datagram or nothing; a receive hands over one
+ *   datagram. A datagram longer than the buffer is reported
+ *   (CR_RESULT_NET_DATAGRAM_TRUNCATED), never cut silently.
+ * - Another machine's ICMP errors are never reported: a send to a port
+ *   nobody holds is silent, and no later receive fails for it.
+ * - An IPv6 socket takes IPv6 only.
+ *
+ * What is the caller's to know, per platform:
+ *
+ * - iOS and iPadOS 14 and later, and macOS 15 and later: Local Network
+ *   privacy. The first datagram to an address on the local network brings
+ *   up the system's prompt, and the app needs NSLocalNetworkUsageDescription
+ *   in its Info.plist. While the person hasn't allowed it, a send to a local
+ *   address fails (believed to be EHOSTUNREACH, not confirmed), reported as
+ *   CR_RESULT_NET_SEND_FAILED with errno in the record: Carrottus Net can't
+ *   tell that from a real "no route", and the system offers no call to ask.
+ * - Apple's largest outgoing datagram is the socket's send buffer
+ *   (SO_SNDBUF), whose default is net.inet.udp.maxdgram, 9216 bytes; a
+ *   larger one is CR_RESULT_NET_DATAGRAM_TOO_BIG. iOS shares xnu; its
+ *   default is not separately confirmed. Linux and Windows take up to
+ *   65507 (IPv4) / 65527 (IPv6). A caller that stays under its path's MTU
+ *   (crnet_interface_properties::mtu, less the headers) meets neither.
+ * - Android: the caller's manifest needs android.permission.INTERNET, or
+ *   socket() fails (EACCES, reported as CR_RESULT_NET_ACCESS_DENIED).
+ *   Android 17 (API 37): an app that targets it needs the runtime
+ *   permission ACCESS_LOCAL_NETWORK to send and receive unicast UDP on the
+ *   local network; without it a send or receive fails, "typically" EPERM,
+ *   reported as CR_RESULT_NET_ACCESS_DENIED, errno in the record. Asking for
+ *   the permission is the caller's. Neither is confirmed yet.
+ * - iOS and iPadOS: while an app is suspended, the system may reclaim its
+ *   sockets; every later call on such a socket fails (EBADF or ENOTCONN,
+ *   reported as CR_RESULT_NET_SEND_FAILED or _RECV_FAILED; in a wait set,
+ *   the member is named ready, as a socket with an error is by poll(), and
+ *   its next call returns that failure, errno in the record), and the
+ *   caller destroys it and makes another. Which sockets to close before
+ *   suspension is the caller's.
+ * - Windows: the first bind of a program to a non-loopback address may
+ *   bring up Windows Defender Firewall's prompt for inbound traffic; the
+ *   caller's (an installer's rule, or the person's answer).
+ *
+ * Thread: on one socket, a receiving call (crnet_udp_socket_recv_from())
+ * may overlap a sending call (crnet_udp_socket_send_to()), and each may
+ * overlap crnet_udp_socket_abort(), as on a TCP socket. Two receiving or
+ * two sending calls at once, or any other call during either, are the
+ * caller's to prevent.
+ * @{
+ */
+
+/** @brief Opaque handle to one UDP socket. */
+typedef struct crnet_udp_socket_t *crnet_udp_socket;
+
+/**
+ * @brief Whether another socket may bind the same address and port, in the
+ * two forms that mean the same on every platform. No value is a default:
+ * NONE is refused.
+ */
+typedef enum CRNET_UDP_PORT_SHARING {
+	/** Not chosen; refused. */
+	CRNET_UDP_PORT_SHARING_NONE = 0,
+	/** No other socket, of this program or another, may bind the same
+	 * address and port while this one is open, and this one is refused if
+	 * one already has: Windows' SO_EXCLUSIVEADDRUSE; elsewhere no reuse
+	 * option set.
+	 *
+	 * Only the same address is kept from others on every platform. A bind
+	 * of the same port on another address that overlaps this one (a
+	 * specific address over this socket's wildcard, or the wildcard over
+	 * this socket's specific address) differs, and is not held here:
+	 * - Apple: allowed to a socket that shares (SO_REUSEADDR), of the same
+	 *   user, either way; the more specific socket then takes the datagrams
+	 *   sent to its address;
+	 * - Windows: a later wildcard bind over this specific address is
+	 *   allowed, "bound to all interfaces except the specific address";
+	 * - Linux: refused unless both sockets share.
+	 * A caller that needs a port to itself binds it on the wildcard of each
+	 * family it uses, and still can't stop another program of the same user
+	 * on Apple taking a specific address on it. */
+	CRNET_UDP_PORT_SHARING_EXCLUSIVE = 1,
+	/** Every socket that binds the address and port with SHARED may hold it
+	 * at once: SO_REUSEADDR and SO_REUSEPORT on Apple, Linux and Android,
+	 * SO_REUSEADDR on Windows. Which of them a datagram to that port is
+	 * handed to differs by platform (Linux spreads them across sockets of
+	 * one user; Apple gives each to the last bound; Windows doesn't say), so
+	 * it is undefined here: a caller that shares a port makes no assumption
+	 * about which socket receives. Linux refuses SHARED to a second socket
+	 * of another user. */
+	CRNET_UDP_PORT_SHARING_SHARED = 2,
+} CRNET_UDP_PORT_SHARING;
+
+/**
+ * @brief A `receive_buffer_size` or `send_buffer_size` that leaves the
+ * system's own size, unchanged. Its own value, not 0, so that a zeroed desc
+ * has chosen nothing. Named for sockets, not UDP: a TCP desc that comes to
+ * take buffer sizes takes it too.
+ */
+#define CRNET_SOCKET_BUFFER_SIZE_SYSTEM 0xFFFFFFFFu
+
+/** @brief What crnet_udp_socket_create() binds, and how. */
+typedef struct crnet_udp_socket_desc {
+	/** `type` is CR_STRUCT_TYPE_NET_UDP_SOCKET_DESC; `next` is NULL
+	 * (nothing is chained onto this struct yet). Set by the caller. See
+	 * CR_STRUCT_BASE. */
+	CR_STRUCT_BASE base;
+	/** The local address and port to bind. Its family is the socket's.
+	 * All-zero bytes is every interface of that family (0.0.0.0 or ::),
+	 * 127.0.0.1 or ::1 this machine only, or one interface's own address.
+	 * Port 0 has the system pick a free one;
+	 * crnet_udp_socket_get_local_address() says which. A scope_id binds an
+	 * IPv6 link-local address on that interface. */
+	crnet_address local;
+	/** Whether another socket may hold the same address and port. */
+	CRNET_UDP_PORT_SHARING sharing;
+	/** SO_RCVBUF in bytes, or CRNET_SOCKET_BUFFER_SIZE_SYSTEM. 0 is refused.
+	 * The system may grant more or less: see
+	 * crnet_udp_socket_get_buffer_sizes(). Datagrams that arrive while it is
+	 * full are dropped by the system, unreported. */
+	uint32_t receive_buffer_size;
+	/** SO_SNDBUF in bytes, or CRNET_SOCKET_BUFFER_SIZE_SYSTEM. 0 is refused.
+	 * On Apple, also the largest datagram the socket sends: the granted size
+	 * (crnet_udp_socket_get_buffer_sizes()), 9216 with the system's
+	 * (net.inet.udp.maxdgram). */
+	uint32_t send_buffer_size;
+} crnet_udp_socket_desc;
+
+/**
+ * @brief Opens a non-blocking datagram socket and binds it: socket,
+ * IPV6_V6ONLY for IPv6, the sharing options, the buffer sizes, bind, and on
+ * Windows SIO_UDP_CONNRESET and SIO_UDP_NETRESET switched off.
+ *
+ * @param[in]  instance   The instance the socket is made with.
+ * @param[in]  desc       What the caller decides. Only read during the call.
+ * @param[out] out_socket Receives the socket, the caller's to destroy. NULL
+ *                        on failure.
+ * @param[out] out_error  Receives the system's reason for a failure, which
+ *                        leaves no socket to ask. May be NULL. See
+ *                        @ref crnet_error_detail "Error detail". Once card
+ *                        S10 is built, the same platform error also goes to
+ *                        the instance's message callback, inside this call.
+ *
+ * @retval CR_SUCCESS The socket is bound.
+ * @retval CR_RESULT_NET_INVALID_INSTANCE `instance` is NULL.
+ * @retval CR_RESULT_NULL_DESC `desc` is NULL.
+ * @retval CR_RESULT_STRUCT_WRONG_TYPE `desc->base.type` is not
+ *         CR_STRUCT_TYPE_NET_UDP_SOCKET_DESC.
+ * @retval CR_RESULT_STRUCT_UNKNOWN_IN_CHAIN `desc->base.next` is not NULL.
+ * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_socket` is NULL.
+ * @retval CR_RESULT_NET_INVALID_ADDRESS `desc->local`'s family is neither
+ *         IPv4 nor IPv6, its `reserved` isn't 0, or it is IPv4 with a scope
+ *         or with bytes past the fourth.
+ * @retval CR_RESULT_DESC_INVALID_PARAMETERS `desc->sharing` is no value of
+ *         its enum, or a buffer size is 0.
+ * @retval CR_RESULT_OUT_OF_MEMORY The socket could not be allocated.
+ * @retval CR_RESULT_NET_ADDRESS_IN_USE The address and port are taken
+ *         (EADDRINUSE, WSAEADDRINUSE; WSAEACCES on Windows, which is what
+ *         SO_EXCLUSIVEADDRUSE held by another gives).
+ * @retval CR_RESULT_NET_BIND_FAILED The system refused to open, set up or
+ *         bind the socket for any other reason (an address this machine
+ *         doesn't hold, Android without INTERNET); `out_error` has it.
+ */
+CR_RESULT crnet_udp_socket_create(
+    crnet_instance instance,
+    const crnet_udp_socket_desc *desc,
+    crnet_udp_socket *out_socket,
+    crnet_error *out_error);
+
+/**
+ * @brief Reads the address and port the socket is bound to (getsockname):
+ * the desc's, with the port the system picked for 0.
+ *
+ * @param[in]  socket      The socket to ask.
+ * @param[out] out_address Receives the address.
+ *
+ * @retval CR_SUCCESS `out_address` was written.
+ * @retval CR_RESULT_NET_INVALID_UDP_SOCKET `socket` is NULL.
+ * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_address` is NULL.
+ */
+CR_RESULT crnet_udp_socket_get_local_address(
+    crnet_udp_socket socket,
+    crnet_address *out_address);
+
+/**
+ * @brief Reads the buffer sizes the system granted (getsockopt SO_RCVBUF
+ * and SO_SNDBUF), which may differ from the desc's: Linux reports twice
+ * what it was asked, for its own bookkeeping, capped by net.core.rmem_max
+ * and wmem_max; the others cap by their own settings.
+ *
+ * @param[in]  socket                  The socket to ask.
+ * @param[out] out_receive_buffer_size Receives SO_RCVBUF in bytes.
+ * @param[out] out_send_buffer_size    Receives SO_SNDBUF in bytes.
+ *
+ * @retval CR_SUCCESS Both were written.
+ * @retval CR_RESULT_NET_INVALID_UDP_SOCKET `socket` is NULL.
+ * @retval CR_RESULT_NULL_OUTPUT_PARAMETER Either output is NULL.
+ */
+CR_RESULT crnet_udp_socket_get_buffer_sizes(
+    crnet_udp_socket socket,
+    uint32_t *out_receive_buffer_size,
+    uint32_t *out_send_buffer_size);
+
+/**
+ * @brief Sends one datagram to one address: the whole of it, or nothing.
+ *
+ * With CRNET_NO_WAIT it is sent if the socket's buffer has room now and
+ * CR_RESULT_NET_TIMED_OUT returned if not; with a limit it waits for room
+ * that long. Sent means handed to the system: whether it arrives is not
+ * known, here or anywhere.
+ *
+ * @param[in] socket     The socket to send from.
+ * @param[in] to         The destination, of the socket's family, port not
+ *                       0. A link-local IPv6 one needs its scope_id.
+ * @param[in] data       The datagram. May be NULL when `size` is 0 (an
+ *                       empty datagram is a datagram).
+ * @param[in] size       Its size in bytes.
+ * @param[in] timeout_ms The longest to wait for room
+ *                       (@ref crnet_time "Time limits").
+ *
+ * @retval CR_SUCCESS The datagram was handed to the system whole.
+ * @retval CR_RESULT_NET_INVALID_UDP_SOCKET `socket` is NULL.
+ * @retval CR_RESULT_NET_INVALID_ADDRESS `to` is NULL, not of the socket's
+ *         family, port 0, or not a valid crnet_address.
+ * @retval CR_RESULT_ZERO_SIZE `data` is NULL and `size` isn't 0, TCP's
+ *         send's code for a missing buffer (an empty datagram, NULL and 0,
+ *         is sent).
+ * @retval CR_RESULT_NET_DATAGRAM_TOO_BIG Longer than the system sends in
+ *         one; nothing was sent.
+ * @retval CR_RESULT_NET_TIMED_OUT No room in time; nothing was sent, and
+ *         the socket is as it was.
+ * @retval CR_RESULT_NET_ABORTED crnet_udp_socket_abort() was called.
+ * @retval CR_RESULT_NET_SEND_FAILED The system refused it for another
+ *         reason (no route; Local Network privacy on Apple, believed to look
+ *         the same, not confirmed: no errno is documented for it; Android
+ *         17's local network permission, EPERM; a socket iOS has reclaimed);
+ *         crnet_udp_socket_get_error() with CRNET_ERROR_SIDE_SENDING has it.
+ *         The socket stays usable, but for one the system has reclaimed
+ *         (iOS, above), which fails every call until destroyed.
+ */
+CR_RESULT crnet_udp_socket_send_to(
+    crnet_udp_socket socket,
+    const crnet_address *to,
+    const void *data,
+    uint32_t size,
+    uint32_t timeout_ms);
+
+/**
+ * @brief Receives one datagram and where it came from.
+ *
+ * With CRNET_NO_WAIT it hands over a datagram already waiting, or returns
+ * CR_RESULT_NET_TIMED_OUT; with a limit it waits for one that long. After a
+ * wait set names the socket, call this with CRNET_NO_WAIT until TIMED_OUT.
+ *
+ * The arguments are in crnet_tcp_socket_recv()'s order (the buffer, its
+ * size, the limit, then the outputs). Sizes are uint32_t, not TCP's
+ * uint64_t: no datagram is larger than 65,535 bytes, and a type that says
+ * so is a check the caller can't miss.
+ *
+ * @param[in]  socket     The socket to receive on.
+ * @param[out] buffer     Receives the datagram's bytes.
+ * @param[in]  capacity   The room in `buffer`; 0 is refused. A datagram
+ *                        longer than this is truncated and reported.
+ * @param[in]  timeout_ms The longest to wait (@ref crnet_time "Time limits").
+ * @param[out] out_size   Receives how many bytes were written: the
+ *                        datagram's size, or `capacity` when truncated; 0
+ *                        for an empty datagram and on any failure.
+ * @param[out] out_from   Receives the source address and port; an IPv6
+ *                        link-local source with its scope_id. Written on
+ *                        success and on TRUNCATED; untouched on any other
+ *                        result.
+ *
+ * @retval CR_SUCCESS One whole datagram was handed over.
+ * @retval CR_RESULT_NET_DATAGRAM_TRUNCATED One datagram longer than
+ *         `capacity`: its first `capacity` bytes and its source were handed
+ *         over and the rest is gone. Not a failure of the socket; the next
+ *         call receives the next datagram.
+ * @retval CR_RESULT_NET_INVALID_UDP_SOCKET `socket` is NULL.
+ * @retval CR_RESULT_ZERO_SIZE `buffer` is NULL or `capacity` is 0, as TCP's
+ *         receive.
+ * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_size` or `out_from` is NULL.
+ * @retval CR_RESULT_NET_TIMED_OUT Nothing arrived in time; the socket is as
+ *         it was.
+ * @retval CR_RESULT_NET_ABORTED crnet_udp_socket_abort() was called.
+ * @retval CR_RESULT_NET_RECV_FAILED The system's receive failed;
+ *         crnet_udp_socket_get_error() with CRNET_ERROR_SIDE_RECEIVING has
+ *         it.
+ */
+CR_RESULT crnet_udp_socket_recv_from(
+    crnet_udp_socket socket,
+    void *buffer,
+    uint32_t capacity,
+    uint32_t timeout_ms,
+    uint32_t *out_size,
+    crnet_address *out_from);
+
+/**
+ * @brief Ends a wait in a send or a receive, and every call after it. See
+ * @ref crnet_aborting "Aborting".
+ *
+ * Thread: may overlap any call on the socket but its destroy.
+ *
+ * @param[in] socket The socket to abort.
+ */
+void crnet_udp_socket_abort(crnet_udp_socket socket);
+
+/**
+ * @brief Reads what the platform reported for the most recent failed call
+ * on one side of the socket. See @ref crnet_error_detail "Error detail".
+ *
+ * @param[in]  socket    The socket to ask. NULL gives an empty record.
+ * @param[in]  side      RECEIVING for recv_from, SENDING for send_to.
+ * @param[out] out_error Receives the record.
+ */
+void crnet_udp_socket_get_error(
+    crnet_udp_socket socket,
+    CRNET_ERROR_SIDE side,
+    crnet_error *out_error);
+
+/**
+ * @brief Closes the socket and frees it. Datagrams waiting in it are
+ * dropped; ones already handed to the system may still go.
+ *
+ * @param[in] socket The socket to destroy. NULL is taken and nothing is
+ *                   done with it.
+ */
+void crnet_udp_socket_destroy(crnet_udp_socket socket);
+
+/** @} */
+
+#endif // CRNET_EXT_UDP
+
+#if CRNET_EXT_DISCOVERY
+
+/**
+ * @defgroup crnet_discovery Service discovery
+ * @ingroup crnet
+ * @brief DNS-SD over multicast DNS on the local network, through
+ * the system's own service: dns_sd on Apple, Windows' DNS-SD API, Avahi on
+ * Linux. Known problems: on Linux a create blocks in avahi-daemon's
+ * D-Bus round trips, with no limit of the caller's; Windows' browse names
+ * no interface, and its reporting of departures and name conflicts is
+ * untried; a destroy on Windows waits for the system's cancel callback;
+ * on iOS a suspended app's discovery objects may need making again.
+ *
+ * Three objects, each a translation of one operation of the system's:
+ *
+ * - A crnet_service_advert makes this machine answer for one service
+ *   instance ("Living room._example._udp.local." on a port) until it is
+ *   destroyed.
+ * - A crnet_service_browser reports the instances of one type as they
+ *   appear and go: FOUND and LOST.
+ * - A crnet_service_resolver turns one found instance into its host name,
+ *   port, TXT record and addresses: SERVICE and ADDRESS_ADDED.
+ *
+ * Each is made with its `_create`, which begins the operation and returns
+ * at once; its results are events read by its `_next`, which takes a time
+ * limit as every wait in this header does, and with CRNET_NO_WAIT hands
+ * over what has already arrived. Each can be in a wait set, named when it
+ * has an event. Nothing here calls the caller back.
+ *
+ * Pure translation: the service type, the name, the port, the TXT
+ * entries and the interfaces are all the caller's, with no default.
+ * The domain is always "local.". No name is ever changed for the caller: a
+ * name that is taken ends the advert with
+ * CR_RESULT_NET_SERVICE_NAME_CONFLICT.
+ *
+ * What the caller must give the system, per platform:
+ *
+ * - iOS and iPadOS 14 and later: NSLocalNetworkUsageDescription and
+ *   NSBonjourServices (every type browsed or advertised) in the app's
+ *   Info.plist, and the person's permission, asked by the system at first
+ *   use. A type missing from NSBonjourServices is
+ *   CR_RESULT_NET_DISCOVERY_DENIED; while the person is being asked,
+ *   each object hands over a LOCAL_NETWORK_NOT_ALLOWED event and waits.
+ *   macOS 15 and later asks the same permission of apps.
+ * - Linux: avahi-daemon running; otherwise every create is
+ *   CR_RESULT_NET_DISCOVERY_UNAVAILABLE.
+ * - Windows: the DNS-SD calls in the system's dnsapi.dll (Windows 10 or
+ *   later), and mDNS (UDP 5353) let through the firewall on the network's
+ *   profile.
+ *
+ * Thread: each object is one caller at a time; its `_abort` may overlap
+ * any call on it but its destroy. While an object is in a wait set, a wait
+ * on the set counts as a call on it: its `_next` may not overlap the wait.
+ * @{
+ */
+
+/** @brief Room for an instance name, with its terminator: a DNS
+ * label is at most 63 bytes. */
+#define CRNET_SERVICE_NAME_CAPACITY 64
+/** @brief Room for a service type, with its terminator:
+ * "_" + at most 15 characters + "._udp" or "._tcp" (RFC 6335). */
+#define CRNET_SERVICE_TYPE_CAPACITY 32
+/** @brief Room for a host name, with its terminator: a DNS name is
+ * at most 255 bytes. */
+#define CRNET_SERVICE_HOST_CAPACITY 256
+/** @brief The largest TXT record an advert takes, and the most of
+ * a found one a resolve event holds, in bytes of DNS wire form.
+ * RFC 6763's section 6.2 calls a TXT record over 1300 bytes "NOT
+ * RECOMMENDED" (its one-packet bound, section 6.1, is about 8900), so an
+ * advert keeps to it; a found one may be larger, and is then cut and said
+ * so (txt_truncated). */
+#define CRNET_SERVICE_TXT_CAPACITY 1300
+
+/**
+ * @brief Which interfaces an advert or a browser works on. No value
+ * is a default: NONE is refused.
+ */
+typedef enum CRNET_DISCOVERY_SCOPE {
+	/** Not chosen; refused. */
+	CRNET_DISCOVERY_SCOPE_NONE = 0,
+	/** Every interface the system's service uses (dns_sd's
+	 * kDNSServiceInterfaceIndexAny, Avahi's AVAHI_IF_UNSPEC, Windows'
+	 * InterfaceIndex 0). */
+	CRNET_DISCOVERY_SCOPE_ALL_INTERFACES = 1,
+	/** The one interface named by the desc's `interface_index`, an index as
+	 * crnet_interface_properties has it. */
+	CRNET_DISCOVERY_SCOPE_ONE_INTERFACE = 2,
+} CRNET_DISCOVERY_SCOPE;
+
+/**
+ * @brief One TXT entry of an advert, as "key=value".
+ */
+/* Frozen: an array element the caller passes in. It never changes; a new need gets a new type. */
+typedef struct crnet_service_txt_entry {
+	/** Printable US-ASCII (0x20 to 0x7E) without '=', 1 byte or more,
+	 * null-terminated. Keys are compared ignoring case by DNS-SD; two
+	 * entries whose keys differ only in case are refused. */
+	const char *key;
+	/** UTF-8 without a NUL, null-terminated; may be empty (""), never NULL.
+	 * The key, '=' and the value are at most 255 bytes together. */
+	const char *value;
+} crnet_service_txt_entry;
+
+/* ------------------------------------------------------------------------ */
+/* Advert                                                                    */
+/* ------------------------------------------------------------------------ */
+
+/** @brief Opaque handle to one advertised service instance. Its
+ * event ring holds three, made at its create: an advert has at
+ * most three events to hand over, LOCAL_NETWORK_NOT_ALLOWED, REGISTERED and then
+ * the failure that ends it, so it needs no `event_capacity`; a repeat of
+ * either (a permission withdrawn and given again in Settings) replaces the
+ * unread one of its kind, so it never drops one. */
+typedef struct crnet_service_advert_t *crnet_service_advert;
+
+/** @brief What crnet_service_advert_create() advertises. */
+typedef struct crnet_service_advert_desc {
+	/** `type` is CR_STRUCT_TYPE_NET_SERVICE_ADVERT_DESC; `next` is NULL
+	 * (nothing is chained onto this struct yet). Set by the caller. See
+	 * CR_STRUCT_BASE. */
+	CR_STRUCT_BASE base;
+	/** The instance name, the one people see ("Nathan's Mac"): UTF-8, 1 to
+	 * 63 bytes, null-terminated, no ASCII control character
+	 * (0x00 to 0x1F, 0x7F: RFC 6763, section 4.1.1). Copied. */
+	const char *name;
+	/** The service type, "_name._udp" or "_name._tcp", the name 1 to 15
+	 * letters, digits and hyphens, beginning and ending with a
+	 * letter or digit (RFC 6335, section 5.1), no trailing dot. Copied. */
+	const char *type;
+	/** The port the service is reached on, this machine's socket's; not 0.
+	 * Carrottus Net doesn't check that anything listens there. */
+	uint16_t port;
+	/** Which interfaces to answer on. */
+	CRNET_DISCOVERY_SCOPE scope;
+	/** With CRNET_DISCOVERY_SCOPE_ONE_INTERFACE, the interface's index
+	 * (not 0); otherwise 0. */
+	uint32_t interface_index;
+	/** The TXT entries, in the order they go into the record; NULL when
+	 * `txt_entry_count` is 0 (an empty record). Copied. */
+	const crnet_service_txt_entry *txt_entries;
+	/** How many entries `txt_entries` holds. Their record in wire form (a
+	 * length byte and the entry, each) is at most
+	 * CRNET_SERVICE_TXT_CAPACITY bytes. */
+	uint32_t txt_entry_count;
+} crnet_service_advert_desc;
+
+/** @brief What an advert's event says. */
+typedef enum CRNET_SERVICE_ADVERT_EVENT_KIND {
+	/** No event: never handed over, so a zeroed event reads as
+	 * none. */
+	CRNET_SERVICE_ADVERT_EVENT_NONE = 0,
+	/** The system's service has the instance registered and answers for
+	 * it; `name` is the one asked for (it is never changed). Comes once. */
+	CRNET_SERVICE_ADVERT_EVENT_REGISTERED = 1,
+	/** The system doesn't allow this app the local network
+	 * now: dns_sd's kDNSServiceErr_PolicyDenied while the operation waits
+	 * (iOS, iPadOS, macOS 15 and later), the one signal Apple gives whether
+	 * the person is being asked or has said no, so a caller shows "Allow
+	 * the local network in Settings" at once. Never on Windows or Linux.
+	 * The advert goes on: REGISTERED follows if the person allows it. */
+	CRNET_SERVICE_ADVERT_EVENT_LOCAL_NETWORK_NOT_ALLOWED = 2,
+} CRNET_SERVICE_ADVERT_EVENT_KIND;
+
+/** @brief One event of an advert, filled by
+ * crnet_service_advert_next(). */
+typedef struct crnet_service_advert_event {
+	/** `type` is CR_STRUCT_TYPE_NET_SERVICE_ADVERT_EVENT; `next` is NULL.
+	 * The caller sets the type; Carrottus Net fills in the rest. See
+	 * CR_STRUCT_BASE. */
+	CR_STRUCT_BASE_OUT base;
+	/** What happened. */
+	CRNET_SERVICE_ADVERT_EVENT_KIND kind;
+	/** The instance's name, UTF-8, null-terminated. */
+	char name[CRNET_SERVICE_NAME_CAPACITY];
+} crnet_service_advert_event;
+
+/**
+ * @brief Begins advertising one service instance on this machine:
+ * DNSServiceRegister (kDNSServiceFlagsNoAutoRename, the host NULL, so this
+ * machine's name), DnsServiceRegister (an instance from
+ * DnsServiceConstructInstance), or an AvahiEntryGroup with the service,
+ * committed. Returns at once; REGISTERED comes as an event.
+ *
+ * The host is always this machine, under the name the system's service
+ * keeps for it.
+ *
+ * @param[in]  instance   The instance the advert is made with.
+ * @param[in]  desc       What the caller decides. Only read during the
+ *                        call.
+ * @param[out] out_advert Receives the advert, the caller's to destroy.
+ *                        NULL on failure.
+ * @param[out] out_error  Receives the system's reason for a failure, which
+ *                        leaves no advert to ask. May be NULL. See
+ *                        @ref crnet_error_detail "Error detail". Once card
+ *                        S10 is built, the same platform error also goes
+ *                        to the instance's message callback, inside the
+ *                        call; so for the browser's and resolver's create.
+ *
+ * @retval CR_SUCCESS The registration has begun.
+ * @retval CR_RESULT_NET_INVALID_INSTANCE `instance` is NULL.
+ * @retval CR_RESULT_NULL_DESC `desc` is NULL.
+ * @retval CR_RESULT_STRUCT_WRONG_TYPE `desc->base.type` is not
+ *         CR_STRUCT_TYPE_NET_SERVICE_ADVERT_DESC.
+ * @retval CR_RESULT_STRUCT_UNKNOWN_IN_CHAIN `desc->base.next` is not NULL.
+ * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_advert` is NULL.
+ * @retval CR_RESULT_DESC_INVALID_PARAMETERS The name, the type, the port,
+ *         the scope and its index, or a TXT entry or the record's size
+ *         breaks its rule above.
+ * @retval CR_RESULT_OUT_OF_MEMORY The advert could not be allocated.
+ * @retval CR_RESULT_NET_DISCOVERY_UNAVAILABLE The system's service isn't
+ *         there.
+ * @retval CR_RESULT_NET_DISCOVERY_DENIED The system refused this program
+ *         or this type.
+ * @retval CR_RESULT_NET_DISCOVERY_FAILED The system refused the
+ *         registration for another reason; `out_error` has it.
+ */
+CR_RESULT crnet_service_advert_create(
+    crnet_instance instance,
+    const crnet_service_advert_desc *desc,
+    crnet_service_advert *out_advert,
+    crnet_error *out_error);
+
+/**
+ * @brief Hands over the advert's next event, waiting for one no
+ * longer than `timeout_ms`. A failure that comes after REGISTERED (the
+ * name taken later by a device that joined, the daemon restarted) is
+ * returned by the next call, and the advert is then over.
+ *
+ * @param[in]  advert     The advert.
+ * @param[in]  timeout_ms The longest to wait (@ref crnet_time "Time limits").
+ * @param[out] out_event  Receives the event; its `base.type` set by the
+ *                        caller.
+ *
+ * @retval CR_SUCCESS `out_event` was written.
+ * @retval CR_RESULT_NET_INVALID_SERVICE_ADVERT `advert` is NULL.
+ * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_event` is NULL.
+ * @retval CR_RESULT_STRUCT_WRONG_TYPE `out_event->base.type` is not
+ *         CR_STRUCT_TYPE_NET_SERVICE_ADVERT_EVENT.
+ * @retval CR_RESULT_STRUCT_UNKNOWN_IN_CHAIN `out_event->base.next` is not
+ *         NULL.
+ * @retval CR_RESULT_NET_TIMED_OUT No event in time; the advert is as it
+ *         was (an advert registered and well has no more events, so this
+ *         is what every later call returns).
+ * @retval CR_RESULT_NET_ABORTED crnet_service_advert_abort() was called.
+ * @retval CR_RESULT_NET_SERVICE_NAME_CONFLICT The name is taken; the
+ *         advert is over and no longer answers.
+ * @retval CR_RESULT_NET_DISCOVERY_DENIED The system refused it after it
+ *         was made (iOS's permission withdrawn).
+ * @retval CR_RESULT_NET_DISCOVERY_FAILED The system's service failed it
+ *         or went away; crnet_service_advert_get_error() has its code.
+ */
+CR_RESULT crnet_service_advert_next(
+    crnet_service_advert advert,
+    uint32_t timeout_ms,
+    crnet_service_advert_event *out_event);
+
+/**
+ * @brief Ends a wait in crnet_service_advert_next(), and every call
+ * after it. The instance stays advertised until the advert is destroyed.
+ * See @ref crnet_aborting "Aborting".
+ *
+ * Thread: may overlap any call on the advert but its destroy.
+ *
+ * @param[in] advert The advert to abort.
+ */
+void crnet_service_advert_abort(crnet_service_advert advert);
+
+/**
+ * @brief Reads what the system reported for the advert's most recent
+ * failure: a DNSServiceErrorType, a Win32 error, or an Avahi error code.
+ * See @ref crnet_error_detail "Error detail".
+ *
+ * @param[in]  advert    The advert to ask. NULL gives an empty record.
+ * @param[out] out_error Receives the record.
+ */
+void crnet_service_advert_get_error(
+    crnet_service_advert advert,
+    crnet_error *out_error);
+
+/**
+ * @brief Stops advertising and frees the advert: the system's
+ * service sends its goodbye, so browsers elsewhere see LOST. Known problem:
+ * on Windows it waits for DnsServiceDeRegister's callback.
+ *
+ * @param[in] advert The advert to destroy. NULL is taken and nothing is
+ *                   done with it.
+ */
+void crnet_service_advert_destroy(crnet_service_advert advert);
+
+/* ------------------------------------------------------------------------ */
+/* Browser                                                                   */
+/* ------------------------------------------------------------------------ */
+
+/** @brief Opaque handle to one browse for one service type. */
+typedef struct crnet_service_browser_t *crnet_service_browser;
+
+/** @brief What crnet_service_browser_create() looks for. */
+typedef struct crnet_service_browser_desc {
+	/** `type` is CR_STRUCT_TYPE_NET_SERVICE_BROWSER_DESC; `next` is NULL
+	 * (nothing is chained onto this struct yet). Set by the caller. See
+	 * CR_STRUCT_BASE. */
+	CR_STRUCT_BASE base;
+	/** The service type, as for an advert. Copied. */
+	const char *type;
+	/** Which interfaces to look on. */
+	CRNET_DISCOVERY_SCOPE scope;
+	/** With CRNET_DISCOVERY_SCOPE_ONE_INTERFACE, the interface's index
+	 * (not 0); otherwise 0. */
+	uint32_t interface_index;
+	/** How many unread events the browser keeps; not 0. Allocated when the
+	 * browser is made. Past it, events are dropped and EVENTS_DROPPED says
+	 * so. */
+	uint32_t event_capacity;
+} crnet_service_browser_desc;
+
+/** @brief What a browse event says. */
+typedef enum CRNET_SERVICE_BROWSE_EVENT_KIND {
+	/** No event: never handed over. */
+	CRNET_SERVICE_BROWSE_EVENT_NONE = 0,
+	/** An instance of the type is there, on `interface_index` (0 on
+	 * Windows, which doesn't say). dns_sd: kDNSServiceFlagsAdd;
+	 * Avahi: AVAHI_BROWSER_NEW; Windows: a PTR record with a TTL. */
+	CRNET_SERVICE_BROWSE_EVENT_FOUND = 1,
+	/** One FOUND of before has gone: the same name and interface.
+	 * dns_sd: a reply without kDNSServiceFlagsAdd; Avahi:
+	 * AVAHI_BROWSER_REMOVE; Windows: believed a TTL of 0. */
+	CRNET_SERVICE_BROWSE_EVENT_LOST = 2,
+	/** Events were dropped because the ring was full: what the caller
+	 * holds may be stale. `name` is empty. */
+	CRNET_SERVICE_BROWSE_EVENT_EVENTS_DROPPED = 3,
+	/** As the advert's: waiting for the person to allow the local
+	 * network; finds follow if allowed. `name` is empty. */
+	CRNET_SERVICE_BROWSE_EVENT_LOCAL_NETWORK_NOT_ALLOWED = 4,
+} CRNET_SERVICE_BROWSE_EVENT_KIND;
+
+/** @brief One event of a browser, filled by
+ * crnet_service_browser_next(). */
+typedef struct crnet_service_browse_event {
+	/** `type` is CR_STRUCT_TYPE_NET_SERVICE_BROWSE_EVENT; `next` is NULL.
+	 * The caller sets the type; Carrottus Net fills in the rest. See
+	 * CR_STRUCT_BASE. */
+	CR_STRUCT_BASE_OUT base;
+	/** What happened. */
+	CRNET_SERVICE_BROWSE_EVENT_KIND kind;
+	/** The instance's name, UTF-8, null-terminated, as another device
+	 * advertised it: not to be trusted, and only a name. A name
+	 * another device sends that no advert could carry (over 63 bytes, not
+	 * UTF-8, a control character) is dropped, never handed over, so every
+	 * name handed over is one a resolver's desc takes; the browse reader is
+	 * fuzzed. */
+	char name[CRNET_SERVICE_NAME_CAPACITY];
+	/** The interface it was seen on: what a resolver of it takes. 0 where
+	 * the system doesn't say (Windows). */
+	uint32_t interface_index;
+} crnet_service_browse_event;
+
+/**
+ * @brief Begins browsing for one service type: DNSServiceBrowse,
+ * DnsServiceBrowse, or an AvahiServiceBrowser (AVAHI_PROTO_UNSPEC).
+ * Returns at once; what is found comes as events, this machine's own
+ * adverts included.
+ *
+ * @param[in]  instance    The instance the browser is made with.
+ * @param[in]  desc        What the caller decides. Only read during the
+ *                         call.
+ * @param[out] out_browser Receives the browser, the caller's to destroy.
+ *                         NULL on failure.
+ * @param[out] out_error   Receives the system's reason for a failure. May
+ *                         be NULL.
+ *
+ * @retval CR_SUCCESS The browse has begun.
+ * @retval CR_RESULT_NET_INVALID_INSTANCE `instance` is NULL.
+ * @retval CR_RESULT_NULL_DESC `desc` is NULL.
+ * @retval CR_RESULT_STRUCT_WRONG_TYPE `desc->base.type` is not
+ *         CR_STRUCT_TYPE_NET_SERVICE_BROWSER_DESC.
+ * @retval CR_RESULT_STRUCT_UNKNOWN_IN_CHAIN `desc->base.next` is not NULL.
+ * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_browser` is NULL.
+ * @retval CR_RESULT_DESC_INVALID_PARAMETERS The type, the scope and its
+ *         index, or `event_capacity` breaks its rule above.
+ * @retval CR_RESULT_OUT_OF_MEMORY The browser or its ring could not be
+ *         allocated.
+ * @retval CR_RESULT_NET_DISCOVERY_UNAVAILABLE The system's service isn't
+ *         there.
+ * @retval CR_RESULT_NET_DISCOVERY_DENIED The system refused this program
+ *         or this type.
+ * @retval CR_RESULT_NET_DISCOVERY_FAILED The system refused the browse for
+ *         another reason; `out_error` has it.
+ */
+CR_RESULT crnet_service_browser_create(
+    crnet_instance instance,
+    const crnet_service_browser_desc *desc,
+    crnet_service_browser *out_browser,
+    crnet_error *out_error);
+
+/**
+ * @brief Hands over the browser's next event, oldest first, waiting
+ * for one no longer than `timeout_ms`. On Apple and Linux this is where
+ * the system's replies are read (DNSServiceProcessResult, Avahi's
+ * dispatch), only as far as they are already waiting.
+ *
+ * @param[in]  browser    The browser.
+ * @param[in]  timeout_ms The longest to wait (@ref crnet_time "Time limits").
+ * @param[out] out_event  Receives the event; its `base.type` set by the
+ *                        caller.
+ *
+ * @retval CR_SUCCESS `out_event` was written.
+ * @retval CR_RESULT_NET_INVALID_SERVICE_BROWSER `browser` is NULL.
+ * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_event` is NULL.
+ * @retval CR_RESULT_STRUCT_WRONG_TYPE `out_event->base.type` is not
+ *         CR_STRUCT_TYPE_NET_SERVICE_BROWSE_EVENT.
+ * @retval CR_RESULT_STRUCT_UNKNOWN_IN_CHAIN `out_event->base.next` is not
+ *         NULL.
+ * @retval CR_RESULT_NET_TIMED_OUT No event in time; the browser is as it
+ *         was.
+ * @retval CR_RESULT_NET_ABORTED crnet_service_browser_abort() was called.
+ * @retval CR_RESULT_NET_DISCOVERY_DENIED The system refused it after it
+ *         was made.
+ * @retval CR_RESULT_NET_DISCOVERY_FAILED The system's service failed the
+ *         browse or went away; the browser is over.
+ *         crnet_service_browser_get_error() has its code. Events read
+ *         before it stand.
+ */
+CR_RESULT crnet_service_browser_next(
+    crnet_service_browser browser,
+    uint32_t timeout_ms,
+    crnet_service_browse_event *out_event);
+
+/**
+ * @brief Ends a wait in crnet_service_browser_next(), and every
+ * call after it. See @ref crnet_aborting "Aborting".
+ *
+ * Thread: may overlap any call on the browser but its destroy.
+ *
+ * @param[in] browser The browser to abort.
+ */
+void crnet_service_browser_abort(crnet_service_browser browser);
+
+/**
+ * @brief Reads what the system reported for the browser's most
+ * recent failure. See @ref crnet_error_detail "Error detail".
+ *
+ * @param[in]  browser   The browser to ask. NULL gives an empty record.
+ * @param[out] out_error Receives the record.
+ */
+void crnet_service_browser_get_error(
+    crnet_service_browser browser,
+    crnet_error *out_error);
+
+/**
+ * @brief Stops browsing and frees the browser and its unread
+ * events. Known problem: on Windows it waits for DnsServiceBrowseCancel's
+ * callback.
+ *
+ * @param[in] browser The browser to destroy. NULL is taken and nothing is
+ *                    done with it.
+ */
+void crnet_service_browser_destroy(crnet_service_browser browser);
+
+/* ------------------------------------------------------------------------ */
+/* Resolver                                                                  */
+/* ------------------------------------------------------------------------ */
+
+/** @brief Opaque handle to one resolve of one found instance. Not
+ * a crnet_resolver, which looks up a host name. */
+typedef struct crnet_service_resolver_t *crnet_service_resolver;
+
+/** @brief What crnet_service_resolver_create() resolves: an
+ * instance as a FOUND event named it. */
+typedef struct crnet_service_resolver_desc {
+	/** `type` is CR_STRUCT_TYPE_NET_SERVICE_RESOLVER_DESC; `next` is NULL
+	 * (nothing is chained onto this struct yet). Set by the caller. See
+	 * CR_STRUCT_BASE. */
+	CR_STRUCT_BASE base;
+	/** The instance's name, as the FOUND event had it. Copied. */
+	const char *name;
+	/** The service type, as browsed. Copied. */
+	const char *type;
+	/** The interface the instance was found on (the event's
+	 * `interface_index`); 0 for any interface, as a Windows
+	 * FOUND gives it (dns_sd's kDNSServiceInterfaceIndexAny, Avahi's
+	 * AVAHI_IF_UNSPEC). */
+	uint32_t interface_index;
+	/** Which addresses of its host to report: IPv4, IPv6, or ANY for both. */
+	CRNET_ADDRESS_FAMILY family;
+	/** How many unread events the resolver keeps; not 0. */
+	uint32_t event_capacity;
+} crnet_service_resolver_desc;
+
+/** @brief What a resolve event says. */
+typedef enum CRNET_SERVICE_RESOLVE_EVENT_KIND {
+	/** No event: never handed over. */
+	CRNET_SERVICE_RESOLVE_EVENT_NONE = 0,
+	/** The instance's host, port and TXT record: `host`, `port`, `txt`.
+	 * At least once on success; again on dns_sd when the record changes
+	 * (its resolve goes on until destroyed), never again on Avahi and
+	 * Windows (theirs is one answer). */
+	CRNET_SERVICE_RESOLVE_EVENT_SERVICE = 1,
+	/** One address of the host: `address`, its port the service's. On Apple
+	 * from DNSServiceGetAddrInfo on the host, begun by the resolver itself
+	 * once SERVICE has come (dns_sd separates the two steps; Avahi and
+	 * Windows give the address with the service, at most one per family). */
+	CRNET_SERVICE_RESOLVE_EVENT_ADDRESS_ADDED = 2,
+	/** An ADDRESS_ADDED of before is no longer the host's (dns_sd only). */
+	CRNET_SERVICE_RESOLVE_EVENT_ADDRESS_REMOVED = 3,
+	/** Events were dropped because the ring was full. */
+	CRNET_SERVICE_RESOLVE_EVENT_EVENTS_DROPPED = 4,
+	/** As the advert's: waiting for the person to allow the local
+	 * network. */
+	CRNET_SERVICE_RESOLVE_EVENT_LOCAL_NETWORK_NOT_ALLOWED = 5,
+} CRNET_SERVICE_RESOLVE_EVENT_KIND;
+
+/** @brief One event of a resolver, filled by
+ * crnet_service_resolver_next(). Which fields are written depends on its
+ * kind; the others are zero. */
+typedef struct crnet_service_resolve_event {
+	/** `type` is CR_STRUCT_TYPE_NET_SERVICE_RESOLVE_EVENT; `next` is NULL.
+	 * The caller sets the type; Carrottus Net fills in the rest. See
+	 * CR_STRUCT_BASE. */
+	CR_STRUCT_BASE_OUT base;
+	/** What happened. */
+	CRNET_SERVICE_RESOLVE_EVENT_KIND kind;
+	/** SERVICE: the host's name, null-terminated ("Nathans-Mac.local.").
+	 * Another device's claim: not to be trusted. */
+	char host[CRNET_SERVICE_HOST_CAPACITY];
+	/** SERVICE: the service's port. */
+	uint16_t port;
+	/** ADDRESS_ADDED and ADDRESS_REMOVED: the address, with the service's
+	 * port and, for IPv6 link-local, the interface as its scope_id. */
+	crnet_address address;
+	/** SERVICE: the TXT record's size in bytes as received, which may be
+	 * more than CRNET_SERVICE_TXT_CAPACITY. */
+	uint32_t txt_size;
+	/** SERVICE: true when `txt_size` is more than
+	 * CRNET_SERVICE_TXT_CAPACITY and `txt` holds only its first bytes. */
+	bool txt_truncated;
+	/** SERVICE: the TXT record in DNS wire form (each entry a length byte
+	 * and that many bytes), as the system received it, up to
+	 * CRNET_SERVICE_TXT_CAPACITY bytes. Windows, which hands it over as
+	 * keys and values, has it written back into wire form, each entry as
+	 * "key=value". Parsing it is the caller's. */
+	uint8_t txt[CRNET_SERVICE_TXT_CAPACITY];
+} crnet_service_resolve_event;
+
+/**
+ * @brief Begins resolving one found instance:
+ * DNSServiceCreateConnection, then DNSServiceResolve and, once it
+ * answers, DNSServiceGetAddrInfo on its host, both with
+ * kDNSServiceFlagsShareConnection on that connection (so one descriptor;
+ * dns_sd.h: only a connection's own ref can be shared, and deallocating
+ * it ends every operation on it; macOS tested 2026-11-21: host, port, TXT
+ * and then ::1, fe80::1 with its scope and 127.0.0.1); DnsServiceResolve;
+ * or an AvahiServiceResolver. Returns at once (on Linux, after avahi-
+ * daemon's answers).
+ *
+ * @param[in]  instance     The instance the resolver is made with.
+ * @param[in]  desc         What the caller decides. Only read during the
+ *                          call.
+ * @param[out] out_resolver Receives the resolver, the caller's to destroy.
+ *                          NULL on failure.
+ * @param[out] out_error    Receives the system's reason for a failure. May
+ *                          be NULL.
+ *
+ * @retval CR_SUCCESS The resolve has begun.
+ * @retval CR_RESULT_NET_INVALID_INSTANCE `instance` is NULL.
+ * @retval CR_RESULT_NULL_DESC `desc` is NULL.
+ * @retval CR_RESULT_STRUCT_WRONG_TYPE `desc->base.type` is not
+ *         CR_STRUCT_TYPE_NET_SERVICE_RESOLVER_DESC.
+ * @retval CR_RESULT_STRUCT_UNKNOWN_IN_CHAIN `desc->base.next` is not NULL.
+ * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_resolver` is NULL.
+ * @retval CR_RESULT_DESC_INVALID_PARAMETERS The name, the type, the
+ *         interface index, the family or `event_capacity` breaks its rule.
+ * @retval CR_RESULT_OUT_OF_MEMORY The resolver or its ring could not be
+ *         allocated.
+ * @retval CR_RESULT_NET_DISCOVERY_UNAVAILABLE The system's service isn't
+ *         there.
+ * @retval CR_RESULT_NET_DISCOVERY_DENIED The system refused this program
+ *         or this type.
+ * @retval CR_RESULT_NET_DISCOVERY_FAILED The system refused the resolve
+ *         for another reason; `out_error` has it.
+ */
+CR_RESULT crnet_service_resolver_create(
+    crnet_instance instance,
+    const crnet_service_resolver_desc *desc,
+    crnet_service_resolver *out_resolver,
+    crnet_error *out_error);
+
+/**
+ * @brief Hands over the resolver's next event, oldest first,
+ * waiting for one no longer than `timeout_ms`.
+ *
+ * When the caller has what it needs (often the first SERVICE and one
+ * ADDRESS_ADDED), it destroys the resolver: on dns_sd it otherwise goes
+ * on watching.
+ *
+ * @param[in]  resolver   The resolver.
+ * @param[in]  timeout_ms The longest to wait (@ref crnet_time "Time limits").
+ * @param[out] out_event  Receives the event; its `base.type` set by the
+ *                        caller.
+ *
+ * @retval CR_SUCCESS `out_event` was written.
+ * @retval CR_RESULT_NET_INVALID_SERVICE_RESOLVER `resolver` is NULL.
+ * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_event` is NULL.
+ * @retval CR_RESULT_STRUCT_WRONG_TYPE `out_event->base.type` is not
+ *         CR_STRUCT_TYPE_NET_SERVICE_RESOLVE_EVENT.
+ * @retval CR_RESULT_STRUCT_UNKNOWN_IN_CHAIN `out_event->base.next` is not
+ *         NULL.
+ * @retval CR_RESULT_NET_TIMED_OUT No event in time; the resolver is as it
+ *         was.
+ * @retval CR_RESULT_NET_ABORTED crnet_service_resolver_abort() was called.
+ * @retval CR_RESULT_NET_DISCOVERY_DENIED The system refused it after it
+ *         was made.
+ * @retval CR_RESULT_NET_SERVICE_NOT_ANSWERING On Avahi and Windows,
+ *         their own time-out for an instance that didn't answer; the
+ *         resolver is over, the system well.
+ * @retval CR_RESULT_NET_DISCOVERY_FAILED The system's service failed the
+ *         resolve or went away; the resolver is over.
+ *         crnet_service_resolver_get_error() has its code.
+ */
+CR_RESULT crnet_service_resolver_next(
+    crnet_service_resolver resolver,
+    uint32_t timeout_ms,
+    crnet_service_resolve_event *out_event);
+
+/**
+ * @brief Ends a wait in crnet_service_resolver_next(), and every
+ * call after it. See @ref crnet_aborting "Aborting".
+ *
+ * Thread: may overlap any call on the resolver but its destroy.
+ *
+ * @param[in] resolver The resolver to abort.
+ */
+void crnet_service_resolver_abort(crnet_service_resolver resolver);
+
+/**
+ * @brief Reads what the system reported for the resolver's most
+ * recent failure. See @ref crnet_error_detail "Error detail".
+ *
+ * @param[in]  resolver  The resolver to ask. NULL gives an empty record.
+ * @param[out] out_error Receives the record.
+ */
+void crnet_service_resolver_get_error(
+    crnet_service_resolver resolver,
+    crnet_error *out_error);
+
+/**
+ * @brief Stops resolving and frees the resolver and its unread
+ * events. Known problem: on Windows it waits for
+ * DnsServiceResolveCancel's callback when the resolve hasn't ended.
+ *
+ * @param[in] resolver The resolver to destroy. NULL is taken and nothing
+ *                     is done with it.
+ */
+void crnet_service_resolver_destroy(crnet_service_resolver resolver);
+
+/** @} */
+
+#endif // CRNET_EXT_DISCOVERY
 
 /**
  * @defgroup crnet_stack HTTP and WebSocket
@@ -2955,7 +4275,8 @@ void crnet_websocket_destroy(crnet_websocket socket);
  * crnet_wait_set_wait() only says which objects are worth calling, and
  * the caller then makes the ordinary calls on them with CRNET_NO_WAIT.
  *
- * TCP sockets, TCP listeners, WebSockets and HTTP transfers can be in one.
+ * TCP sockets, TCP listeners, UDP sockets, WebSockets, HTTP transfers and
+ * service discovery's adverts, browsers and resolvers can be in one.
  *
  * How to use one, which is the same as for epoll or kqueue used carefully:
  *
@@ -3200,6 +4521,125 @@ CR_RESULT crnet_wait_set_add_websocket(
 void crnet_wait_set_remove_websocket(crnet_wait_set set, crnet_websocket socket);
 
 #endif // CRNET_EXT_WEBSOCKET
+
+#if CRNET_EXT_UDP
+
+/**
+ * @brief Adds a UDP socket to the set: its descriptor in the set's poll(),
+ * as a TCP socket's is.
+ *
+ * It is named CRNET_WAIT_FOR_INCOMING when crnet_udp_socket_recv_from() has
+ * a datagram to hand over, and CRNET_WAIT_FOR_ROOM when
+ * crnet_udp_socket_send_to() would take one now - which, on a socket not
+ * backed up, is all the time, so ROOM is asked for only while a datagram
+ * couldn't be sent. To change `wait_for`, remove the socket and add it
+ * again.
+ *
+ * Thread: while the socket is in the set, a wait on the set counts as a
+ * receiving call on it, as for a TCP socket: a send may overlap the wait.
+ *
+ * @param[in] set      The set to add to.
+ * @param[in] socket   The socket. It is removed from the set before it is
+ *                     destroyed.
+ * @param[in] wait_for One or both CRNET_WAIT_FOR bits.
+ * @param[in] user     The caller's own, handed back in the events. Never
+ *                     dereferenced.
+ *
+ * @retval CR_SUCCESS The socket is in the set.
+ * @retval CR_RESULT_NET_INVALID_WAIT_SET `set` is NULL.
+ * @retval CR_RESULT_NET_INVALID_UDP_SOCKET `socket` is NULL.
+ * @retval CR_RESULT_DESC_INVALID_PARAMETERS `wait_for` is 0 or has a bit
+ *         that isn't a CRNET_WAIT_FOR one.
+ * @retval CR_RESULT_NET_INVALID_INSTANCE `socket` was made with another
+ *         instance than the set's.
+ * @retval CR_RESULT_NET_ALREADY_IN_WAIT_SET `socket` is already in this set
+ *         (as for a TCP socket: a descriptor may be in two sets' poll() at
+ *         once).
+ * @retval CR_RESULT_OUT_OF_MEMORY The set could not grow.
+ */
+CR_RESULT crnet_wait_set_add_udp_socket(
+    crnet_wait_set set,
+    crnet_udp_socket socket,
+    uint32_t wait_for,
+    void *user);
+
+/**
+ * @brief Takes a UDP socket out of the set. One not in it is ignored; so is
+ * NULL for either argument.
+ *
+ * @param[in] set    The set.
+ * @param[in] socket The socket.
+ */
+void crnet_wait_set_remove_udp_socket(crnet_wait_set set, crnet_udp_socket socket);
+
+#endif // CRNET_EXT_UDP
+
+#if CRNET_EXT_DISCOVERY
+
+/**
+ * @brief Adds an advert to the set. It is named
+ * CRNET_WAIT_FOR_INCOMING when crnet_service_advert_next() has an event or
+ * a failure to hand over. On Apple its descriptor is polled; on Linux,
+ * Avahi's descriptors and timers; on Windows the system's callback wakes
+ * the set.
+ *
+ * @param[in] set    The set to add to.
+ * @param[in] advert The advert. It is removed from the set before it is
+ *                   destroyed.
+ * @param[in] user   The caller's own, handed back in the events. Never
+ *                   dereferenced.
+ *
+ * @retval CR_SUCCESS The advert is in the set.
+ * @retval CR_RESULT_NET_INVALID_WAIT_SET `set` is NULL.
+ * @retval CR_RESULT_NET_INVALID_SERVICE_ADVERT `advert` is NULL.
+ * @retval CR_RESULT_NET_INVALID_INSTANCE `advert` was made with another
+ *         instance than the set's.
+ * @retval CR_RESULT_NET_ALREADY_IN_WAIT_SET `advert` is in this set or
+ *         another: unlike a socket, a discovery object is in one
+ *         set at most, since on Windows the system's callback wakes the one
+ *         set it was added to.
+ * @retval CR_RESULT_OUT_OF_MEMORY The set could not grow.
+ */
+CR_RESULT crnet_wait_set_add_service_advert(
+    crnet_wait_set set,
+    crnet_service_advert advert,
+    void *user);
+
+/** @brief Takes an advert out of the set. One not in it is ignored;
+ * so is NULL for either argument. */
+void crnet_wait_set_remove_service_advert(crnet_wait_set set, crnet_service_advert advert);
+
+/**
+ * @brief Adds a browser to the set, named CRNET_WAIT_FOR_INCOMING
+ * when crnet_service_browser_next() has an event or a failure. Results and
+ * arguments as crnet_wait_set_add_service_advert(), with
+ * CR_RESULT_NET_INVALID_SERVICE_BROWSER for a NULL `browser`.
+ */
+CR_RESULT crnet_wait_set_add_service_browser(
+    crnet_wait_set set,
+    crnet_service_browser browser,
+    void *user);
+
+/** @brief Takes a browser out of the set. One not in it is ignored;
+ * so is NULL for either argument. */
+void crnet_wait_set_remove_service_browser(crnet_wait_set set, crnet_service_browser browser);
+
+/**
+ * @brief Adds a resolver to the set, named CRNET_WAIT_FOR_INCOMING
+ * when crnet_service_resolver_next() has an event or a failure. Results
+ * and arguments as crnet_wait_set_add_service_advert(), with
+ * CR_RESULT_NET_INVALID_SERVICE_RESOLVER for a NULL `resolver`.
+ */
+CR_RESULT crnet_wait_set_add_service_resolver(
+    crnet_wait_set set,
+    crnet_service_resolver resolver,
+    void *user);
+
+/** @brief Takes a resolver out of the set. One not in it is
+ * ignored; so is NULL for either argument. */
+void crnet_wait_set_remove_service_resolver(crnet_wait_set set, crnet_service_resolver resolver);
+
+#endif // CRNET_EXT_DISCOVERY
 
 /**
  * @brief Adds an HTTP transfer to the set, from its start on. Known problem:

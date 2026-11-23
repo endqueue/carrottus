@@ -89,8 +89,12 @@ typedef int           crnet_poll_socket;
 enum crnet_wait_kind {
 	CRNET_WAIT_KIND_TCP_SOCKET,
 	CRNET_WAIT_KIND_TCP_LISTENER,
+	CRNET_WAIT_KIND_UDP_SOCKET,
 	CRNET_WAIT_KIND_WEBSOCKET,
 	CRNET_WAIT_KIND_HTTP_TRANSFER,
+	CRNET_WAIT_KIND_SERVICE_ADVERT,
+	CRNET_WAIT_KIND_SERVICE_BROWSER,
+	CRNET_WAIT_KIND_SERVICE_RESOLVER,
 };
 
 struct crnet_wait_member {
@@ -365,6 +369,10 @@ void crnet_wait_set_destroy(crnet_wait_set set) {
 			crnet_http_backend_wait_detach(transfer);
 			transfer->wait_set = NULL;
 		}
+#if CRNET_EXT_DISCOVERY
+		if (member->kind == CRNET_WAIT_KIND_SERVICE_ADVERT || member->kind == CRNET_WAIT_KIND_SERVICE_BROWSER || member->kind == CRNET_WAIT_KIND_SERVICE_RESOLVER)
+			crnet_discovery_wait_detach((struct crnet_discovery_object *)member->object);
+#endif
 	}
 	crnet_wait_wake_destroy(set);
 	eq_array_free(&set->members);
@@ -547,6 +555,163 @@ void crnet_wait_set_remove_tcp_listener(crnet_wait_set set, crnet_tcp_listener l
 
 #endif // CRNET_EXT_TCP
 
+#if CRNET_EXT_UDP
+
+CR_RESULT crnet_wait_set_add_udp_socket(
+    crnet_wait_set set,
+    crnet_udp_socket socket,
+    uint32_t wait_for,
+    void *user) {
+	if (!set)
+		return CR_RESULT_NET_INVALID_WAIT_SET;
+	if (CR_STALE(set, "crnet_wait_set_add_udp_socket", "set"))
+		return CR_RESULT_NET_INVALID_WAIT_SET;
+	if (!socket)
+		return CR_RESULT_NET_INVALID_UDP_SOCKET;
+	if (CR_STALE(socket, "crnet_wait_set_add_udp_socket", "socket"))
+		return CR_RESULT_NET_INVALID_UDP_SOCKET;
+	if (wait_for == 0 || (wait_for & ~(uint32_t)(CRNET_WAIT_FOR_INCOMING | CRNET_WAIT_FOR_ROOM)) != 0)
+		return CR_RESULT_DESC_INVALID_PARAMETERS;
+	if (crnet_udp_socket_instance(socket) != set->instance)
+		return CR_RESULT_NET_INVALID_INSTANCE;
+	if (crnet_wait_find(set, CRNET_WAIT_KIND_UDP_SOCKET, socket))
+		return CR_RESULT_NET_ALREADY_IN_WAIT_SET;
+
+	struct crnet_wait_member *member = crnet_wait_grow(set);
+	if (!member)
+		return CR_RESULT_OUT_OF_MEMORY;
+	member->kind     = CRNET_WAIT_KIND_UDP_SOCKET;
+	member->object   = socket;
+	member->user     = user;
+	member->wait_for = wait_for;
+	set->members.count++;
+	return CR_SUCCESS;
+}
+
+void crnet_wait_set_remove_udp_socket(crnet_wait_set set, crnet_udp_socket socket) {
+	if (!set || !socket)
+		return;
+	if (CR_STALE(set, "crnet_wait_set_remove_udp_socket", "set"))
+		return;
+	if (CR_STALE(socket, "crnet_wait_set_remove_udp_socket", "socket"))
+		return;
+	struct crnet_wait_member *member = crnet_wait_find(set, CRNET_WAIT_KIND_UDP_SOCKET, socket);
+	if (member)
+		crnet_wait_remove(set, member);
+}
+
+#endif // CRNET_EXT_UDP
+
+#if CRNET_EXT_DISCOVERY
+
+/* What the three adds share once each has checked its own handle: the
+ * instance, then the one set an object may be in (on Windows the system's
+ * callback wakes the set it was added to, so one at most), room found
+ * before the attach so that attaching is the last thing that can fail. */
+static CR_RESULT crnet_wait_add_discovery(struct crnet_wait_set_t *set, enum crnet_wait_kind kind, struct crnet_discovery_object *object, void *user) {
+	if (object->instance != set->instance)
+		return CR_RESULT_NET_INVALID_INSTANCE;
+	if (crnet_discovery_wait_is_in(object, set) || crnet_wait_find(set, kind, object))
+		return CR_RESULT_NET_ALREADY_IN_WAIT_SET;
+	struct crnet_wait_member *member = crnet_wait_grow(set);
+	if (!member)
+		return CR_RESULT_OUT_OF_MEMORY;
+	const CR_RESULT attached = crnet_discovery_wait_attach(object, set);
+	if (CR_FAILED(attached))
+		return attached;
+	member->kind     = kind;
+	member->object   = object;
+	member->user     = user;
+	member->wait_for = CRNET_WAIT_FOR_INCOMING;
+	set->members.count++;
+	return CR_SUCCESS;
+}
+
+static void crnet_wait_remove_discovery(struct crnet_wait_set_t *set, enum crnet_wait_kind kind, struct crnet_discovery_object *object) {
+	struct crnet_wait_member *member = crnet_wait_find(set, kind, object);
+	if (!member)
+		return;
+	crnet_discovery_wait_detach(object);
+	crnet_wait_remove(set, member);
+}
+
+CR_RESULT crnet_wait_set_add_service_advert(
+    crnet_wait_set set,
+    crnet_service_advert advert,
+    void *user) {
+	if (!set)
+		return CR_RESULT_NET_INVALID_WAIT_SET;
+	if (CR_STALE(set, "crnet_wait_set_add_service_advert", "set"))
+		return CR_RESULT_NET_INVALID_WAIT_SET;
+	if (!advert)
+		return CR_RESULT_NET_INVALID_SERVICE_ADVERT;
+	if (CR_STALE(advert, "crnet_wait_set_add_service_advert", "advert"))
+		return CR_RESULT_NET_INVALID_SERVICE_ADVERT;
+	return crnet_wait_add_discovery(set, CRNET_WAIT_KIND_SERVICE_ADVERT, (struct crnet_discovery_object *)advert, user);
+}
+
+void crnet_wait_set_remove_service_advert(crnet_wait_set set, crnet_service_advert advert) {
+	if (!set || !advert)
+		return;
+	if (CR_STALE(set, "crnet_wait_set_remove_service_advert", "set"))
+		return;
+	if (CR_STALE(advert, "crnet_wait_set_remove_service_advert", "advert"))
+		return;
+	crnet_wait_remove_discovery(set, CRNET_WAIT_KIND_SERVICE_ADVERT, (struct crnet_discovery_object *)advert);
+}
+
+CR_RESULT crnet_wait_set_add_service_browser(
+    crnet_wait_set set,
+    crnet_service_browser browser,
+    void *user) {
+	if (!set)
+		return CR_RESULT_NET_INVALID_WAIT_SET;
+	if (CR_STALE(set, "crnet_wait_set_add_service_browser", "set"))
+		return CR_RESULT_NET_INVALID_WAIT_SET;
+	if (!browser)
+		return CR_RESULT_NET_INVALID_SERVICE_BROWSER;
+	if (CR_STALE(browser, "crnet_wait_set_add_service_browser", "browser"))
+		return CR_RESULT_NET_INVALID_SERVICE_BROWSER;
+	return crnet_wait_add_discovery(set, CRNET_WAIT_KIND_SERVICE_BROWSER, (struct crnet_discovery_object *)browser, user);
+}
+
+void crnet_wait_set_remove_service_browser(crnet_wait_set set, crnet_service_browser browser) {
+	if (!set || !browser)
+		return;
+	if (CR_STALE(set, "crnet_wait_set_remove_service_browser", "set"))
+		return;
+	if (CR_STALE(browser, "crnet_wait_set_remove_service_browser", "browser"))
+		return;
+	crnet_wait_remove_discovery(set, CRNET_WAIT_KIND_SERVICE_BROWSER, (struct crnet_discovery_object *)browser);
+}
+
+CR_RESULT crnet_wait_set_add_service_resolver(
+    crnet_wait_set set,
+    crnet_service_resolver resolver,
+    void *user) {
+	if (!set)
+		return CR_RESULT_NET_INVALID_WAIT_SET;
+	if (CR_STALE(set, "crnet_wait_set_add_service_resolver", "set"))
+		return CR_RESULT_NET_INVALID_WAIT_SET;
+	if (!resolver)
+		return CR_RESULT_NET_INVALID_SERVICE_RESOLVER;
+	if (CR_STALE(resolver, "crnet_wait_set_add_service_resolver", "resolver"))
+		return CR_RESULT_NET_INVALID_SERVICE_RESOLVER;
+	return crnet_wait_add_discovery(set, CRNET_WAIT_KIND_SERVICE_RESOLVER, (struct crnet_discovery_object *)resolver, user);
+}
+
+void crnet_wait_set_remove_service_resolver(crnet_wait_set set, crnet_service_resolver resolver) {
+	if (!set || !resolver)
+		return;
+	if (CR_STALE(set, "crnet_wait_set_remove_service_resolver", "set"))
+		return;
+	if (CR_STALE(resolver, "crnet_wait_set_remove_service_resolver", "resolver"))
+		return;
+	crnet_wait_remove_discovery(set, CRNET_WAIT_KIND_SERVICE_RESOLVER, (struct crnet_discovery_object *)resolver);
+}
+
+#endif // CRNET_EXT_DISCOVERY
+
 #if CRNET_EXT_WEBSOCKET
 
 CR_RESULT crnet_wait_set_add_websocket(
@@ -671,10 +836,15 @@ static void crnet_wait_poll_push(struct crnet_wait_poll *poll, intptr_t native, 
 	struct crnet_wait_set_t *set = poll->set;
 	if (poll->failed)
 		return;
-	// The two arrays share one capacity: grown both or neither.
-	if (set->entries.count == set->entries.capacity) {
-		size_t capacity = set->entries.capacity ? set->entries.capacity * 2 : 16;
-		if (capacity > CR_UINT32_MAX || eq_array_reserve(&set->entries, capacity) != EQ_SUCCESS || eq_array_reserve(&set->infos, capacity) != EQ_SUCCESS) {
+	// The two arrays share one capacity, and an entry is pushed only when
+	// both have room. Both are checked: a growth whose second reserve failed
+	// left the first larger, and the next wait finishes it rather than
+	// pushing past the smaller (which a Release build would read beyond).
+	if (set->entries.count == set->entries.capacity || set->infos.count == set->infos.capacity) {
+		const size_t have     = set->entries.capacity < set->infos.capacity ? set->entries.capacity : set->infos.capacity;
+		const size_t capacity = have ? have * 2 : 16;
+		if (capacity > CR_UINT32_MAX || (set->entries.capacity < capacity && eq_array_reserve(&set->entries, capacity) != EQ_SUCCESS) ||
+		    (set->infos.capacity < capacity && eq_array_reserve(&set->infos, capacity) != EQ_SUCCESS)) {
 			poll->failed = true;
 			return;
 		}
@@ -755,9 +925,25 @@ static uint32_t crnet_wait_member_prepare(struct crnet_wait_member *member, stru
 		return 0;
 	}
 #endif
+#if CRNET_EXT_UDP
+	case CRNET_WAIT_KIND_UDP_SOCKET: {
+		// Its descriptor, polled for what it was added for; an error or a
+		// hang-up on it (a socket the system reclaimed) names it for every
+		// bit, and its next call says what it was.
+		struct crnet_udp_socket_t *socket = (struct crnet_udp_socket_t *)member->object;
+		crnet_wait_poll_add(poll, socket->native, (member->wait_for & CRNET_WAIT_FOR_INCOMING) != 0, (member->wait_for & CRNET_WAIT_FOR_ROOM) != 0, false);
+		return 0;
+	}
+#endif
 #if CRNET_EXT_WEBSOCKET
 	case CRNET_WAIT_KIND_WEBSOCKET:
 		return crnet_websocket_wait_prepare((crnet_websocket)member->object, member->wait_for, poll) & member->wait_for;
+#endif
+#if CRNET_EXT_DISCOVERY
+	case CRNET_WAIT_KIND_SERVICE_ADVERT:
+	case CRNET_WAIT_KIND_SERVICE_BROWSER:
+	case CRNET_WAIT_KIND_SERVICE_RESOLVER:
+		return crnet_discovery_wait_prepare((struct crnet_discovery_object *)member->object, poll);
 #endif
 	case CRNET_WAIT_KIND_HTTP_TRANSFER:
 		return crnet_http_transfer_wait_prepare((struct crnet_http_transfer_t *)member->object, member->wait_for, poll);

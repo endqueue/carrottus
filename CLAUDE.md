@@ -44,7 +44,7 @@ Every module returns the shared `CR_RESULT` enum (`crcore.h`, 165 values with
 | Carrottus GPU | `crgpu.h` | `crgpu_` | Vulkan, D3D12, Metal |
 | Carrottus Files | `crfiles.h` | `crfiles_` | Windows, Linux, macOS |
 | Carrottus Memory | `crmemory.h` | `crmem_` | Windows, POSIX (Linux + Apple, one file) |
-| Carrottus Net | `crnet.h` | `crnet_` | TCP sockets: Winsock2, BSD sockets (Linux + Apple, one file). HTTP + WebSocket: WinHTTP, libcurl, NSURLSession |
+| Carrottus Net | `crnet.h` | `crnet_` | TCP and UDP sockets: Winsock2, BSD sockets (Linux + Apple, one file). HTTP + WebSocket: WinHTTP, libcurl, NSURLSession. The interface listing: getifaddrs (Linux + Apple), GetAdaptersAddresses. Service discovery: dns_sd (Apple), Avahi (Linux), Windows' DNS-SD calls; 0 on Android and watchOS. Since 0.5.0, built on the Mac: Windows' UDP and listing, and discovery on Windows and Linux, refuse with `CR_RESULT_NOT_IMPLEMENTED_YET` until built; Linux's UDP and listing are the POSIX files, written, not compiled |
 | Carrottus Audio | `craudio.h` | `craudio_` / `CR_RESULT_SAUD_*` | WASAPI (Windows), ALSA (Linux), CoreAudio (macOS), RemoteIO (iOS and iPadOS: `craudioremoteio.c` and the session half `craudiosession.m`, since 2026-11-02); an argument-checking stub where no API is compiled in (watchOS) |
 | Carrottus Input | `crinput.h` | `crinput_` / `CR_RESULT_CRINPUT_*` | GameController (macOS, iOS, iPadOS), evdev (Linux), GameInput (Windows). Not written: XInput (Windows); with no API built in, no instance can be made |
 | Carrottus Core | `crcore.h` | `cr_` / `CR_RESULT` | platform-agnostic |
@@ -1596,6 +1596,34 @@ evening on the Mac (Known gaps below, `CRGPU_DEVICE_TODO.md`).
   and Linux a flush waiting on it is truly aborted. libcurl's send masks
   a message a byte at a time as the connection takes it: 64 MiB taken
   with `CRNET_NO_WAIT` cost 253 ms of work in Release.
+- **Carrottus Net's interface listing, UDP sockets and service discovery
+  (0.5.0, cards S9, X46 and X47; `crnet_interface_draft.h` 7,
+  `crnet_udp_draft.h` 7, `crnet_discovery_draft.h` 8, approved
+  2026-11-22).** Built on the Mac 2026-11-23
+  (`../prompts/crnet_local_network_record.md`; `CRNET_TODO.md`, "UDP,
+  local discovery and the interface listing"). Each has a front end
+  holding every check once (`src/net/crnetinterfaces.c`, `crnetudp.c`,
+  `crnetdiscovery.c`) and each platform behind its verbs
+  (`crnetshared.h`): getifaddrs (`backends/posix/crnetifaddrs.c`), BSD
+  sockets (`backends/posix/crnetsockets.c`) and dns_sd
+  (`backends/apple/crnetdnssd.c`, each object its own connection polled
+  beside an abort pipe, replies read on the caller's thread inside
+  `_next`). Windows' verbs and Linux's discovery refuse with
+  `CR_RESULT_NOT_IMPLEMENTED_YET` (`backends/windows/crnetwindowslocal.c`,
+  `backends/stub/crnetdiscoverystub.c`) until
+  `../prompts/crnet_local_network_windows.md` and `_fedora.md`.
+  `crnet_instance_get_local_ipv4_addresses()` is gone (no caller outside
+  carrottus). A discovery object's events are a ring sized at its create,
+  written under its lock so a system thread (Windows) can report into it
+  (`tests/crnet_discovery_ring_test.c` drives it from a fake one under
+  TSan). `crnet_test`'s parts "interfaces", "udp" and "discovery" need no
+  server (`crnet_test - <part>`) and are ctests with a time limit;
+  `crnet_discovery_two_process` runs discovery and UDP between two
+  processes. On the Mac: getifaddrs gives every link-local address its
+  scope in `sin6_scope_id` (none embedded, C2.13); a UDP socket's largest
+  datagram is its send buffer, 9216 by default; two identical adverts of
+  one host are one service to mDNSResponder, and only a second with
+  different records is a name conflict.
 - **The largest image sizes (0.4.0, card S33,
   `crgpu_max_image_size_draft.h`, approved 2026-11-14):**
   `CRGPU_ADAPTER_PROPERTIES` ends with five upper bounds (1D, 2D, 3D, cube,

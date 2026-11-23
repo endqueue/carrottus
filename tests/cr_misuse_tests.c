@@ -1555,6 +1555,31 @@ static crnet_http_transfer dead_crnet_http_transfer(void) {
 	return handle;
 }
 
+/* A crnet_interface_list just destroyed, or NULL with `why` set. */
+static crnet_interface_list make_dead_crnet_interface_list(void) {
+	crnet_instance instance = make_net_instance();
+	if (!instance)
+		return NULL;
+	crnet_interface_list list = NULL;
+	if (crnet_interface_enumerate(instance, &list, NULL) == CR_SUCCESS)
+		crnet_interface_list_destroy(list);
+	else
+		why = "crnet_interface_enumerate failed";
+	crnet_instance_destroy(instance);
+	return list;
+}
+
+static crnet_interface_list dead_crnet_interface_list(void) {
+	static bool told = false;
+	why = "";
+	crnet_interface_list handle = make_dead_crnet_interface_list();
+	if (!handle && !told) {
+		printf("cr_misuse_tests: not covered: crnet_interface_list: %s\n", why);
+		told = true;
+	}
+	return handle;
+}
+
 /* A crnet_resolver just destroyed, or NULL with `why` set. */
 static crnet_resolver make_dead_crnet_resolver(void) {
 	crnet_instance instance = make_net_instance();
@@ -1584,6 +1609,101 @@ static crnet_resolver dead_crnet_resolver(void) {
 	crnet_resolver handle = make_dead_crnet_resolver();
 	if (!handle && !told) {
 		printf("cr_misuse_tests: not covered: crnet_resolver: %s\n", why);
+		told = true;
+	}
+	return handle;
+}
+
+/* A crnet_service_advert just destroyed, or NULL with `why` set. */
+static crnet_service_advert make_dead_crnet_service_advert(void) {
+	crnet_instance instance = make_net_instance();
+	if (!instance)
+		return NULL;
+	crnet_service_advert_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type = CR_STRUCT_TYPE_NET_SERVICE_ADVERT_DESC;
+	desc.name      = "crnetmisuse";
+	desc.type      = "_crnetmisuse._udp";
+	desc.port      = 9;
+	desc.scope     = CRNET_DISCOVERY_SCOPE_ALL_INTERFACES;
+	crnet_service_advert object = NULL;
+	if (crnet_service_advert_create(instance, &desc, &object, NULL) == CR_SUCCESS)
+		crnet_service_advert_destroy(object);
+	else
+		why = "crnet_service_advert_create failed (no discovery service in this build)";
+	crnet_instance_destroy(instance);
+	return object;
+}
+
+static crnet_service_advert dead_crnet_service_advert(void) {
+	static bool told = false;
+	why = "";
+	crnet_service_advert handle = make_dead_crnet_service_advert();
+	if (!handle && !told) {
+		printf("cr_misuse_tests: not covered: crnet_service_advert: %s\n", why);
+		told = true;
+	}
+	return handle;
+}
+
+/* A crnet_service_browser just destroyed, or NULL with `why` set. */
+static crnet_service_browser make_dead_crnet_service_browser(void) {
+	crnet_instance instance = make_net_instance();
+	if (!instance)
+		return NULL;
+	crnet_service_browser_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type      = CR_STRUCT_TYPE_NET_SERVICE_BROWSER_DESC;
+	desc.type           = "_crnetmisuse._udp";
+	desc.scope          = CRNET_DISCOVERY_SCOPE_ALL_INTERFACES;
+	desc.event_capacity = 1;
+	crnet_service_browser object = NULL;
+	if (crnet_service_browser_create(instance, &desc, &object, NULL) == CR_SUCCESS)
+		crnet_service_browser_destroy(object);
+	else
+		why = "crnet_service_browser_create failed (no discovery service in this build)";
+	crnet_instance_destroy(instance);
+	return object;
+}
+
+static crnet_service_browser dead_crnet_service_browser(void) {
+	static bool told = false;
+	why = "";
+	crnet_service_browser handle = make_dead_crnet_service_browser();
+	if (!handle && !told) {
+		printf("cr_misuse_tests: not covered: crnet_service_browser: %s\n", why);
+		told = true;
+	}
+	return handle;
+}
+
+/* A crnet_service_resolver just destroyed, or NULL with `why` set. */
+static crnet_service_resolver make_dead_crnet_service_resolver(void) {
+	crnet_instance instance = make_net_instance();
+	if (!instance)
+		return NULL;
+	crnet_service_resolver_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type      = CR_STRUCT_TYPE_NET_SERVICE_RESOLVER_DESC;
+	desc.name           = "crnetmisuse";
+	desc.type           = "_crnetmisuse._udp";
+	desc.family         = CRNET_ADDRESS_FAMILY_ANY;
+	desc.event_capacity = 1;
+	crnet_service_resolver object = NULL;
+	if (crnet_service_resolver_create(instance, &desc, &object, NULL) == CR_SUCCESS)
+		crnet_service_resolver_destroy(object);
+	else
+		why = "crnet_service_resolver_create failed (no discovery service in this build)";
+	crnet_instance_destroy(instance);
+	return object;
+}
+
+static crnet_service_resolver dead_crnet_service_resolver(void) {
+	static bool told = false;
+	why = "";
+	crnet_service_resolver handle = make_dead_crnet_service_resolver();
+	if (!handle && !told) {
+		printf("cr_misuse_tests: not covered: crnet_service_resolver: %s\n", why);
 		told = true;
 	}
 	return handle;
@@ -1639,6 +1759,40 @@ static crnet_tcp_socket dead_crnet_tcp_socket(void) {
 	crnet_tcp_socket handle = make_dead_crnet_tcp_socket();
 	if (!handle && !told) {
 		printf("cr_misuse_tests: not covered: crnet_tcp_socket: %s\n", why);
+		told = true;
+	}
+	return handle;
+}
+
+/* A crnet_udp_socket just destroyed, or NULL with `why` set. */
+static crnet_udp_socket make_dead_crnet_udp_socket(void) {
+	crnet_instance instance = make_net_instance();
+	if (!instance)
+		return NULL;
+	crnet_udp_socket_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type           = CR_STRUCT_TYPE_NET_UDP_SOCKET_DESC;
+	desc.local.family        = CRNET_ADDRESS_FAMILY_IPV4;
+	desc.local.bytes[0]      = 127;
+	desc.local.bytes[3]      = 1;
+	desc.sharing             = CRNET_UDP_PORT_SHARING_EXCLUSIVE;
+	desc.receive_buffer_size = CRNET_SOCKET_BUFFER_SIZE_SYSTEM;
+	desc.send_buffer_size    = CRNET_SOCKET_BUFFER_SIZE_SYSTEM;
+	crnet_udp_socket socket  = NULL;
+	if (crnet_udp_socket_create(instance, &desc, &socket, NULL) == CR_SUCCESS)
+		crnet_udp_socket_destroy(socket);
+	else
+		why = "crnet_udp_socket_create failed";
+	crnet_instance_destroy(instance);
+	return socket;
+}
+
+static crnet_udp_socket dead_crnet_udp_socket(void) {
+	static bool told = false;
+	why = "";
+	crnet_udp_socket handle = make_dead_crnet_udp_socket();
+	if (!handle && !told) {
+		printf("cr_misuse_tests: not covered: crnet_udp_socket: %s\n", why);
 		told = true;
 	}
 	return handle;
@@ -3726,7 +3880,44 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crnet_instance dead = dead_crnet_instance();
 		if (dead) {
-			expect_refused("crnet_instance_get_local_ipv4_addresses", crnet_instance_get_local_ipv4_addresses(dead, (char (*)[16]){0}, (uint32_t){0}, (uint32_t *){0}, (crnet_error *){0}));
+			expect_refused("crnet_interface_enumerate", crnet_interface_enumerate(dead, (crnet_interface_list *){0}, (crnet_error *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_interface_list dead = dead_crnet_interface_list();
+		if (dead) {
+			crnet_interface_list_destroy(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_interface_list dead = dead_crnet_interface_list();
+		if (dead) {
+			expect_refused("crnet_interface_list_get_address", crnet_interface_list_get_address(dead, (uint32_t){0}, (uint32_t){0}, (crnet_interface_address *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_interface_list dead = dead_crnet_interface_list();
+		if (dead) {
+			expect_refused("crnet_interface_list_get_count", crnet_interface_list_get_count(dead, (uint32_t *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_interface_list dead = dead_crnet_interface_list();
+		if (dead) {
+			expect_refused("crnet_interface_list_get_properties", crnet_interface_list_get_properties(dead, (uint32_t){0}, (crnet_interface_properties *){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -3775,6 +3966,150 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 		crnet_resolver dead = dead_crnet_resolver();
 		if (dead) {
 			expect_refused("crnet_resolver_wait", crnet_resolver_wait(dead, (uint32_t){0}, (char (*)[46]){0}, (uint32_t){0}, (uint32_t *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_service_advert dead = dead_crnet_service_advert();
+		if (dead) {
+			crnet_service_advert_abort(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_instance dead = dead_crnet_instance();
+		if (dead) {
+			expect_refused("crnet_service_advert_create", crnet_service_advert_create(dead, (const crnet_service_advert_desc *){0}, (crnet_service_advert *){0}, (crnet_error *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_service_advert dead = dead_crnet_service_advert();
+		if (dead) {
+			crnet_service_advert_destroy(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_service_advert dead = dead_crnet_service_advert();
+		if (dead) {
+			crnet_service_advert_get_error(dead, (crnet_error *){0});
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_service_advert dead = dead_crnet_service_advert();
+		if (dead) {
+			expect_refused("crnet_service_advert_next", crnet_service_advert_next(dead, (uint32_t){0}, (crnet_service_advert_event *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_service_browser dead = dead_crnet_service_browser();
+		if (dead) {
+			crnet_service_browser_abort(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_instance dead = dead_crnet_instance();
+		if (dead) {
+			expect_refused("crnet_service_browser_create", crnet_service_browser_create(dead, (const crnet_service_browser_desc *){0}, (crnet_service_browser *){0}, (crnet_error *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_service_browser dead = dead_crnet_service_browser();
+		if (dead) {
+			crnet_service_browser_destroy(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_service_browser dead = dead_crnet_service_browser();
+		if (dead) {
+			crnet_service_browser_get_error(dead, (crnet_error *){0});
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_service_browser dead = dead_crnet_service_browser();
+		if (dead) {
+			expect_refused("crnet_service_browser_next", crnet_service_browser_next(dead, (uint32_t){0}, (crnet_service_browse_event *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_service_resolver dead = dead_crnet_service_resolver();
+		if (dead) {
+			crnet_service_resolver_abort(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_instance dead = dead_crnet_instance();
+		if (dead) {
+			expect_refused("crnet_service_resolver_create", crnet_service_resolver_create(dead, (const crnet_service_resolver_desc *){0}, (crnet_service_resolver *){0}, (crnet_error *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_service_resolver dead = dead_crnet_service_resolver();
+		if (dead) {
+			crnet_service_resolver_destroy(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_service_resolver dead = dead_crnet_service_resolver();
+		if (dead) {
+			crnet_service_resolver_get_error(dead, (crnet_error *){0});
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_service_resolver dead = dead_crnet_service_resolver();
+		if (dead) {
+			expect_refused("crnet_service_resolver_next", crnet_service_resolver_next(dead, (uint32_t){0}, (crnet_service_resolve_event *){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -3940,6 +4275,81 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 		}
 	}
 	{
+		crnet_udp_socket dead = dead_crnet_udp_socket();
+		if (dead) {
+			crnet_udp_socket_abort(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_instance dead = dead_crnet_instance();
+		if (dead) {
+			expect_refused("crnet_udp_socket_create", crnet_udp_socket_create(dead, (const crnet_udp_socket_desc *){0}, (crnet_udp_socket *){0}, (crnet_error *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_udp_socket dead = dead_crnet_udp_socket();
+		if (dead) {
+			crnet_udp_socket_destroy(dead);
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_udp_socket dead = dead_crnet_udp_socket();
+		if (dead) {
+			expect_refused("crnet_udp_socket_get_buffer_sizes", crnet_udp_socket_get_buffer_sizes(dead, (uint32_t *){0}, (uint32_t *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_udp_socket dead = dead_crnet_udp_socket();
+		if (dead) {
+			crnet_udp_socket_get_error(dead, (CRNET_ERROR_SIDE){0}, (crnet_error *){0});
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_udp_socket dead = dead_crnet_udp_socket();
+		if (dead) {
+			expect_refused("crnet_udp_socket_get_local_address", crnet_udp_socket_get_local_address(dead, (crnet_address *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_udp_socket dead = dead_crnet_udp_socket();
+		if (dead) {
+			expect_refused("crnet_udp_socket_recv_from", crnet_udp_socket_recv_from(dead, (void *){0}, (uint32_t){0}, (uint32_t){0}, (uint32_t *){0}, (crnet_address *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_udp_socket dead = dead_crnet_udp_socket();
+		if (dead) {
+			expect_refused("crnet_udp_socket_send_to", crnet_udp_socket_send_to(dead, (const crnet_address *){0}, (const void *){0}, (uint32_t){0}, (uint32_t){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
 		crnet_wait_set dead = dead_crnet_wait_set();
 		if (dead) {
 			crnet_wait_set_abort(dead);
@@ -3961,6 +4371,33 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crnet_wait_set dead = dead_crnet_wait_set();
 		if (dead) {
+			expect_refused("crnet_wait_set_add_service_advert", crnet_wait_set_add_service_advert(dead, (crnet_service_advert){0}, (void *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_wait_set dead = dead_crnet_wait_set();
+		if (dead) {
+			expect_refused("crnet_wait_set_add_service_browser", crnet_wait_set_add_service_browser(dead, (crnet_service_browser){0}, (void *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_wait_set dead = dead_crnet_wait_set();
+		if (dead) {
+			expect_refused("crnet_wait_set_add_service_resolver", crnet_wait_set_add_service_resolver(dead, (crnet_service_resolver){0}, (void *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_wait_set dead = dead_crnet_wait_set();
+		if (dead) {
 			expect_refused("crnet_wait_set_add_tcp_listener", crnet_wait_set_add_tcp_listener(dead, (crnet_tcp_listener){0}, (void *){0}));
 			calls++;
 		} else {
@@ -3971,6 +4408,15 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 		crnet_wait_set dead = dead_crnet_wait_set();
 		if (dead) {
 			expect_refused("crnet_wait_set_add_tcp_socket", crnet_wait_set_add_tcp_socket(dead, (crnet_tcp_socket){0}, (uint32_t){0}, (void *){0}));
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_wait_set dead = dead_crnet_wait_set();
+		if (dead) {
+			expect_refused("crnet_wait_set_add_udp_socket", crnet_wait_set_add_udp_socket(dead, (crnet_udp_socket){0}, (uint32_t){0}, (void *){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -4027,6 +4473,36 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crnet_wait_set dead = dead_crnet_wait_set();
 		if (dead) {
+			crnet_wait_set_remove_service_advert(dead, (crnet_service_advert){0});
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_wait_set dead = dead_crnet_wait_set();
+		if (dead) {
+			crnet_wait_set_remove_service_browser(dead, (crnet_service_browser){0});
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_wait_set dead = dead_crnet_wait_set();
+		if (dead) {
+			crnet_wait_set_remove_service_resolver(dead, (crnet_service_resolver){0});
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_wait_set dead = dead_crnet_wait_set();
+		if (dead) {
 			crnet_wait_set_remove_tcp_listener(dead, (crnet_tcp_listener){0});
 			unchecked++;
 			calls++;
@@ -4038,6 +4514,16 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 		crnet_wait_set dead = dead_crnet_wait_set();
 		if (dead) {
 			crnet_wait_set_remove_tcp_socket(dead, (crnet_tcp_socket){0});
+			unchecked++;
+			calls++;
+		} else {
+			skipped++;
+		}
+	}
+	{
+		crnet_wait_set dead = dead_crnet_wait_set();
+		if (dead) {
+			crnet_wait_set_remove_udp_socket(dead, (crnet_udp_socket){0});
 			unchecked++;
 			calls++;
 		} else {
@@ -4721,6 +5207,10 @@ int main(void)
 	calls++;
 	expect_error("crmem_reserve", crmem_reserve((uint64_t){0}, (void **){0}));
 	calls++;
+	expect_error("crnet_address_from_string", crnet_address_from_string((const char *){0}, (uint16_t){0}, (uint32_t){0}, (crnet_address *){0}));
+	calls++;
+	expect_error("crnet_address_to_string", crnet_address_to_string((const crnet_address *){0}, (char *){0}));
+	calls++;
 	expect_error("crnet_http_client_create", crnet_http_client_create((crnet_instance){0}, (const crnet_http_client_desc *){0}, (crnet_http_client *){0}));
 	calls++;
 	crnet_http_client_destroy((crnet_http_client){0});
@@ -4756,7 +5246,16 @@ int main(void)
 	crnet_instance_destroy((crnet_instance){0});
 	unchecked++;
 	calls++;
-	expect_error("crnet_instance_get_local_ipv4_addresses", crnet_instance_get_local_ipv4_addresses((crnet_instance){0}, (char (*)[16]){0}, (uint32_t){0}, (uint32_t *){0}, (crnet_error *){0}));
+	expect_error("crnet_interface_enumerate", crnet_interface_enumerate((crnet_instance){0}, (crnet_interface_list *){0}, (crnet_error *){0}));
+	calls++;
+	crnet_interface_list_destroy((crnet_interface_list){0});
+	unchecked++;
+	calls++;
+	expect_error("crnet_interface_list_get_address", crnet_interface_list_get_address((crnet_interface_list){0}, (uint32_t){0}, (uint32_t){0}, (crnet_interface_address *){0}));
+	calls++;
+	expect_error("crnet_interface_list_get_count", crnet_interface_list_get_count((crnet_interface_list){0}, (uint32_t *){0}));
+	calls++;
+	expect_error("crnet_interface_list_get_properties", crnet_interface_list_get_properties((crnet_interface_list){0}, (uint32_t){0}, (crnet_interface_properties *){0}));
 	calls++;
 	crnet_resolver_abort((crnet_resolver){0});
 	unchecked++;
@@ -4772,6 +5271,45 @@ int main(void)
 	expect_error("crnet_resolver_run", crnet_resolver_run((crnet_resolver){0}));
 	calls++;
 	expect_error("crnet_resolver_wait", crnet_resolver_wait((crnet_resolver){0}, (uint32_t){0}, (char (*)[46]){0}, (uint32_t){0}, (uint32_t *){0}));
+	calls++;
+	crnet_service_advert_abort((crnet_service_advert){0});
+	unchecked++;
+	calls++;
+	expect_error("crnet_service_advert_create", crnet_service_advert_create((crnet_instance){0}, (const crnet_service_advert_desc *){0}, (crnet_service_advert *){0}, (crnet_error *){0}));
+	calls++;
+	crnet_service_advert_destroy((crnet_service_advert){0});
+	unchecked++;
+	calls++;
+	crnet_service_advert_get_error((crnet_service_advert){0}, (crnet_error *){0});
+	unchecked++;
+	calls++;
+	expect_error("crnet_service_advert_next", crnet_service_advert_next((crnet_service_advert){0}, (uint32_t){0}, (crnet_service_advert_event *){0}));
+	calls++;
+	crnet_service_browser_abort((crnet_service_browser){0});
+	unchecked++;
+	calls++;
+	expect_error("crnet_service_browser_create", crnet_service_browser_create((crnet_instance){0}, (const crnet_service_browser_desc *){0}, (crnet_service_browser *){0}, (crnet_error *){0}));
+	calls++;
+	crnet_service_browser_destroy((crnet_service_browser){0});
+	unchecked++;
+	calls++;
+	crnet_service_browser_get_error((crnet_service_browser){0}, (crnet_error *){0});
+	unchecked++;
+	calls++;
+	expect_error("crnet_service_browser_next", crnet_service_browser_next((crnet_service_browser){0}, (uint32_t){0}, (crnet_service_browse_event *){0}));
+	calls++;
+	crnet_service_resolver_abort((crnet_service_resolver){0});
+	unchecked++;
+	calls++;
+	expect_error("crnet_service_resolver_create", crnet_service_resolver_create((crnet_instance){0}, (const crnet_service_resolver_desc *){0}, (crnet_service_resolver *){0}, (crnet_error *){0}));
+	calls++;
+	crnet_service_resolver_destroy((crnet_service_resolver){0});
+	unchecked++;
+	calls++;
+	crnet_service_resolver_get_error((crnet_service_resolver){0}, (crnet_error *){0});
+	unchecked++;
+	calls++;
+	expect_error("crnet_service_resolver_next", crnet_service_resolver_next((crnet_service_resolver){0}, (uint32_t){0}, (crnet_service_resolve_event *){0}));
 	calls++;
 	crnet_tcp_listener_abort((crnet_tcp_listener){0});
 	unchecked++;
@@ -4813,14 +5351,41 @@ int main(void)
 	calls++;
 	expect_error("crnet_tcp_socket_set_no_delay", crnet_tcp_socket_set_no_delay((crnet_tcp_socket){0}, (bool){0}));
 	calls++;
+	crnet_udp_socket_abort((crnet_udp_socket){0});
+	unchecked++;
+	calls++;
+	expect_error("crnet_udp_socket_create", crnet_udp_socket_create((crnet_instance){0}, (const crnet_udp_socket_desc *){0}, (crnet_udp_socket *){0}, (crnet_error *){0}));
+	calls++;
+	crnet_udp_socket_destroy((crnet_udp_socket){0});
+	unchecked++;
+	calls++;
+	expect_error("crnet_udp_socket_get_buffer_sizes", crnet_udp_socket_get_buffer_sizes((crnet_udp_socket){0}, (uint32_t *){0}, (uint32_t *){0}));
+	calls++;
+	crnet_udp_socket_get_error((crnet_udp_socket){0}, (CRNET_ERROR_SIDE){0}, (crnet_error *){0});
+	unchecked++;
+	calls++;
+	expect_error("crnet_udp_socket_get_local_address", crnet_udp_socket_get_local_address((crnet_udp_socket){0}, (crnet_address *){0}));
+	calls++;
+	expect_error("crnet_udp_socket_recv_from", crnet_udp_socket_recv_from((crnet_udp_socket){0}, (void *){0}, (uint32_t){0}, (uint32_t){0}, (uint32_t *){0}, (crnet_address *){0}));
+	calls++;
+	expect_error("crnet_udp_socket_send_to", crnet_udp_socket_send_to((crnet_udp_socket){0}, (const crnet_address *){0}, (const void *){0}, (uint32_t){0}, (uint32_t){0}));
+	calls++;
 	crnet_wait_set_abort((crnet_wait_set){0});
 	unchecked++;
 	calls++;
 	expect_error("crnet_wait_set_add_http_transfer", crnet_wait_set_add_http_transfer((crnet_wait_set){0}, (crnet_http_transfer){0}, (uint32_t){0}, (void *){0}));
 	calls++;
+	expect_error("crnet_wait_set_add_service_advert", crnet_wait_set_add_service_advert((crnet_wait_set){0}, (crnet_service_advert){0}, (void *){0}));
+	calls++;
+	expect_error("crnet_wait_set_add_service_browser", crnet_wait_set_add_service_browser((crnet_wait_set){0}, (crnet_service_browser){0}, (void *){0}));
+	calls++;
+	expect_error("crnet_wait_set_add_service_resolver", crnet_wait_set_add_service_resolver((crnet_wait_set){0}, (crnet_service_resolver){0}, (void *){0}));
+	calls++;
 	expect_error("crnet_wait_set_add_tcp_listener", crnet_wait_set_add_tcp_listener((crnet_wait_set){0}, (crnet_tcp_listener){0}, (void *){0}));
 	calls++;
 	expect_error("crnet_wait_set_add_tcp_socket", crnet_wait_set_add_tcp_socket((crnet_wait_set){0}, (crnet_tcp_socket){0}, (uint32_t){0}, (void *){0}));
+	calls++;
+	expect_error("crnet_wait_set_add_udp_socket", crnet_wait_set_add_udp_socket((crnet_wait_set){0}, (crnet_udp_socket){0}, (uint32_t){0}, (void *){0}));
 	calls++;
 	expect_error("crnet_wait_set_add_websocket", crnet_wait_set_add_websocket((crnet_wait_set){0}, (crnet_websocket){0}, (uint32_t){0}, (void *){0}));
 	calls++;
@@ -4835,10 +5400,22 @@ int main(void)
 	crnet_wait_set_remove_http_transfer((crnet_wait_set){0}, (crnet_http_transfer){0});
 	unchecked++;
 	calls++;
+	crnet_wait_set_remove_service_advert((crnet_wait_set){0}, (crnet_service_advert){0});
+	unchecked++;
+	calls++;
+	crnet_wait_set_remove_service_browser((crnet_wait_set){0}, (crnet_service_browser){0});
+	unchecked++;
+	calls++;
+	crnet_wait_set_remove_service_resolver((crnet_wait_set){0}, (crnet_service_resolver){0});
+	unchecked++;
+	calls++;
 	crnet_wait_set_remove_tcp_listener((crnet_wait_set){0}, (crnet_tcp_listener){0});
 	unchecked++;
 	calls++;
 	crnet_wait_set_remove_tcp_socket((crnet_wait_set){0}, (crnet_tcp_socket){0});
+	unchecked++;
+	calls++;
+	crnet_wait_set_remove_udp_socket((crnet_wait_set){0}, (crnet_udp_socket){0});
 	unchecked++;
 	calls++;
 	crnet_wait_set_remove_websocket((crnet_wait_set){0}, (crnet_websocket){0});

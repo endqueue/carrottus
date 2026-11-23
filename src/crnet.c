@@ -3,23 +3,6 @@
 #include "net/crnetshared.h"
 #include "crstructbase.h"
 
-/* gethostname/getaddrinfo/inet_ntop are all standard sockets API present
- * identically on Winsock2 and BSD sockets, unlike everything in
- * src/net/backends/ (raw socket()/accept()/etc, which do differ enough
- * between the two to need separate backends) -- so this one lives here,
- * shared, rather than duplicated into both backends. */
-#if CARROTTUS_PLATFORM_WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#else
-#include <arpa/inet.h>
-#include <errno.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#endif
-
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -91,86 +74,6 @@ void crnet_error_get(const crnet_error *record, crnet_error *out_error) {
 		memset(out_error, 0, sizeof(*out_error));
 }
 
-#if CRNET_EXT_TCP
-
-/* A failed getaddrinfo as a record. Winsock's returns a WSA* code; the
- * others return an EAI_* one, of which EAI_SYSTEM means "see errno". */
-static CR_RESULT crnet_resolver_failed(crnet_error *out_error, int code) {
-#if CARROTTUS_PLATFORM_WIN32
-	return crnet_error_record(out_error, CR_RESULT_NET_RESOLVE_FAILED, CR_PLATFORM_ERROR_SOURCE_WIN32, code, NULL);
-#else
-	if (code == EAI_SYSTEM)
-		return crnet_error_record(out_error, CR_RESULT_NET_RESOLVE_FAILED, CR_PLATFORM_ERROR_SOURCE_ERRNO, errno, NULL);
-	return crnet_error_record(out_error, CR_RESULT_NET_RESOLVE_FAILED, CR_PLATFORM_ERROR_SOURCE_RESOLVER, code, NULL);
-#endif
-}
-
-CR_RESULT crnet_instance_get_local_ipv4_addresses(
-    crnet_instance instance,
-    char out_addresses[][CRNET_MAX_IPV4_STRING_LEN],
-    uint32_t out_capacity,
-    uint32_t *out_count,
-    crnet_error *out_error) {
-	crnet_error_clear(out_error);
-	if (!out_addresses || !out_count)
-		return CR_RESULT_NULL_OUTPUT_PARAMETER;
-	*out_count = 0;
-	if (!instance)
-		return CR_RESULT_NET_INVALID_INSTANCE;
-	if (CR_STALE(instance, "crnet_instance_get_local_ipv4_addresses", "instance"))
-		return CR_RESULT_NET_INVALID_INSTANCE;
-	if (out_capacity == 0)
-		return CR_SUCCESS;
-
-	char hostname[256];
-	if (gethostname(hostname, sizeof(hostname)) != 0) {
-#if CARROTTUS_PLATFORM_WIN32
-		return crnet_error_record(out_error, CR_RESULT_NET_RESOLVE_FAILED, CR_PLATFORM_ERROR_SOURCE_WIN32, WSAGetLastError(), NULL);
-#else
-		return crnet_error_record(out_error, CR_RESULT_NET_RESOLVE_FAILED, CR_PLATFORM_ERROR_SOURCE_ERRNO, errno, NULL);
-#endif
-	}
-
-	struct addrinfo hints;
-	memset(&hints, 0, sizeof(hints));
-	hints.ai_family   = AF_INET;
-	hints.ai_socktype = SOCK_STREAM;
-
-	struct addrinfo *result = NULL;
-	int              failed = getaddrinfo(hostname, NULL, &hints, &result);
-	if (failed != 0)
-		return crnet_resolver_failed(out_error, failed);
-	if (!result)
-		return CR_RESULT_NET_RESOLVE_FAILED;
-
-	for (struct addrinfo *addr = result; addr != NULL && *out_count < out_capacity; addr = addr->ai_next) {
-		struct sockaddr_in *sin = (struct sockaddr_in *)addr->ai_addr;
-		char buf[CRNET_MAX_IPV4_STRING_LEN];
-		if (!inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf)))
-			continue;
-		if (strncmp(buf, "127.", 4) == 0)
-			continue; // loopback -- never useful to hand to another machine
-
-		bool duplicate = false;
-		for (uint32_t i = 0; i < *out_count; ++i) {
-			if (strcmp(out_addresses[i], buf) == 0) {
-				duplicate = true;
-				break;
-			}
-		}
-		if (duplicate)
-			continue; // the resolver can list the same address more than once
-
-		strncpy(out_addresses[*out_count], buf, CRNET_MAX_IPV4_STRING_LEN - 1);
-		out_addresses[*out_count][CRNET_MAX_IPV4_STRING_LEN - 1] = '\0';
-		(*out_count)++;
-	}
-
-	freeaddrinfo(result);
-	return CR_SUCCESS; // *out_count == 0 (no non-loopback interface) is a valid result, not a failure
-}
-
-#endif // CRNET_EXT_TCP
 
 /* Looking a host name up is not here: it is the resolver, which each TCP
  * backend defines for the system resolver it has (crnet_resolver_* in

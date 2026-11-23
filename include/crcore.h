@@ -80,7 +80,7 @@ extern "C" {
 /** @brief The major version of these headers. */
 #define CARROTTUS_VERSION_MAJOR 0
 /** @brief The minor version of these headers. */
-#define CARROTTUS_VERSION_MINOR 4
+#define CARROTTUS_VERSION_MINOR 5
 /** @brief The patch version of these headers. */
 #define CARROTTUS_VERSION_PATCH 0
 
@@ -144,7 +144,7 @@ uint32_t cr_get_version(void);
  *
  * The values are grouped by module: 1-16 are general, 199-369 are Carrottus GPU
  * (`CR_RESULT_GPU_*`), 1001-1024 Carrottus Files (`CR_RESULT_CRFILES_*`), 2027-2028
- * Carrottus Memory (`CR_RESULT_MEM_*`), 3001-3033 Carrottus Net (`CR_RESULT_CRNET_*`),
+ * Carrottus Memory (`CR_RESULT_MEM_*`), 3001-3048 Carrottus Net (`CR_RESULT_CRNET_*`),
  * 4001-4015 Carrottus Audio (`CR_RESULT_SAUD_*`) and 5001-5005 Carrottus Input
  * (`CR_RESULT_CRINPUT_*`). A value is never reused for
  * a different meaning.
@@ -562,6 +562,21 @@ typedef enum CR_RESULT {
 	CR_RESULT_NET_STACK_TIMED_OUT       = 3031, /**< HTTP, WebSocket: the client stack gave up waiting, or says something under it did. */
 	CR_RESULT_NET_INVALID_HTTP_TRANSFER = 3032, /**< NULL, or a call out of the transfer's order of use. */
 	CR_RESULT_NET_INVALID_INSTANCE      = 3033, /**< NULL, or not the instance the other object was made with. */
+	CR_RESULT_NET_INVALID_INTERFACE_LIST       = 3034, /**< An interface list argument is NULL. */
+	CR_RESULT_NET_INTERFACE_ENUMERATION_FAILED = 3035, /**< The system wouldn't list its interfaces; the call's `out_error` has its reason. */
+	CR_RESULT_NET_INVALID_UDP_SOCKET           = 3036, /**< A UDP socket argument is NULL. */
+	CR_RESULT_NET_BIND_FAILED                  = 3037, /**< A UDP socket could not be opened or bound, for a reason other than the address being taken (CR_RESULT_NET_ADDRESS_IN_USE). */
+	CR_RESULT_NET_DATAGRAM_TOO_BIG             = 3038, /**< A datagram is longer than the system sends in one (EMSGSIZE, WSAEMSGSIZE on a send). Nothing was sent. */
+	CR_RESULT_NET_DATAGRAM_TRUNCATED           = 3039, /**< A datagram was longer than the buffer it was received into: its first bytes and its source were handed over, the rest discarded. */
+	CR_RESULT_NET_INVALID_SERVICE_ADVERT       = 3040, /**< A service advert argument is NULL. */
+	CR_RESULT_NET_INVALID_SERVICE_BROWSER      = 3041, /**< A service browser argument is NULL. */
+	CR_RESULT_NET_INVALID_SERVICE_RESOLVER     = 3042, /**< A service resolver argument is NULL. */
+	CR_RESULT_NET_DISCOVERY_UNAVAILABLE        = 3043, /**< The system's discovery service isn't there: avahi-daemon not running, dnsapi without the DNS-SD calls, mDNSResponder unreachable. */
+	CR_RESULT_NET_DISCOVERY_DENIED             = 3044, /**< The system refused this program discovery, or this type: iOS's NSBonjourServices or Local Network privacy, Avahi's D-Bus policy. */
+	CR_RESULT_NET_DISCOVERY_FAILED             = 3045, /**< The system's discovery service failed the operation, or went away during it; the object's _get_error has the system's code, and only destroy is left. */
+	CR_RESULT_NET_SERVICE_NAME_CONFLICT        = 3046, /**< The name an advert asked for is held by another service of the same type on the network. The advert is over. */
+	CR_RESULT_NET_ACCESS_DENIED                = 3047, /**< The system refused this program the network for this call (Android: INTERNET missing at a create, ACCESS_LOCAL_NETWORK at a send or receive); the socket stays usable once allowed. Never on Apple, whose Local Network refusal can't be told from no route. */
+	CR_RESULT_NET_SERVICE_NOT_ANSWERING        = 3048, /**< A resolve the system gave up on because the instance didn't answer (Avahi's and Windows' own time-out); dns_sd never gives it. */
 
 	CR_RESULT_AUDIO_INVALID_INSTANCE      = 4001, /**< A Carrottus Audio instance argument is NULL. */
 	CR_RESULT_AUDIO_INVALID_DEVICE        = 4002, /**< An audio device argument, or a desc's device, is NULL. */
@@ -748,6 +763,24 @@ typedef enum CR_STRUCT_TYPE {
 	CR_STRUCT_TYPE_NET_WEBSOCKET_CONNECT_DESC     = 3005,
 	/** crnet_instance_desc (CR_STRUCT_BASE). */
 	CR_STRUCT_TYPE_NET_INSTANCE_DESC              = 3006,
+	/** crnet_interface_properties (CR_STRUCT_BASE_OUT). */
+	CR_STRUCT_TYPE_NET_INTERFACE_PROPERTIES       = 3007,
+	/** crnet_interface_address (CR_STRUCT_BASE_OUT). */
+	CR_STRUCT_TYPE_NET_INTERFACE_ADDRESS          = 3008,
+	/** crnet_udp_socket_desc (CR_STRUCT_BASE). */
+	CR_STRUCT_TYPE_NET_UDP_SOCKET_DESC            = 3009,
+	/** crnet_service_advert_desc (CR_STRUCT_BASE). */
+	CR_STRUCT_TYPE_NET_SERVICE_ADVERT_DESC        = 3010,
+	/** crnet_service_advert_event (CR_STRUCT_BASE_OUT). */
+	CR_STRUCT_TYPE_NET_SERVICE_ADVERT_EVENT       = 3011,
+	/** crnet_service_browser_desc (CR_STRUCT_BASE). */
+	CR_STRUCT_TYPE_NET_SERVICE_BROWSER_DESC       = 3012,
+	/** crnet_service_browse_event (CR_STRUCT_BASE_OUT). */
+	CR_STRUCT_TYPE_NET_SERVICE_BROWSE_EVENT       = 3013,
+	/** crnet_service_resolver_desc (CR_STRUCT_BASE). */
+	CR_STRUCT_TYPE_NET_SERVICE_RESOLVER_DESC      = 3014,
+	/** crnet_service_resolve_event (CR_STRUCT_BASE_OUT). */
+	CR_STRUCT_TYPE_NET_SERVICE_RESOLVE_EVENT      = 3015,
 
 	/* Carrottus Input */
 	/** CRINPUT_INSTANCE_DESC (CR_STRUCT_BASE). */

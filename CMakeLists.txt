@@ -107,6 +107,9 @@ if(NOT TARGET carrottus)
         src/crrandom.c
         src/crnet.c
         src/net/crnethttp.c
+        src/net/crnetinterfaces.c
+        src/net/crnetudp.c
+        src/net/crnetdiscovery.c
         src/net/crnetwaitset.c
         src/craudio.c
         src/crinput.c
@@ -121,6 +124,8 @@ if(NOT TARGET carrottus)
             src/net/backends/windows/crnetwindows.c
             src/net/backends/windows/crnetwinhttp.c
             src/net/backends/windows/crnetwinhttphead.h
+            src/net/backends/windows/crnetwindowslocal.c
+            src/net/backends/stub/crnetdiscoverystub.c
             src/memory/backends/windows/crmemorywindows.c
         )
     endif()
@@ -128,6 +133,8 @@ if(NOT TARGET carrottus)
         list(APPEND CARROTTUS_SOURCES
             src/files/backends/posix/crfilesposix.c
             src/net/backends/posix/crnetsockets.c
+            src/net/backends/posix/crnetifaddrs.c
+            src/net/backends/stub/crnetdiscoverystub.c
             src/net/backends/linux/crnetcurl.c
             src/memory/backends/posix/crmemoryposix.c
         )
@@ -140,6 +147,8 @@ if(NOT TARGET carrottus)
             src/files/backends/posix/crfilesposix.c
             src/memory/backends/posix/crmemoryposix.c
             src/net/backends/posix/crnetsockets.c
+            src/net/backends/posix/crnetifaddrs.c
+            src/net/backends/apple/crnetdnssd.c
             src/net/backends/apple/crneturlsession.m
         )
     endif()
@@ -569,7 +578,10 @@ if(NOT TARGET carrottus)
         crnet_fuzz_http_head
         crnet_fuzz_certificate
         crnet_fuzz_text
-        crnet_fuzz_proxy)
+        crnet_fuzz_proxy
+        crnet_fuzz_txt
+        crnet_fuzz_service_name
+        crnet_fuzz_ifaddr)
 
     option(CARROTTUS_BUILD_TESTS "Build Carrottus's hardware tests" ON)
     if(CARROTTUS_BUILD_TESTS)
@@ -892,6 +904,33 @@ if(NOT TARGET carrottus)
         if(UNIX)
             find_package(Threads REQUIRED)
             target_link_libraries(crnet_test PRIVATE Threads::Threads)
+        endif()
+        # The parts that need no server, each a ctest of its own with a
+        # limit, so a system that never answers (a refused permission, a
+        # stopped mDNSResponder) fails the test rather than hanging it.
+        foreach(_part interfaces udp discovery)
+            add_test(NAME crnet_test_${_part} COMMAND crnet_test - ${_part})
+            set_tests_properties(crnet_test_${_part} PROPERTIES TIMEOUT 120)
+        endforeach()
+        # Service discovery's front end from inside: its ring written from a
+        # fake system thread (run it under -tsan), a fake responder's names,
+        # the advert's ring. No network; on every platform.
+        add_executable(crnet_discovery_ring_test tests/crnet_discovery_ring_test.c)
+        target_include_directories(crnet_discovery_ring_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(crnet_discovery_ring_test PRIVATE carrottus eqstd)
+        if(UNIX)
+            target_link_libraries(crnet_discovery_ring_test PRIVATE Threads::Threads)
+        endif()
+        add_test(NAME crnet_discovery_ring_test COMMAND crnet_discovery_ring_test)
+        set_tests_properties(crnet_discovery_ring_test PROPERTIES TIMEOUT 120)
+        # Discovery and UDP between two processes through the system's
+        # service: the driver spawns itself as the advertiser. POSIX; Apple
+        # only until Linux's Avahi backend is built.
+        if(APPLE AND NOT IOS)
+            add_executable(crnet_discovery_two_process tests/crnet_discovery_two_process.c)
+            target_link_libraries(crnet_discovery_two_process PRIVATE carrottus)
+            add_test(NAME crnet_discovery_two_process COMMAND crnet_discovery_two_process)
+            set_tests_properties(crnet_discovery_two_process PROPERTIES TIMEOUT 120)
         endif()
 
         # CrNet's parsers of the network's bytes, each fuzz target in

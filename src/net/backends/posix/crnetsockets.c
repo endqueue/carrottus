@@ -45,6 +45,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -1051,6 +1052,269 @@ CR_RESULT crnet_resolver_wait(
 	pthread_mutex_unlock(&resolver->lock);
 	return result;
 }
+
+// --------------------------------------------------------------------------
+// UDP sockets (crnetshared.h, "UDP"; the front end is src/net/crnetudp.c)
+// --------------------------------------------------------------------------
+
+#if CRNET_EXT_UDP
+
+/*
+ * A UDP socket here is a non-blocking datagram descriptor (`native`) and a
+ * pipe an abort writes to (`wake`), waited on together in poll() as a TCP
+ * socket's are. A send is one sendto and a receive one recvmsg: the system
+ * sends a datagram whole or not at all, and recvmsg's MSG_TRUNC says when
+ * one was longer than the buffer (crnet.h's "never cut silently").
+ *
+ * What the system refuses is reported as crnet.h says, errno in the
+ * record. EACCES and EPERM are CR_RESULT_NET_ACCESS_DENIED on Linux only,
+ * which is where Android's permissions show them; on Apple they stay
+ * SEND_FAILED, RECV_FAILED and BIND_FAILED, as crnet.h's Apple notes say
+ * (claude_made_decisions.md, 2026-11-23).
+ */
+
+void crnet_udp_backend_reset(struct crnet_udp_socket_t *socket) {
+	socket->native  = -1;
+	socket->wake[0] = -1;
+	socket->wake[1] = -1;
+	crnet_atomic_store32(&socket->aborted, 0);
+}
+
+/* A new datagram descriptor, set up as every one here is. Its own function
+ * for the reason crnet_posix_open_tcp is. */
+static int crnet_posix_open_udp(int family) { return crnet_posix_prepare(socket(family, SOCK_DGRAM, IPPROTO_UDP)); }
+
+/* What a refusal of the system's in a create is, for errno `error`. */
+static CR_RESULT crnet_udp_open_failed(crnet_error *out_error, int error) {
+	CR_RESULT result = CR_RESULT_NET_BIND_FAILED;
+	if (error == EADDRINUSE)
+		result = CR_RESULT_NET_ADDRESS_IN_USE;
+#if CARROTTUS_PLATFORM_LINUX
+	else if (error == EACCES || error == EPERM)
+		result = CR_RESULT_NET_ACCESS_DENIED;
+#endif
+	return crnet_posix_failed(out_error, result, error);
+}
+
+/* The same for a send or a receive: `otherwise` for every errno that is no
+ * result of its own. */
+static CR_RESULT crnet_udp_call_failed(crnet_error *record, CR_RESULT otherwise, int error) {
+#if CARROTTUS_PLATFORM_LINUX
+	if (error == EPERM || error == EACCES)
+		return crnet_posix_failed(record, CR_RESULT_NET_ACCESS_DENIED, error);
+#endif
+	return crnet_posix_failed(record, otherwise, error);
+}
+
+/* Sets a buffer size the caller chose. Apple refuses one past
+ * kern.ipc.maxsockbuf with ENOBUFS and keeps what it had: the size is then
+ * what the system grants, as crnet.h's "may grant more or less" has it, and
+ * crnet_udp_socket_get_buffer_sizes() says so. Any other refusal fails the
+ * create. */
+static bool crnet_udp_set_buffer(int fd, int option, uint32_t size) {
+	if (size == CRNET_SOCKET_BUFFER_SIZE_SYSTEM)
+		return true;
+	int value = size > (uint32_t)INT_MAX ? INT_MAX : (int)size;
+	return setsockopt(fd, SOL_SOCKET, option, &value, sizeof(value)) == 0 || errno == ENOBUFS;
+}
+
+CR_RESULT crnet_udp_backend_open(struct crnet_udp_socket_t *socket, const crnet_udp_socket_desc *desc, crnet_error *out_error) {
+	int ends[2];
+	if (pipe(ends) != 0)
+		return crnet_posix_failed(out_error, CR_RESULT_NET_BIND_FAILED, errno);
+	socket->wake[0] = ends[0];
+	socket->wake[1] = ends[1];
+	if (!crnet_posix_set_descriptor_flags(ends[0]) || !crnet_posix_set_descriptor_flags(ends[1]))
+		return crnet_posix_failed(out_error, CR_RESULT_NET_BIND_FAILED, errno);
+
+	const int family = desc->local.family == CRNET_ADDRESS_FAMILY_IPV4 ? AF_INET : AF_INET6;
+	const int fd     = crnet_posix_open_udp(family);
+	if (fd < 0)
+		return crnet_udp_open_failed(out_error, errno);
+	socket->native = fd;
+
+	// Whether an IPv6 socket also takes IPv4 differs between systems;
+	// crnet.h fixes it to "no" on all of them, as a TCP listener's is.
+	if (family == AF_INET6) {
+		int v6_only = 1;
+		if (setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6_only, sizeof(v6_only)) != 0)
+			return crnet_udp_open_failed(out_error, errno);
+	}
+	// EXCLUSIVE sets nothing: with no reuse option a second bind of the
+	// same address and port is refused on Apple and Linux.
+	if (desc->sharing == CRNET_UDP_PORT_SHARING_SHARED) {
+		int reuse = 1;
+		if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) != 0)
+			return crnet_udp_open_failed(out_error, errno);
+#ifdef SO_REUSEPORT
+		if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof(reuse)) != 0)
+			return crnet_udp_open_failed(out_error, errno);
+#endif
+	}
+	if (!crnet_udp_set_buffer(fd, SO_RCVBUF, desc->receive_buffer_size) || !crnet_udp_set_buffer(fd, SO_SNDBUF, desc->send_buffer_size))
+		return crnet_udp_open_failed(out_error, errno);
+
+	struct sockaddr_storage storage;
+	const uint32_t          length = crnet_sockaddr_from_address(&desc->local, &storage, sizeof(storage));
+	if (bind(fd, (struct sockaddr *)&storage, (socklen_t)length) != 0)
+		return crnet_udp_open_failed(out_error, errno);
+	return CR_SUCCESS;
+}
+
+void crnet_udp_backend_close(struct crnet_udp_socket_t *socket) {
+	if (socket->native >= 0)
+		close((int)socket->native);
+	if (socket->wake[0] >= 0)
+		close((int)socket->wake[0]);
+	if (socket->wake[1] >= 0)
+		close((int)socket->wake[1]);
+	socket->native  = -1;
+	socket->wake[0] = -1;
+	socket->wake[1] = -1;
+}
+
+void crnet_udp_backend_wake(struct crnet_udp_socket_t *socket) {
+	char byte = 1;
+	if (write((int)socket->wake[1], &byte, 1) < 0) {
+		// Full means it is already readable, which is all this is for.
+	}
+}
+
+/* Waits for the descriptor to be readable or writable (`events`), the time
+ * to run out, or an abort, as crnet_posix_wait does for a TCP socket.
+ * CR_SUCCESS means the call is worth trying again. */
+static CR_RESULT crnet_udp_wait(struct crnet_udp_socket_t *socket, short events, uint64_t start, uint32_t timeout_ms) {
+	for (;;) {
+		if (crnet_atomic_load32(&socket->aborted))
+			return CR_RESULT_NET_ABORTED;
+		struct pollfd waited[2];
+		waited[0].fd      = (int)socket->native;
+		waited[0].events  = events;
+		waited[0].revents = 0;
+		waited[1].fd      = (int)socket->wake[0];
+		waited[1].events  = POLLIN;
+		waited[1].revents = 0;
+		const int ready   = poll(waited, 2, crnet_posix_remaining(start, timeout_ms));
+		if (ready == 0)
+			return CR_RESULT_NET_TIMED_OUT;
+		if (ready < 0 && errno == EINTR)
+			continue;
+		if (crnet_atomic_load32(&socket->aborted))
+			return CR_RESULT_NET_ABORTED;
+		return CR_SUCCESS;
+	}
+}
+
+/* Waits a millisecond at most, or for an abort: for ENOBUFS, which Apple
+ * returns while an interface's queue is full and which poll() doesn't wait
+ * out (the descriptor stays writable). CR_SUCCESS to try again. */
+static CR_RESULT crnet_udp_back_off(struct crnet_udp_socket_t *socket, uint64_t start, uint32_t timeout_ms) {
+	const int remaining = crnet_posix_remaining(start, timeout_ms);
+	if (remaining == 0)
+		return CR_RESULT_NET_TIMED_OUT;
+	struct pollfd waited;
+	waited.fd      = (int)socket->wake[0];
+	waited.events  = POLLIN;
+	waited.revents = 0;
+	poll(&waited, 1, remaining < 0 || remaining > 1 ? 1 : remaining);
+	return crnet_atomic_load32(&socket->aborted) ? CR_RESULT_NET_ABORTED : CR_SUCCESS;
+}
+
+CR_RESULT crnet_udp_backend_send_to(struct crnet_udp_socket_t *socket, const crnet_address *to, const void *data, uint32_t size, uint32_t timeout_ms) {
+	struct sockaddr_storage storage;
+	const uint32_t          length = crnet_sockaddr_from_address(to, &storage, sizeof(storage));
+	// An empty datagram is sent from a pointer of its own: sendto with NULL
+	// and 0 is allowed, but nothing is gained by relying on it.
+	static const char nothing = 0;
+	const void       *bytes   = data ? data : &nothing;
+	crnet_error      *record  = &socket->errors[CRNET_ERROR_SIDE_SENDING];
+	const uint64_t    start   = crnet_posix_now_ms();
+	for (;;) {
+		const ssize_t sent = sendto((int)socket->native, bytes, size, CRNET_POSIX_SEND_FLAGS, (const struct sockaddr *)&storage, (socklen_t)length);
+		if (sent >= 0)
+			return CR_SUCCESS; // a datagram goes whole or not at all
+		const int error = errno;
+		if (error == EINTR)
+			continue;
+		if (error == EMSGSIZE)
+			return crnet_posix_failed(record, CR_RESULT_NET_DATAGRAM_TOO_BIG, error);
+		CR_RESULT waited;
+		if (error == EAGAIN || error == EWOULDBLOCK)
+			waited = crnet_udp_wait(socket, POLLOUT, start, timeout_ms);
+		else if (error == ENOBUFS)
+			waited = crnet_udp_back_off(socket, start, timeout_ms);
+		else
+			return crnet_udp_call_failed(record, CR_RESULT_NET_SEND_FAILED, error);
+		if (CR_FAILED(waited))
+			return waited;
+	}
+}
+
+CR_RESULT crnet_udp_backend_recv_from(struct crnet_udp_socket_t *socket, void *buffer, uint32_t capacity, uint32_t timeout_ms, uint32_t *out_size, crnet_address *out_from) {
+	crnet_error   *record = &socket->errors[CRNET_ERROR_SIDE_RECEIVING];
+	const uint64_t start  = crnet_posix_now_ms();
+	for (;;) {
+		struct sockaddr_storage from;
+		memset(&from, 0, sizeof(from));
+		struct iovec piece;
+		piece.iov_base = buffer;
+		piece.iov_len  = capacity;
+		struct msghdr message;
+		memset(&message, 0, sizeof(message));
+		message.msg_name       = &from;
+		message.msg_namelen    = sizeof(from);
+		message.msg_iov        = &piece;
+		message.msg_iovlen     = 1;
+		const ssize_t received = recvmsg((int)socket->native, &message, 0);
+		if (received >= 0) {
+			crnet_address source;
+			if (!crnet_address_from_sockaddr(&from, message.msg_namelen, 0, &source, NULL))
+				continue; // no IPv4 or IPv6 source: not a datagram this socket can hand over
+			*out_from = source;
+			if (message.msg_flags & MSG_TRUNC) {
+				*out_size = capacity;
+				return CR_RESULT_NET_DATAGRAM_TRUNCATED;
+			}
+			*out_size = (uint32_t)received;
+			return CR_SUCCESS;
+		}
+		const int error = errno;
+		if (error == EINTR)
+			continue;
+		if (error != EAGAIN && error != EWOULDBLOCK)
+			return crnet_udp_call_failed(record, CR_RESULT_NET_RECV_FAILED, error);
+		const CR_RESULT waited = crnet_udp_wait(socket, POLLIN, start, timeout_ms);
+		if (CR_FAILED(waited))
+			return waited;
+	}
+}
+
+CR_RESULT crnet_udp_backend_local_address(struct crnet_udp_socket_t *socket, crnet_address *out_address) {
+	struct sockaddr_storage storage;
+	socklen_t               length = sizeof(storage);
+	if (getsockname((int)socket->native, (struct sockaddr *)&storage, &length) != 0)
+		return CR_RESULT_NET_INVALID_UDP_SOCKET;
+	crnet_address address;
+	if (!crnet_address_from_sockaddr(&storage, length, 0, &address, NULL))
+		return CR_RESULT_NET_INVALID_UDP_SOCKET;
+	*out_address = address;
+	return CR_SUCCESS;
+}
+
+CR_RESULT crnet_udp_backend_buffer_sizes(struct crnet_udp_socket_t *socket, uint32_t *out_receive_buffer_size, uint32_t *out_send_buffer_size) {
+	int       receive = 0, send = 0;
+	socklen_t length  = sizeof(receive);
+	if (getsockopt((int)socket->native, SOL_SOCKET, SO_RCVBUF, &receive, &length) != 0)
+		return CR_RESULT_NET_INVALID_UDP_SOCKET;
+	length = sizeof(send);
+	if (getsockopt((int)socket->native, SOL_SOCKET, SO_SNDBUF, &send, &length) != 0)
+		return CR_RESULT_NET_INVALID_UDP_SOCKET;
+	*out_receive_buffer_size = receive < 0 ? 0 : (uint32_t)receive;
+	*out_send_buffer_size    = send < 0 ? 0 : (uint32_t)send;
+	return CR_SUCCESS;
+}
+
+#endif // CRNET_EXT_UDP
 
 #if __cplusplus
 }

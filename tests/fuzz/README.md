@@ -10,8 +10,11 @@ what Carrottus parses, and what is fuzzed here, is what the stacks hand on:
 |---|---|---|
 | `crnet_fuzz_http_head` | `crnet_head_add_header_line`, `crnet_head_add_header`, `crnet_head_get_header` (`src/net/crnethttp.c`); on Windows also `crnet_win_add_raw_headers` (`src/net/backends/windows/crnetwinhttp.c`) | the server: a response's header block, a line at a time (libcurl, WinHTTP) or as pairs (NSURLSession), and on Windows as WinHTTP hands over the whole block, UTF-16 |
 | `crnet_fuzz_certificate` | `crnet_certificate_public_key_info` (`src/crnet.c`) | the server: its certificate's DER, walked to the key a pin is checked against (WinHTTP, NSURLSession) |
-| `crnet_fuzz_text` | `crnet_utf8_valid`, `crnet_error_record`, `crnet_ascii_equal_no_case`, `crnet_url_has_scheme`, `crnet_headers_accept_encoding` | the caller or the stack: text checked before a WebSocket send, a stack's message cut to fit a record |
+| `crnet_fuzz_text` | `crnet_utf8_valid`, `crnet_error_record`, `crnet_ascii_equal_no_case`, `crnet_url_has_scheme`, `crnet_headers_accept_encoding`; `crnet_address_from_string` and `_to_string` against `inet_pton` (`src/net/crnetinterfaces.c`) | the caller or the stack: text checked before a WebSocket send, a stack's message cut to fit a record |
 | `crnet_fuzz_proxy` | `crnet_proxy_parse` (`src/crnet.c`) | the caller: a proxy URL |
+| `crnet_fuzz_txt` | `crnet_service_txt_check`, `crnet_service_txt_write`, `crnet_discovery_report_service`'s TXT copy (`src/net/crnetdiscovery.c`); the second reading dns_sd's `TXTRecordGetCount` and `TXTRecordGetItemAtIndex` on Apple, a plain walk elsewhere | the caller: an advert's TXT entries; another device: a found TXT record in wire form |
+| `crnet_fuzz_service_name` | `crnet_service_name_valid`, `crnet_service_type_valid`, `crnet_service_type_matches`, `crnet_dns_label_unescape` (`\ddd` included), `crnet_discovery_full_name_matches`, `crnet_discovery_report_found` (`src/net/crnetdiscovery.c`) | another device: the names and types dns_sd's (and later Avahi's and Windows') replies carry |
+| `crnet_fuzz_ifaddr` | `crnet_address_from_sockaddr` (the link-local scope, KAME's embedded form), `crnet_netmask_prefix_length` (non-contiguous masks) (`src/net/crnetinterfaces.c`) | the system: getifaddrs' and recvmsg's sockaddrs and netmasks |
 
 Each checks, besides AddressSanitizer's and UndefinedBehaviorSanitizer's
 own findings, that nothing leaks or is freed wrongly through the caller's
