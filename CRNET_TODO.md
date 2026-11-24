@@ -770,6 +770,14 @@ Carrottus's rule is that it never decides on the caller's behalf. These do:
   reason (only the code is kept), sending a ping.
 - **TCP:** keep-alive option, a local address for outgoing connections, a
   local-address query, UDP.
+- **TCP abortive close** (noted 2026-11-24 with the user, from the account
+  service's step 2 prompt, `prompts/account_service_02_client_critique_record.md`):
+  no call ends a connection with a reset (`SO_LINGER` 0 on BSD sockets, the
+  same on Winsock), so a caller can't send one on purpose. The Endqueue
+  client's account double makes a reset by destroying a connection with
+  bytes still unread, which the systems turn into a reset but `crnet.h`
+  doesn't promise. A Carrottus draft of its own when a caller needs it (a
+  server such as the C mailman); not drafted now.
 - **Interfaces:** `crnet_instance_get_local_ipv4_addresses` is IPv4-only, goes through
   the resolver, and doesn't follow the `crnet_<object>_<verb>` pattern. A real
   interface enumeration should replace it.
