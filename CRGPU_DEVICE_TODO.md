@@ -2693,7 +2693,7 @@ command list's start. D3D12 decays a buffer to `COMMON` when an
 and Carrottus GPU passes every list of a submission to one call, so a
 buffer an earlier list of the call left in a read state may still be in
 it. First, trace it on the ThinkPad: a debug name on each buffer, the A2000
-under GBV, `latran_noalloc_tests --device 1`, GBV's message naming the
+under GBV, a caller's no-allocation tests on that device, GBV's message naming the
 buffer and list. If that holds, a draft states in `crgpu.h` that a
 buffer's state carries across the lists of one submission and decays
 only between submissions on every backend (a contract change, so for
