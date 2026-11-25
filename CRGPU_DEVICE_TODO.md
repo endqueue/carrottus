@@ -2644,3 +2644,67 @@ draft:
   formats don't match the pass's (Vulkan's VUIDs 06179, 08910, 08912),
   with a code of its own, by a short draft for approval first.
 
+## A failed allocation is out of memory on every backend (card S64, decided 2026-11-24 with the user: a)
+
+`crcore.h`'s allocator contract: when the caller's allocator returns
+NULL, the call fails with `CR_RESULT_OUT_OF_MEMORY` and makes nothing.
+Found 2026-11-20 by a caller's failure injection: 14 of the Metal
+backend's creates (the surface's in `crgpumetalswapchain.m`, the swap
+chain's, command lists', descriptor set layouts', buffer and image
+views', compute pipelines') return `CR_RESULT_GENERAL_FAILURE` instead;
+11 others are right. On Windows the instance's create was fixed the same
+day (Vulkan's extension and queue-family lists each read once, a failure
+passed up), and `crgpu_device_test` refuses each of its requests alone on
+every backend (`crtest_allocator.h`'s `refuse_only`).
+
+- **Every backend, every create:** each allocation failure returns
+  `CR_RESULT_OUT_OF_MEMORY` with nothing made and nothing leaked.
+- **Held by a test:** carrottus's own failure-injection test fails each
+  create's nth allocation in turn (`refuse_only`, extended from the
+  instance to every create), on Metal, D3D12 and Vulkan.
+- Metal's 14 first, on the Mac; D3D12's and Vulkan's other creates read
+  on the ThinkPad. A fix within the contract: no draft.
+
+## Validation errors fail the GPU tests (card S37, decided 2026-11-24 with the user: c, and a for the rest)
+
+A test run under validation fails on any validation error, not only on
+a wrong result, so an object never destroyed (the
+`VUID-vkDestroyInstance-instance-00629` report, which runs printed and
+passed on) is a failure, and no suppression can hide it. Until S10's
+message callback reaches Carrottus GPU, carrottus's own GPU tests (and
+the GPU tests of every layer above, in their own trees) register a
+Vulkan debug messenger through `crgpu_vulkan_natives.h` that counts
+errors, the test failing when the count isn't 0; with S10, the instance's
+message callback does it on every backend. Nothing in the library: the
+messenger is the tests'. The other reports S37 found on Fedora stay
+reported, not suppressed or worked around: NVK's device leak, ANV's
+indirect-draw kernel, llvmpipe's heap and fence race, the validation
+layer's queue-thread race and libdbus' lock order, each reported
+upstream with its repro (Mesa, Khronos, libdbus if it survives a current
+SDL), and ALSA's ring-buffer suppression kept.
+
+## A buffer's state across the lists of one submission (card S77, first numbered S65; decided 2026-11-24 with the user: a, trace first)
+
+D3D12's GPU-based validation reports `[942]` (a whole buffer barriered
+from `COMMON` while it is tracked as `VERTEX_AND_CONSTANT_BUFFER`) on the
+RTX A2000, WARP and the Iris Xe (L8's Windows run, 2026-11-22), each at a
+command list's start. D3D12 decays a buffer to `COMMON` when an
+`ExecuteCommandLists` call finishes, not between the lists of one call,
+and Carrottus GPU passes every list of a submission to one call, so a
+buffer an earlier list of the call left in a read state may still be in
+it. First, trace it on the ThinkPad: a debug name on each buffer, the A2000
+under GBV, `latran_noalloc_tests --device 1`, GBV's message naming the
+buffer and list. If that holds, a draft states in `crgpu.h` that a
+buffer's state carries across the lists of one submission and decays
+only between submissions on every backend (a contract change, so for
+approval); the callers' barriers then start from the state an earlier
+list left.
+
+## `crgpu_msl`'s argument-buffer text writer (card S31, decided 2026-11-24 with the user: a)
+
+`tools/crgpu_msl`'s padding of argument buffers by writing Metal members
+into SPIRV-Cross's text goes once the SPIR-V it is given carries every
+binding as a real variable (padded before it, by the build that calls
+it): SPIRV-Cross then writes each member's Metal type itself, with
+explicit resource bindings per `[[id]]` (a combined sampler's at
+1024 + b).

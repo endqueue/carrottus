@@ -82,3 +82,34 @@ freezes, with nothing of wheels written yet:
 The draft covers only the rename and listing by kind, written with S68's
 and S70's so the header is redrafted once. Test devices when wheels are
 built: a plain-HID wheel over USB and an Xbox-mode one.
+
+## GameInput loaded by hand (card S43, decided 2026-11-24 with the user: a)
+
+Today the GameInput backend links `GameInput.lib`, so every executable
+over Carrottus Input on Windows imports `GameInput.dll`, and where its
+runtime (Gaming Services) is missing the loader refuses the executable
+before its entry point. Instead, the instance asking for
+`CRINPUT_NATIVE_API_GAMEINPUT` loads it itself: `LoadLibraryExW` from
+System32 only (`LOAD_LIBRARY_SEARCH_SYSTEM32`) and `GameInputCreate` by
+`GetProcAddress`, the module kept by the instance and freed at its
+destroy. Where it is missing, that create fails with a result of its own
+(new, so in the draft) and the platform's error to the message callback
+once S10 reaches Carrottus Input; nothing imports it. Drafted in the
+same Carrottus Input draft as S68's raw device, S70 and S76; the
+imports checked with `llvm-readobj --coff-imports` on the ThinkPad.
+
+## Motion on every backend, and the declared features run on a pad (cards S71 and S73, decided 2026-11-24 with the user: a each)
+
+- **S71:** gamepad motion on evdev (the motion sensors' sibling node, as
+  `hid-playstation` makes it) and GameInput, each sample timed when it
+  was measured where the platform says so, in the one stated frame the
+  header promises. A test device: a DualSense or DualSense Edge.
+- **S73:** every feature the header declares run on a real pad: the Mac
+  first with a DualSense Edge (every button one at a time, a press and
+  release between two polls, battery, touch, motion with its axes'
+  directions, lights, labels, the CoreHaptics rumble); then Fedora
+  (`hid-playstation`'s battery, light bar and player lights; touch and
+  motion with S71) and Windows (what GameInput lists, S68's first step;
+  the Xbox pad's trigger motors felt). Then evdev touch written; an
+  Android backend when one is needed; XInput only if a Windows version
+  without GameInput is a target.

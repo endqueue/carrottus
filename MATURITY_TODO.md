@@ -232,6 +232,20 @@ Long-lived C APIs have these and carrottus does not:
   mapped to codes of their own), Carrottus's prints removed, the tests it
   lists, and runs
   on macOS, Windows and Linux. Not built.
+- **Carrottus' own structural refusals on the same channel (card S32,
+  decided 2026-11-24 with the user: a).** Where a check compares a
+  structure (a module's sets against their layouts, Metal's
+  `CR_RESULT_GPU_SHADER_LAYOUT_MISMATCH` among them; an acceleration
+  structure build's geometry and sizes; a swap chain desc against its
+  surface; a pipeline's attachments against its pass), the refusal also
+  sends a message on the instance's S10 callback, inside the call, naming
+  the call, the object and what differed ("set 1, binding 5: the layout
+  holds a sampled image, the vertex module a sampler"), at every
+  validation level, nothing allocated, as S10's. The code is unchanged
+  and still what a program branches on. A plain argument check (a null
+  handle, a zero count) sends none. A second draft beside S10's
+  (`cr_platform_error_draft.h`, which stays as approved), naming each
+  structural refusal and its message, built with S10 in each module.
 - **`void` recording calls that silently record nothing** (found reading
   card S10's draft, 2026-11-01). Each prints why and returns: out of memory
   building barriers (D3D12's `crgpu_command_list_pipeline_barrier`,

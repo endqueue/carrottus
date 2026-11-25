@@ -480,6 +480,12 @@ GCC, and MSVC's code is unchanged (its volatile read is atomic).
 
 Left: Linux (the POSIX half on glibc, `-tsan` there, `libc.so.6` by name).
 
+**Card S45 decided 2026-11-24 with the user (a), as built:** on Windows a
+refused open's message is the call, the Win32 code and the desc's debug
+name, since the loader has no words naming the file; the caller, which
+knows the path it asked for, names it in its own message. Carrottus'
+messages keep only the platform's words.
+
 ## Breaks
 
 Every caller of `crfiles_file_open` and `crfiles_file_exists` (the grep above finds
