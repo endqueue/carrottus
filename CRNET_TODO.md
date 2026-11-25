@@ -1518,6 +1518,119 @@ The questions as they were put:
 `crnet_wait_set_draft.h`, for your approval (below, "The wait set's
 draft").
 
+### Built on Windows (2026-11-24, carrottus 0.5.0)
+
+By `../prompts/crnet_local_network_windows.md`; the record, with every
+figure, is the meta repo's `prompts/crnet_local_network_windows_record.md`.
+Windows 11 build 26300, the ThinkPad P1 Gen 5, MSVC 14.51, Windows SDK
+10.0.26100.0, LLVM 23 for the fuzz tree.
+
+**What was built** (no public name added or changed; text only in
+`crnet.h` and `crcore.h`, below):
+- The listing, `backends/windows/crnetwinifaces.c`: GetAdaptersAddresses
+  (its buffer from the instance's allocator, grown as it asks) and
+  GetIfTable2 for UP, both given back before the return; `iphlpapi`
+  linked.
+- UDP, in `backends/windows/crnetwindows.c` on TCP's Winsock endpoint
+  (one network event by WSAEventSelect, a readable, a writable and an
+  abort event); the internal `struct crnet_udp_socket_t` gained `backend`
+  for it, `native` the SOCKET the wait set polls. SIO_UDP_CONNRESET and
+  SIO_UDP_NETRESET off.
+- Discovery, `backends/windows/crnetwindnssd.c`, in place of the stub on
+  Windows (Linux keeps it): dnsapi.dll opened by each object; callbacks
+  on the system's threads report into the ring and set a `pump` event; a
+  destroy waits until the operation's last callback has come and none is
+  inside.
+- Tests: `crnet_test`'s Windows halves (indexes against
+  ConvertInterfaceLuidToIndex; Windows' own discovery cases: a vanished
+  instance's silent resolve, 120 destroys among callbacks under a
+  watchdog, an abort of `next(CRNET_WAIT_FOREVER)` while callbacks
+  arrive), `crnet_discovery_two_process.c`'s Windows half (CreateProcessW
+  with an inherited pipe, TerminateProcess), and
+  `crnet_discovery_library_test.c` (a process per case: `start`, `timing`,
+  `cycles`, `three`, `bare`, `pinned`, and `missing`, a test build of the
+  backend whose library name points elsewhere). The discovery ctests take
+  one `RESOURCE_LOCK`.
+- Fixed on the way: discovery's destroy could free an object a callback
+  was still leaving (`crnet_test` crashed once, D3D12 Debug); each callback
+  now counts itself in and out, and the destroy waits for the last. And
+  discovery's `pump` waits out what WaitForMultipleObjects leaves of a
+  limit (it returned at 49 ms of 50).
+- Fixed in Mac-written test code: two locals named `small` (a `windows.h`
+  macro), `__builtin_popcount` in `crnet_fuzz_ifaddr`, and the test's
+  Windows clock (GetTickCount64's 15.6 ms steps made a 50 ms wait read as
+  47).
+
+**Run:** `windows-d3d12` and `windows-vulkan`, Debug and Release, no
+compiler warning; every ctest passing but `crgpu_objects_test` (the GPU
+work's: R32G32B32 copies on D3D12, a crash inside Intel's Vulkan driver;
+not this work's, failing the same before it); `crnet_test` 813 of 813
+(Debug) and 812 of 812 (Release), every part but `internet`; both `-asan`
+presets the same with no report; the new parts 20 times in Release and 5
+under ASan at `-j 20`, every run passing; `cr_misuse_tests` ten times on
+each backend, 0 failures; the four fuzz targets the Mac added 5 minutes
+each, nothing found.
+
+**What Windows showed:**
+- The listing: the Wi-Fi adapter's display name "Wi-Fi 2", with
+  BROADCAST; loopback has BROADCAST too (Windows lists 127.255.255.255/32
+  among its prefixes), mtu 0; every index equal to its Ipv6IfIndex here;
+  no link-local scope embedded (C2.13, as on the Mac).
+- UDP: buffers 65536 by default; 65507 bytes go, 65508 and 70000 TOO_BIG;
+  192.0.2.1 BIND_FAILED (10049); SHARED 0.0.0.0 over EXCLUSIVE 127.0.0.1
+  binds, SHARED 127.0.0.1 over EXCLUSIVE 0.0.0.0 is ADDRESS_IN_USE. Seen
+  failing first: without SIO_UDP_CONNRESET the receive after a send to a
+  closed port is RECV_FAILED (WSAECONNRESET).
+- Discovery, which the header's known problems now say: a browse hands
+  over every answer and goodbye it hears (FOUND 4 to 26 times for one
+  instance, LOST once per goodbye, two after a destroy); a departure was
+  never reported while another program churned adverts (four runs of
+  four, none in 30 s; alone, always); the conflict case's second advert
+  REGISTERED in every run but one, which ended with NAME_CONFLICT; a
+  resolve of a vanished instance had no callback in 60 s (no time-out of
+  its own: NOT_ANSWERING never came); a resolve's answer has one IPv4
+  address and never loopback's; an advert's host is the machine's DNS
+  host name with ".local" (`ThinkpadP1Win11.local`), and Windows'
+  responder answers for it.
+- **C2.10 settled:** DnsServiceResolveCancel always called back, with
+  ERROR_CANCELLED, inside the call (15 of 15); when the answer raced the
+  cancel, the answer was the last callback. DnsServiceRegisterCancel and
+  DnsServiceBrowseCancel also answered inside the call;
+  DnsServiceDeRegister answered after it in 30 of 35. A destroy took 0.15
+  to 0.9 ms on average, 4.8 ms at most (Debug, 120 among callbacks).
+- dnsapi.dll keeps itself loaded once one of its DNS-SD calls has run,
+  though freed as often as loaded (a probe with no Carrottus shows it), so
+  "the last destroy leaves it closed" can't hold on Windows; a load and
+  free with no call made does unload it. dnsapi.dll isn't loaded at a
+  process's start or by Winsock's.
+- A create, timed in fresh processes (`crnet_discovery_library_test
+  timing`, three each): with no other object holding dnsapi.dll (its first
+  load) 1.8 to 1.9 ms in Debug, 1.9 to 2.2 ms in Release; with another
+  holding it, a mean of 0.31 to 0.35 ms in both. The system's work, not
+  the build's.
+- `cr_noalloc_tests`: none of ours in UDP's frames and discovery's idle
+  reads (one allocation apart a round, Winsock's). Release: a frame of one
+  datagram 18.55 us, of sixteen from eight sockets 235.65 us (14.7 us a
+  datagram, about 3.4 times the Mac's 4.35; 1.4% of a 60 Hz frame, under
+  the draft's 2%, so no batching), discovery's idle round 6.61 us. Debug:
+  25.5 us, 269 us and 7.1 us.
+
+**For you:**
+- **NOT_ANSWERING on Windows** (a narrowed promise): `crnet.h` said
+  Windows' own time-out gives CR_RESULT_NET_SERVICE_NOT_ANSWERING; none
+  came, so its text and `crcore.h`'s now say Avahi only, and a Windows
+  resolver of a vanished instance stays silent until the caller's limit.
+- **The Winsock wait's early end:** WaitForMultipleObjects ended a 50 ms
+  wait at 49 ms in discovery's pump, against "Time limits"; the pump now
+  waits out the rest on the performance counter. TCP's and UDP's endpoint
+  wait (`crnet_win_endpoint_wait`, TCP's code) has the same shape on the
+  tick count; UDP's 50-100 ms check passed 20 of 20, so it is left as it
+  is. Say whether to give it the same floor (it would change TCP's
+  waits).
+- **The departure under churn** and the varying conflict are Windows'
+  answers, said in the header; a caller that needs a departure for sure
+  keeps its own liveness (as it must for a killed peer on any system).
+
 ### The wait set's draft (2026-11-23, approved the same day)
 
 What the Endqueue client's critique found missing (the meta repo's
@@ -1551,6 +1664,19 @@ local carrier as a second caller: `crnet_wait_set_draft.h`, version 4.
   `infos`. Both capacities are compared now, an entry pushed only when both
   have room; `crnet_test`'s "udp" part refuses the second growth twice and
   waits again.
+- **The scratch check on Windows** (2026-11-24, the Windows prompt's
+  item 7; the program ported, its allocator wrapper printing each
+  allocation's size and its callers' modules): `windows-d3d12` Release,
+  the same three passes, 18 members at the mark. Warm-ups: 2 allocations
+  (the poll's two arrays, 256 and 128 bytes) at a set's first wait; the
+  1000 counted rounds of every pass, the fresh set with kinds swapped
+  included: **0** through the instance's allocator and 0 of Carrottus's
+  own by alloctrace (1000 apart: Winsock's, one a round). On Windows only
+  a TCP socket, a listener and a UDP socket poll a descriptor; a
+  WebSocket, an HTTP transfer and the three discovery kinds poll none, so
+  a wait's entries stay within the first 16 at this mark. The draft's
+  owed Windows cells: **UDP socket 1, advert, browser and resolver 0**
+  (recorded here and in the record; the draft stays as approved).
 - **Approved by you 2026-11-23** (version 4, its header line then made
   "APPROVED"). SHA-256 with carriage returns removed (card X23):
   `46fed3bd707d8ec0078a6bdadf834503fc18c13ae21b42552431e48fc732c5c0`. Every session building it checks this first and stops on a

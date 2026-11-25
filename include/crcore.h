@@ -576,7 +576,7 @@ typedef enum CR_RESULT {
 	CR_RESULT_NET_DISCOVERY_FAILED             = 3045, /**< The system's discovery service failed the operation, or went away during it; the object's _get_error has the system's code, and only destroy is left. */
 	CR_RESULT_NET_SERVICE_NAME_CONFLICT        = 3046, /**< The name an advert asked for is held by another service of the same type on the network. The advert is over. */
 	CR_RESULT_NET_ACCESS_DENIED                = 3047, /**< The system refused this program the network for this call (Android: INTERNET missing at a create, ACCESS_LOCAL_NETWORK at a send or receive); the socket stays usable once allowed. Never on Apple, whose Local Network refusal can't be told from no route. */
-	CR_RESULT_NET_SERVICE_NOT_ANSWERING        = 3048, /**< A resolve the system gave up on because the instance didn't answer (Avahi's and Windows' own time-out); dns_sd never gives it. */
+	CR_RESULT_NET_SERVICE_NOT_ANSWERING        = 3048, /**< A resolve the system gave up on because the instance didn't answer (Avahi's own time-out); dns_sd never gives it, and Windows was seen with none. */
 
 	CR_RESULT_AUDIO_INVALID_INSTANCE      = 4001, /**< A Carrottus Audio instance argument is NULL. */
 	CR_RESULT_AUDIO_INVALID_DEVICE        = 4002, /**< An audio device argument, or a desc's device, is NULL. */

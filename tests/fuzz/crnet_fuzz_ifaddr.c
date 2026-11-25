@@ -33,7 +33,8 @@
 static uint32_t ref_bits(const uint8_t *b, size_t n) {
 	uint32_t total = 0;
 	for (size_t i = 0; i < n; ++i)
-		total += (uint32_t)__builtin_popcount(b[i]);
+		for (uint8_t bits = b[i]; bits; bits &= (uint8_t)(bits - 1))
+			total++;
 	return total;
 }
 

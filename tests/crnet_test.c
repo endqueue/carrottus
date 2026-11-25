@@ -38,6 +38,8 @@
 
 #ifdef _WIN32
 #include <intrin.h>
+#include <winsock2.h>
+#include <iphlpapi.h>
 #include <windows.h>
 typedef HANDLE test_thread;
 typedef DWORD  test_thread_result;
@@ -48,7 +50,7 @@ static void thread_join(test_thread thread) {
 	WaitForSingleObject(thread, INFINITE);
 	CloseHandle(thread);
 }
-static uint64_t now_ms(void) { return (uint64_t)GetTickCount64(); }
+static uint64_t now_ms(void) { return crperf_get_monotonic_time_ns() / 1000000u; }
 #else
 #include <net/if.h>
 #include <unistd.h>
@@ -3331,6 +3333,29 @@ static crnet_interface_address address_struct(void) {
 
 static const char *family_name(CRNET_ADDRESS_FAMILY family) { return family == CRNET_ADDRESS_FAMILY_IPV4 ? "IPv4" : family == CRNET_ADDRESS_FAMILY_IPV6 ? "IPv6" : "?"; }
 
+#ifdef _WIN32
+/* The index Windows gives the adapter its GUID string names
+ * (ConvertInterfaceGuidToLuid, ConvertInterfaceLuidToIndex); 0 for none. */
+static unsigned windows_index_of(const char *name) {
+	unsigned long data1 = 0;
+	unsigned      data2 = 0, data3 = 0, bytes[8] = {0};
+	if (sscanf(name, "{%8lx-%4x-%4x-%2x%2x-%2x%2x%2x%2x%2x%2x}", &data1, &data2, &data3, &bytes[0], &bytes[1], &bytes[2], &bytes[3], &bytes[4], &bytes[5],
+	           &bytes[6], &bytes[7]) != 11)
+		return 0;
+	GUID guid;
+	guid.Data1 = data1;
+	guid.Data2 = (unsigned short)data2;
+	guid.Data3 = (unsigned short)data3;
+	for (int i = 0; i < 8; ++i)
+		guid.Data4[i] = (unsigned char)bytes[i];
+	NET_LUID    luid;
+	NET_IFINDEX index = 0;
+	if (ConvertInterfaceGuidToLuid(&guid, &luid) != NO_ERROR || ConvertInterfaceLuidToIndex(&luid, &index) != NO_ERROR)
+		return 0;
+	return index;
+}
+#endif
+
 /* One pass of the listing's checks. False when an interface's index and
  * if_nametoindex disagreed, which an interface coming or going (awdl) can
  * cause: the caller lists again once before that is a failure.
@@ -3353,18 +3378,26 @@ static bool interfaces_check_listing(crnet_interface_list list, bool report, boo
 			read_twice_ok = false;
 		if (!text_ok(properties.name, sizeof(properties.name)) || properties.name[0] == '\0' || !text_ok(properties.display_name, sizeof(properties.display_name)))
 			names_ok = false;
+#ifdef _WIN32
+		// Windows' Ipv6IfIndex may differ from IfIndex, and is 0 for an
+		// adapter without IPv6 (crnet.h): any value is the system's.
+		if (properties.index == 0)
+			indexes_ok = false;
+		const unsigned system_index = windows_index_of(properties.name);
+#else
 		if (properties.index == 0 || properties.ipv6_index != properties.index)
 			indexes_ok = false;
-#ifndef _WIN32
 		const unsigned system_index = if_nametoindex(properties.name);
+#endif
 		if (system_index != properties.index) {
 			index_mismatch = true;
 			if (final)
-				note("%s: listed as index %u, if_nametoindex says %u", properties.name, properties.index, system_index);
+				note("%s: listed as index %u, the system says %u", properties.name, properties.index, system_index);
 		}
-#endif
 		const bool is_loopback = (properties.flags & CRNET_INTERFACE_FLAG_LOOPBACK) != 0;
 		loopback |= is_loopback;
+		if (report && properties.display_name[0])
+			note("%s: \"%s\", ipv6_index %u", properties.name, properties.display_name, properties.ipv6_index);
 		if (report)
 			note("%-10s index %2u mtu %5u flags%s%s%s%s%s%s, %u address%s", properties.name, properties.index, properties.mtu,
 			     properties.flags & CRNET_INTERFACE_FLAG_UP ? " UP" : "", properties.flags & CRNET_INTERFACE_FLAG_RUNNING ? " RUNNING" : "",
@@ -3406,8 +3439,13 @@ static bool interfaces_check_listing(crnet_interface_list list, bool report, boo
 	check(loopback_v4, "loopback holds 127.0.0.1/8");
 	check(loopback_v6, "loopback holds ::1/128");
 	check(names_ok, "every name null-terminated, valid UTF-8, not empty; every display name null-terminated and valid UTF-8");
+#ifdef _WIN32
+	check(indexes_ok, "every index non-zero (ipv6_index the system's own)");
+	check(!index_mismatch, "every index agrees with ConvertInterfaceLuidToIndex");
+#else
 	check(indexes_ok, "every index non-zero, ipv6_index the same");
 	check(!index_mismatch, "every index agrees with if_nametoindex");
+#endif
 	check(families_ok, "every address IPv4 or IPv6");
 	check(prefixes_ok, "every prefix within 0-32 or 0-128");
 	check(ports_ok, "every address's port and reserved 0");
@@ -3882,7 +3920,7 @@ static void test_udp(void) {
 		crnet_udp_socket      a    = udp_open(&desc, "a sender");
 		crnet_udp_socket      b    = udp_open(&desc, "a receiver");
 		if (a && b) {
-			uint8_t big[1200], small[100], next[16];
+			uint8_t big[1200], little[100], next[16];
 			for (uint32_t i = 0; i < sizeof(big); ++i)
 				big[i] = pattern_at(i);
 			memset(next, 0x42, sizeof(next));
@@ -3892,10 +3930,10 @@ static void test_udp(void) {
 			uint32_t      size = 0;
 			crnet_address from;
 			memset(&from, 0xA5, sizeof(from));
-			expect(crnet_udp_socket_recv_from(b, small, sizeof(small), PATIENCE_MS, &size, &from), CR_RESULT_NET_DATAGRAM_TRUNCATED,
+			expect(crnet_udp_socket_recv_from(b, little, sizeof(little), PATIENCE_MS, &size, &from), CR_RESULT_NET_DATAGRAM_TRUNCATED,
 			       "1200 bytes into a 100-byte buffer");
 			const crnet_address source = udp_local(a);
-			check(size == 100 && memcmp(small, big, 100) == 0 && memcmp(&from, &source, sizeof(from)) == 0, "its first 100 bytes and its source handed over");
+			check(size == 100 && memcmp(little, big, 100) == 0 && memcmp(&from, &source, sizeof(from)) == 0, "its first 100 bytes and its source handed over");
 			uint8_t buffer[2048];
 			expect(crnet_udp_socket_recv_from(b, buffer, sizeof(buffer), PATIENCE_MS, &size, &from), CR_SUCCESS, "the next receive");
 			check(size == sizeof(next) && memcmp(buffer, next, sizeof(next)) == 0, "gets the next datagram, not the rest");
@@ -4469,6 +4507,215 @@ static test_thread_result TEST_THREAD_CALL discovery_abort_later_run(void *argum
 	return 0;
 }
 
+#ifdef _WIN32
+
+/* A watchdog for the cases whose destroy waits for the system's callback:
+ * if `done` isn't set by `deadline_ms`, the process ends, so a cancel that
+ * never calls back fails the test rather than hanging it (C2.10's bound is
+ * the test's, never the library's). */
+struct discovery_watchdog {
+	volatile int32_t done;
+	uint32_t         deadline_ms;
+	const char      *what;
+};
+
+static test_thread_result TEST_THREAD_CALL discovery_watchdog_run(void *argument) {
+	struct discovery_watchdog *watchdog = (struct discovery_watchdog *)argument;
+	const uint64_t             start    = now_ms();
+	while (!test_atomic_load(&watchdog->done)) {
+		if (now_ms() - start > watchdog->deadline_ms) {
+			printf("  FAIL  %s: still waiting after %u ms (a destroy that never returned)\n", watchdog->what, watchdog->deadline_ms);
+			fflush(stdout);
+			ExitProcess(3);
+		}
+		sleep_ms(50);
+	}
+	return 0;
+}
+
+struct discovery_advertise_later {
+	uint32_t             delay_ms;
+	crnet_service_advert advert;
+	const char          *name;
+	const char          *type;
+	uint16_t             port;
+};
+
+static test_thread_result TEST_THREAD_CALL discovery_advertise_later_run(void *argument) {
+	struct discovery_advertise_later *later = (struct discovery_advertise_later *)argument;
+	sleep_ms(later->delay_ms);
+	crnet_service_advert_desc desc = advert_desc(later->name, later->port, NULL, 0);
+	desc.type                      = later->type;
+	crnet_service_advert_create(g_instance, &desc, &later->advert, NULL);
+	return 0;
+}
+
+/* The longest a destroy of each kind took, and how many there were. */
+struct destroy_times {
+	uint64_t most_us;
+	uint64_t total_us;
+	uint32_t count;
+};
+
+static void destroy_timed(struct destroy_times *times, void (*destroy)(void *), void *object) {
+	const uint64_t start = crperf_get_monotonic_time_ns() / 1000u;
+	destroy(object);
+	const uint64_t took = crperf_get_monotonic_time_ns() / 1000u - start;
+	times->most_us      = took > times->most_us ? took : times->most_us;
+	times->total_us += took;
+	times->count++;
+}
+
+static void destroy_advert(void *object) { crnet_service_advert_destroy((crnet_service_advert)object); }
+static void destroy_browser(void *object) { crnet_service_browser_destroy((crnet_service_browser)object); }
+static void destroy_resolver(void *object) { crnet_service_resolver_destroy((crnet_service_resolver)object); }
+
+static void note_destroys(const char *what, const struct destroy_times *times) {
+	note("%s: %u destroys, mean %llu us, longest %llu us", what, times->count, (unsigned long long)(times->count ? times->total_us / times->count : 0),
+	     (unsigned long long)times->most_us);
+}
+
+/* What only Windows' DNS-SD has: its own resolve time-out, destroys that
+ * wait for the system's callbacks, and callbacks on the system's threads
+ * arriving while the caller waits. */
+static void test_discovery_windows(uint16_t port) {
+	crnet_error error;
+
+	// A resolve of an instance nobody advertises: no callback comes, and its
+	// destroy cancels it (DnsServiceResolveCancel, C2.10).
+	{
+		char gone[CRNET_SERVICE_NAME_CAPACITY];
+		snprintf(gone, sizeof(gone), "%s-gone", g_discovery_name);
+		crnet_service_resolver_desc rdesc    = resolver_desc(gone, 0, CRNET_ADDRESS_FAMILY_ANY, 8);
+		crnet_service_resolver      resolver = NULL;
+		if (expect(crnet_service_resolver_create(g_instance, &rdesc, &resolver, &error), CR_SUCCESS, "a resolver of an instance nobody advertises")) {
+			const uint64_t start  = now_ms();
+			CR_RESULT      result = CR_RESULT_NET_TIMED_OUT;
+			while (result == CR_RESULT_NET_TIMED_OUT && now_ms() - start < 20000) {
+				crnet_service_resolve_event event = resolve_event();
+				result                            = crnet_service_resolver_next(resolver, 500, &event);
+				if (result == CR_SUCCESS) {
+					note("an event of kind %d before the end", (int)event.kind);
+					result = CR_RESULT_NET_TIMED_OUT;
+				}
+			}
+			// crnet.h's known problem: Windows' resolve has no time-out of its
+			// own (none in 60 s, 2026-11-24), so the caller's limit is all.
+			expect(result, CR_RESULT_NET_TIMED_OUT, "nothing in 20 s: no time-out of the system's own, the caller's limit is all");
+			note("after %llu ms", (unsigned long long)(now_ms() - start));
+			crnet_error record;
+			crnet_service_resolver_get_error(resolver, &record);
+			note_error("its record", &record);
+			crnet_service_resolver_destroy(resolver);
+		}
+	}
+
+	// Destroys while the system's callbacks may arrive: an advert before
+	// and after REGISTERED (DnsServiceRegisterCancel, DnsServiceDeRegister),
+	// a browser among answers (DnsServiceBrowseCancel), a resolver before
+	// its answer (DnsServiceResolveCancel: C2.10, whether it always calls
+	// back). A watchdog bounds the whole.
+	{
+		struct discovery_watchdog watchdog = {0, 90000, "destroys while callbacks arrive"};
+		test_thread               thread   = thread_start(discovery_watchdog_run, &watchdog);
+		char                      target[CRNET_SERVICE_NAME_CAPACITY];
+		snprintf(target, sizeof(target), "%s-target", g_discovery_name);
+		crnet_service_advert_desc tdesc  = advert_desc(target, port, NULL, 0);
+		crnet_service_advert      shown  = NULL;
+		const bool                showed = crnet_service_advert_create(g_instance, &tdesc, &shown, NULL) == CR_SUCCESS &&
+		                    advert_wait_registered(shown, NULL) == CR_SUCCESS;
+		check(showed, "an advert for the resolvers and browsers to find");
+		struct destroy_times early = {0}, registered = {0}, browsers = {0}, resolvers = {0}, resolved = {0};
+		uint32_t             made = 0, failed = 0;
+		for (uint32_t round = 0; round < 40; ++round) {
+			char name[CRNET_SERVICE_NAME_CAPACITY];
+			snprintf(name, sizeof(name), "%s-s%u", g_discovery_name, round);
+			crnet_service_advert_desc adesc  = advert_desc(name, port, NULL, 0);
+			crnet_service_advert      advert = NULL;
+			if (crnet_service_advert_create(g_instance, &adesc, &advert, NULL) == CR_SUCCESS) {
+				made++;
+				if (round % 4 == 0) {
+					if (advert_wait_registered(advert, NULL) != CR_SUCCESS)
+						failed++;
+					destroy_timed(&registered, destroy_advert, advert);
+				} else {
+					sleep_ms(round % 3);
+					destroy_timed(&early, destroy_advert, advert);
+				}
+			} else {
+				failed++;
+			}
+			crnet_service_browser_desc bdesc   = browser_desc(DISCOVERY_TYPE, 4);
+			crnet_service_browser      browser = NULL;
+			if (crnet_service_browser_create(g_instance, &bdesc, &browser, NULL) == CR_SUCCESS) {
+				made++;
+				sleep_ms(round % 5);
+				destroy_timed(&browsers, destroy_browser, browser);
+			} else {
+				failed++;
+			}
+			crnet_service_resolver_desc rdesc    = resolver_desc(target, 0, CRNET_ADDRESS_FAMILY_ANY, 8);
+			crnet_service_resolver      resolver = NULL;
+			if (crnet_service_resolver_create(g_instance, &rdesc, &resolver, NULL) == CR_SUCCESS) {
+				made++;
+				if (round % 8 == 0) {
+					// Once answered, a destroy has nothing to cancel.
+					crnet_service_resolve_event event = resolve_event();
+					crnet_service_resolver_next(resolver, 2000, &event);
+					destroy_timed(&resolved, destroy_resolver, resolver);
+				} else {
+					sleep_ms(round % 2);
+					destroy_timed(&resolvers, destroy_resolver, resolver);
+				}
+			} else {
+				failed++;
+			}
+		}
+		crnet_service_advert_destroy(shown);
+		test_atomic_store(&watchdog.done, 1);
+		thread_join(thread);
+		check(failed == 0 && made == 120, "120 objects made and destroyed among callbacks, every destroy returned (%u made, %u failed)", made, failed);
+		note_destroys("adverts before REGISTERED (DnsServiceRegisterCancel)", &early);
+		note_destroys("adverts registered (DnsServiceDeRegister)", &registered);
+		note_destroys("browsers (DnsServiceBrowseCancel)", &browsers);
+		note_destroys("resolvers not yet answered (DnsServiceResolveCancel, C2.10)", &resolvers);
+		note_destroys("resolvers answered (nothing to cancel)", &resolved);
+	}
+
+	// next() waiting forever, ended by the object's abort while the
+	// system's callbacks arrive on its own threads.
+	{
+		char own_type[CRNET_SERVICE_TYPE_CAPACITY];
+		snprintf(own_type, sizeof(own_type), "_ca%lu._udp", (unsigned long)(GetCurrentProcessId() % 1000000u));
+		crnet_service_browser_desc bdesc   = browser_desc(own_type, 64);
+		crnet_service_browser      browser = NULL;
+		if (expect(crnet_service_browser_create(g_instance, &bdesc, &browser, NULL), CR_SUCCESS, "a browser of a type of its own")) {
+			struct discovery_advertise_later advertise = {100, NULL, g_discovery_name, own_type, port};
+			struct discovery_abort_later     later     = {2500, abort_browser, browser};
+			test_thread                      one       = thread_start(discovery_advertise_later_run, &advertise);
+			test_thread                      two       = thread_start(discovery_abort_later_run, &later);
+			const uint64_t                   begun     = now_ms();
+			uint32_t                         events    = 0;
+			CR_RESULT                        result    = CR_SUCCESS;
+			while (result == CR_SUCCESS) {
+				crnet_service_browse_event event = browse_event();
+				result                           = crnet_service_browser_next(browser, CRNET_WAIT_FOREVER, &event);
+				events += result == CR_SUCCESS ? 1u : 0u;
+			}
+			expect(result, CR_RESULT_NET_ABORTED, "next waiting forever, aborted from another thread while callbacks arrive");
+			note("%u event%s handed over before the abort, after %llu ms", events, events == 1 ? "" : "s", (unsigned long long)(now_ms() - begun));
+			check(events > 0, "the system's callbacks handed events over while next waited forever");
+			check(now_ms() - begun < 5000, "came back promptly");
+			thread_join(one);
+			thread_join(two);
+			crnet_service_advert_destroy(advertise.advert);
+			crnet_service_browser_destroy(browser);
+		}
+	}
+}
+
+#endif // _WIN32
+
 static void test_discovery(void) {
 	part("Service discovery");
 	crnet_error error;
@@ -4604,12 +4851,24 @@ static void test_discovery(void) {
 		crnet_service_advert_desc second_desc = advert_desc(g_discovery_name, (uint16_t)(port + 1), NULL, 0);
 		if (expect(crnet_service_advert_create(g_instance, &second_desc, &second, &error), CR_SUCCESS, "a second advert of the same name, another port")) {
 			const CR_RESULT result = advert_wait_registered(second, NULL);
+#ifdef _WIN32
+			// Windows' answer varies between runs (crnet.h, "Service
+			// discovery", known problems): REGISTERED, or NAME_CONFLICT.
+			check(result == CR_SUCCESS || result == CR_RESULT_NET_SERVICE_NAME_CONFLICT,
+			      "is REGISTERED or ends with NAME_CONFLICT (Windows' answer varies): %s", cr_result_str(result));
+			if (result == CR_RESULT_NET_SERVICE_NAME_CONFLICT) {
+				crnet_error record;
+				crnet_service_advert_get_error(second, &record);
+				note_error("the conflict", &record);
+			}
+#else
 			expect(result, CR_RESULT_NET_SERVICE_NAME_CONFLICT, "ends with NAME_CONFLICT");
 			crnet_error record;
 			crnet_service_advert_get_error(second, &record);
 			note_error("the conflict", &record);
 			crnet_service_advert_event event = advert_event();
 			expect(crnet_service_advert_next(second, CRNET_NO_WAIT, &event), CR_RESULT_NET_SERVICE_NAME_CONFLICT, "and every next after it");
+#endif
 			crnet_service_advert_destroy(second);
 		}
 	}
@@ -4618,8 +4877,14 @@ static void test_discovery(void) {
 	if (advert && browser && found > 0) {
 		crnet_service_advert_destroy(advert);
 		advert = NULL;
+#ifdef _WIN32
+		browse_count(browser, g_discovery_name, DISCOVERY_BOUND_MS, found, 1, &found, &lost, NULL, NULL);
+		check(lost >= 1, "the advert destroyed, the browser LOST it (%u LOST after %u FOUND: Windows hands over each answer and goodbye it hears)", lost,
+		      found);
+#else
 		browse_count(browser, g_discovery_name, DISCOVERY_BOUND_MS, found, found, &found, &lost, NULL, NULL);
 		check(lost == found, "the advert destroyed, the browser LOST it as many times as it FOUND it (%u of %u)", lost, found);
+#endif
 	}
 	crnet_service_advert_destroy(advert);
 	crnet_service_browser_destroy(browser);
@@ -4628,10 +4893,10 @@ static void test_discovery(void) {
 	// EVENTS_DROPPED, then events again.
 	{
 		crnet_service_browser_desc small_desc = browser_desc(DISCOVERY_TYPE, 1);
-		crnet_service_browser      small      = NULL;
+		crnet_service_browser      one_room   = NULL;
 		crnet_service_advert       many[20]   = {0};
 		char                       names[20][CRNET_SERVICE_NAME_CAPACITY];
-		if (expect(crnet_service_browser_create(g_instance, &small_desc, &small, NULL), CR_SUCCESS, "a browser with room for one event")) {
+		if (expect(crnet_service_browser_create(g_instance, &small_desc, &one_room, NULL), CR_SUCCESS, "a browser with room for one event")) {
 			for (int i = 0; i < 20; ++i) {
 				snprintf(names[i], sizeof(names[i]), "%s-%02d", g_discovery_name, i);
 				crnet_service_advert_desc one = advert_desc(names[i], port, NULL, 0);
@@ -4645,7 +4910,7 @@ static void test_discovery(void) {
 			crnet_service_browse_event event   = browse_event();
 			bool                       dropped = false, then_event = false;
 			for (int reads = 0; reads < 200; ++reads) {
-				const CR_RESULT result = crnet_service_browser_next(small, 200, &event);
+				const CR_RESULT result = crnet_service_browser_next(one_room, 200, &event);
 				if (result != CR_SUCCESS)
 					break;
 				if (event.kind == CRNET_SERVICE_BROWSE_EVENT_EVENTS_DROPPED) {
@@ -4660,7 +4925,7 @@ static void test_discovery(void) {
 			check(then_event, "then events again");
 			for (int i = 0; i < 20; ++i)
 				crnet_service_advert_destroy(many[i]);
-			crnet_service_browser_destroy(small);
+			crnet_service_browser_destroy(one_room);
 		}
 	}
 
@@ -4749,7 +5014,25 @@ static void test_discovery(void) {
 			crnet_service_browse_event bevent = browse_event();
 			while (crnet_service_browser_next(watcher, CRNET_NO_WAIT, &bevent) == CR_SUCCESS) {
 			}
+#ifdef _WIN32
+			{
+				const CR_RESULT waited = crnet_wait_set_wait(set, 300, events, 4, &count);
+				bool            only   = true;
+				uint32_t        again  = 0;
+				if (waited == CR_SUCCESS) {
+					for (uint32_t i = 0; i < count; ++i)
+						only &= events[i].user == &browser_tag;
+					while (crnet_service_browser_next(watcher, CRNET_NO_WAIT, &bevent) == CR_SUCCESS) {
+						only &= bevent.kind == CRNET_SERVICE_BROWSE_EVENT_FOUND && strcmp(bevent.name, g_discovery_name) == 0;
+						again++;
+					}
+				}
+				check((waited == CR_RESULT_NET_TIMED_OUT || waited == CR_SUCCESS) && only,
+				      "drained, named again only for a repeated FOUND of the same instance (%s, %u repeated)", cr_result_str(waited), again);
+			}
+#else
 			expect(crnet_wait_set_wait(set, 300, events, 4, &count), CR_RESULT_NET_TIMED_OUT, "drained, nothing is named again");
+#endif
 			crnet_wait_set_remove_service_advert(set, announced);
 			crnet_wait_set_remove_service_browser(set, watcher);
 			crnet_wait_set_remove_service_browser(set, watcher); // not in it: ignored
@@ -4954,6 +5237,9 @@ static void test_discovery(void) {
 			check(crtest_allocator_clean(&tracker), "nothing leaked, every free as allocated");
 		}
 	}
+#ifdef _WIN32
+	test_discovery_windows(port);
+#endif
 	crnet_udp_socket_destroy(socket);
 }
 

@@ -1,23 +1,26 @@
 /*
  * crnet_discovery_two_process - discovery and UDP between two processes on
- * one machine, through the system's own service (POSIX only: Apple, and
- * Linux once Avahi is built).
+ * one machine, through the system's own service: Apple, Windows, and Linux
+ * once Avahi is built.
  *
- * The driver spawns itself as the advertiser (posix_spawn, the role as an
- * argument). The advertiser opens a UDP socket on every IPv4 address and
+ * The driver spawns itself as the advertiser (posix_spawn, or on Windows
+ * CreateProcessW with an inherited pipe handle, the role as an argument).
+ * The advertiser opens a UDP socket on every IPv4 address and
  * one on every IPv6 address of one port, advertises _crnettest._udp on
  * that port with a TXT record, and writes "REGISTERED <port> <name>" to a
  * pipe; then echoes every datagram back to where it came from. The driver
  * browses for that name, resolves it, and sends a datagram to each address
  * found, the echo being the proof of delivery: loopback's first, then the
  * active interface's IPv4 address and its fe80:: address with the scope
- * (en0, or the interface `route -n get default` names; with none, the
+ * (en0, or the interface `route -n get default` names; on Windows the one
+ * GetBestInterface names for a public address; with none, the
  * off-loopback half is not run, which is said and not a failure).
  * Addresses on awdl0, llw0, utun*, anpi* and bridge* are seen and recorded,
  * not sent to. Then the advertiser goes, once by a clean exit (its advert
- * destroyed, so the system says goodbye) and once by SIGKILL (the system's
- * own cleanup of a client that went), and each time the driver's browser
- * sees every FOUND of it LOST within the bound.
+ * destroyed, so the system says goodbye) and once by SIGKILL (on Windows
+ * TerminateProcess: the system's own cleanup of a client that went), and
+ * each time the driver's browser sees every FOUND of it LOST within the
+ * bound.
  *
  *   crnet_discovery_two_process              the driver (a ctest)
  *   crnet_discovery_two_process advertiser   what the driver spawns
@@ -25,20 +28,39 @@
 
 #include <crnet.h>
 
-#include <errno.h>
-#include <net/if.h>
-#include <signal.h>
-#include <spawn.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <iphlpapi.h>
+#include <windows.h>
+typedef DWORD process_id;
+static process_id this_process(void) { return GetCurrentProcessId(); }
+static uint64_t   now_ms(void) { return (uint64_t)GetTickCount64(); }
+#else
+#include <errno.h>
+#include <net/if.h>
+#include <signal.h>
+#include <spawn.h>
 #include <sys/select.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
 extern char **environ;
+
+typedef pid_t process_id;
+static process_id this_process(void) { return getpid(); }
+static uint64_t   now_ms(void) {
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	return (uint64_t)now.tv_sec * 1000u + (uint64_t)now.tv_nsec / 1000000u;
+}
+#endif
 
 #define TYPE     "_crnettest._udp"
 #define BOUND_MS 5000u
@@ -67,12 +89,6 @@ static void note(const char *format, ...) {
 	printf("\n");
 	va_end(arguments);
 	fflush(stdout);
-}
-
-static uint64_t now_ms(void) {
-	struct timespec now;
-	clock_gettime(CLOCK_MONOTONIC, &now);
-	return (uint64_t)now.tv_sec * 1000u + (uint64_t)now.tv_nsec / 1000000u;
 }
 
 static crnet_instance make_instance(CR_ALLOCATOR *allocator) {
@@ -107,11 +123,23 @@ static crnet_udp_socket open_udp(crnet_instance instance, const char *any, uint1
 
 /* An advertiser's failure, said on stderr (the driver's ctest keeps it). */
 static int advertiser_failed(int code, const char *what, CR_RESULT result) {
-	fprintf(stderr, "advertiser %ld: %s: %s\n", (long)getpid(), what, cr_result_str(result));
+	fprintf(stderr, "advertiser %ld: %s: %s\n", (long)this_process(), what, cr_result_str(result));
 	return code;
 }
 
-static int advertise(int pipe_fd) {
+/* Writes the advertiser's line to the pipe the driver gave it: a
+ * descriptor's number, or on Windows an inherited handle's. */
+static bool pipe_write(const char *pipe_text, const char *line, int length) {
+#ifdef _WIN32
+	HANDLE handle  = (HANDLE)(intptr_t)_strtoi64(pipe_text, NULL, 10);
+	DWORD  written = 0;
+	return WriteFile(handle, line, (DWORD)length, &written, NULL) && written == (DWORD)length;
+#else
+	return write(atoi(pipe_text), line, (size_t)length) == length;
+#endif
+}
+
+static int advertise(const char *pipe_text) {
 	CR_ALLOCATOR   allocator;
 	crnet_instance instance = make_instance(&allocator);
 	if (!instance)
@@ -124,7 +152,7 @@ static int advertise(int pipe_fd) {
 	// on IPv6 already, so a few tries, each on a new IPv4 port.
 	crnet_udp_socket six = open_udp(instance, "::", local.port);
 	for (int tries = 0; !six && tries < 8; ++tries) {
-		fprintf(stderr, "advertiser %ld: port %u is held on IPv6; another\n", (long)getpid(), (unsigned)local.port);
+		fprintf(stderr, "advertiser %ld: port %u is held on IPv6; another\n", (long)this_process(), (unsigned)local.port);
 		crnet_udp_socket_destroy(four);
 		four = open_udp(instance, "0.0.0.0", 0);
 		if (!four || crnet_udp_socket_get_local_address(four, &local) != CR_SUCCESS)
@@ -134,7 +162,7 @@ static int advertise(int pipe_fd) {
 	if (!six)
 		return advertiser_failed(2, "no IPv6 socket on the IPv4 socket's port", CR_SUCCESS);
 	char name[CRNET_SERVICE_NAME_CAPACITY];
-	snprintf(name, sizeof(name), "crnettwo-%ld", (long)getpid());
+	snprintf(name, sizeof(name), "crnettwo-%ld", (long)this_process());
 	static const crnet_service_txt_entry entries[1] = {{"role", "advertiser"}};
 	crnet_service_advert_desc            desc;
 	memset(&desc, 0, sizeof(desc));
@@ -166,7 +194,7 @@ static int advertise(int pipe_fd) {
 		return advertiser_failed(3, "no REGISTERED within the bound", last);
 	char line[128];
 	const int length = snprintf(line, sizeof(line), "REGISTERED %u %s\n", (unsigned)local.port, name);
-	if (write(pipe_fd, line, (size_t)length) != length)
+	if (!pipe_write(pipe_text, line, length))
 		return 2;
 
 	// Echo until a "QUIT" comes; a SIGKILL may end it first.
@@ -207,10 +235,100 @@ static int advertise(int pipe_fd) {
 // --------------------------------------------------------------------------
 
 struct spawned {
-	pid_t    pid;
+#ifdef _WIN32
+	HANDLE process;
+#else
+	pid_t pid;
+#endif
 	uint16_t port;
 	char     name[CRNET_SERVICE_NAME_CAPACITY];
 };
+
+/* The REGISTERED line's port and name, false for anything else. */
+static bool spawned_line(const char *line, struct spawned *out) {
+	unsigned port = 0;
+	if (sscanf(line, "REGISTERED %u %63s", &port, out->name) != 2)
+		return false;
+	out->port = (uint16_t)port;
+	return true;
+}
+
+#ifdef _WIN32
+
+static bool spawn_advertiser(const char *self, struct spawned *out) {
+	// The pipe's write end is inherited by the advertiser, which is told its
+	// value; the read end stays here.
+	SECURITY_ATTRIBUTES inherit;
+	memset(&inherit, 0, sizeof(inherit));
+	inherit.nLength        = sizeof(inherit);
+	inherit.bInheritHandle = TRUE;
+	HANDLE read_end = NULL, write_end = NULL;
+	if (!CreatePipe(&read_end, &write_end, &inherit, 0))
+		return false;
+	SetHandleInformation(read_end, HANDLE_FLAG_INHERIT, 0);
+	char command[1024];
+	snprintf(command, sizeof(command), "\"%s\" advertiser %lld", self, (long long)(intptr_t)write_end);
+	WCHAR wide[1024];
+	MultiByteToWideChar(CP_UTF8, 0, command, -1, wide, 1024);
+	STARTUPINFOW startup;
+	memset(&startup, 0, sizeof(startup));
+	startup.cb = sizeof(startup);
+	PROCESS_INFORMATION process;
+	memset(&process, 0, sizeof(process));
+	const BOOL spawned = CreateProcessW(NULL, wide, NULL, NULL, TRUE, 0, NULL, NULL, &startup, &process);
+	CloseHandle(write_end);
+	if (!spawned) {
+		CloseHandle(read_end);
+		return false;
+	}
+	CloseHandle(process.hThread);
+	out->process = process.hProcess;
+	// Its REGISTERED line, within the bound.
+	char           line[128];
+	DWORD          have  = 0;
+	const uint64_t start = now_ms();
+	while (have < sizeof(line) - 1 && now_ms() - start < BOUND_MS * 2) {
+		DWORD waiting = 0;
+		if (!PeekNamedPipe(read_end, NULL, 0, NULL, &waiting, NULL))
+			break; // the advertiser has gone
+		if (waiting == 0) {
+			Sleep(20);
+			continue;
+		}
+		DWORD got = 0;
+		if (!ReadFile(read_end, line + have, 1, &got, NULL) || got == 0)
+			break;
+		have += got;
+		if (line[have - 1] == '\n')
+			break;
+	}
+	CloseHandle(read_end);
+	line[have] = '\0';
+	return spawned_line(line, out);
+}
+
+/* TerminateProcess's exit code for the killed advertiser, standing for
+ * SIGKILL. */
+#define KILLED_CODE 9
+
+/* Waits for the advertiser to end: true with how (`*out_killed`) and its
+ * exit code. */
+static bool reap(struct spawned *advertiser, bool *out_killed, int *out_code) {
+	DWORD code = 0;
+	if (WaitForSingleObject(advertiser->process, BOUND_MS * 4) != WAIT_OBJECT_0 || !GetExitCodeProcess(advertiser->process, &code))
+		return false;
+	CloseHandle(advertiser->process);
+	advertiser->process = NULL;
+	*out_killed         = code == KILLED_CODE;
+	*out_code           = (int)code;
+	return true;
+}
+
+static void kill_advertiser(struct spawned *advertiser) { TerminateProcess(advertiser->process, KILLED_CODE); }
+
+static bool spawned_at_all(const struct spawned *advertiser) { return advertiser->process != NULL; }
+
+#else
 
 static bool spawn_advertiser(const char *self, struct spawned *out) {
 	int ends[2];
@@ -249,12 +367,26 @@ static bool spawn_advertiser(const char *self, struct spawned *out) {
 	}
 	close(ends[0]);
 	line[have] = '\0';
-	unsigned port = 0;
-	if (sscanf(line, "REGISTERED %u %63s", &port, out->name) != 2)
-		return false;
-	out->port = (uint16_t)port;
-	return true;
+	return spawned_line(line, out);
 }
+
+/* Waits for the advertiser to end: true with how (`*out_killed`, by
+ * SIGKILL) and its exit code or signal. */
+static bool reap(struct spawned *advertiser, bool *out_killed, int *out_code) {
+	int status = 0;
+	if (waitpid(advertiser->pid, &status, 0) != advertiser->pid)
+		return false;
+	advertiser->pid = 0;
+	*out_killed     = WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL;
+	*out_code       = WIFEXITED(status) ? WEXITSTATUS(status) : WIFSIGNALED(status) ? WTERMSIG(status) : -1;
+	return WIFEXITED(status) || WIFSIGNALED(status);
+}
+
+static void kill_advertiser(struct spawned *advertiser) { kill(advertiser->pid, SIGKILL); }
+
+static bool spawned_at_all(const struct spawned *advertiser) { return advertiser->pid > 0; }
+
+#endif
 
 /* Reads the browser's events for `name` for up to `ms`, counting each FOUND
  * (by interface) and LOST, until `found_at_least` FOUND and `lost_at_least`
@@ -283,8 +415,52 @@ static void browse(crnet_service_browser browser, const char *name, uint32_t ms,
 	}
 }
 
+/* One interface of this machine's listing, found by its name, or by its
+ * index or IPv6 index where `name` is NULL: false when none is. */
+static bool find_interface(crnet_instance instance, const char *name, uint32_t index, crnet_interface_properties *out) {
+	crnet_interface_list list = NULL;
+	if (crnet_interface_enumerate(instance, &list, NULL) != CR_SUCCESS)
+		return false;
+	uint32_t count = 0;
+	bool     found = false;
+	crnet_interface_list_get_count(list, &count);
+	for (uint32_t i = 0; i < count && !found; ++i) {
+		memset(out, 0, sizeof(*out));
+		out->base.type = CR_STRUCT_TYPE_NET_INTERFACE_PROPERTIES;
+		crnet_interface_list_get_properties(list, i, out);
+		found = name ? strcmp(out->name, name) == 0 : (out->index == index || out->ipv6_index == index);
+	}
+	crnet_interface_list_destroy(list);
+	return found;
+}
+
+/* Whether the listing calls the interface named loopback. */
+static bool interface_is_loopback(crnet_instance instance, const char *name) {
+	crnet_interface_properties properties;
+	return name[0] && find_interface(instance, name, 0, &properties) && (properties.flags & CRNET_INTERFACE_FLAG_LOOPBACK) != 0;
+}
+
+#ifdef _WIN32
+
+/* The interface Windows would send to a public address through
+ * (GetBestInterface), by its listing's name, or "" for none. */
+static void default_interface(crnet_instance instance, char out[IF_NAMESIZE + 1]) {
+	out[0]       = '\0';
+	DWORD   best = 0;
+	IN_ADDR public_address;
+	inet_pton(AF_INET, "8.8.8.8", &public_address);
+	if (GetBestInterface(public_address.s_addr, &best) != NO_ERROR)
+		return;
+	crnet_interface_properties properties;
+	if (find_interface(instance, NULL, best, &properties))
+		snprintf(out, IF_NAMESIZE + 1, "%s", properties.name);
+}
+
+#else
+
 /* The interface `route -n get default` names, or "" for none. */
-static void default_interface(char out[IF_NAMESIZE + 1]) {
+static void default_interface(crnet_instance instance, char out[IF_NAMESIZE + 1]) {
+	(void)instance;
 	out[0]     = '\0';
 	FILE *pipe = popen("/sbin/route -n get default 2>/dev/null", "r");
 	if (!pipe)
@@ -300,14 +476,22 @@ static void default_interface(char out[IF_NAMESIZE + 1]) {
 	pclose(pipe);
 }
 
+#endif
+
 /* The interface an address is on: its scope, or for IPv4 the listing's
  * interface that holds it. */
 static void interface_of(crnet_instance instance, const crnet_address *address, char out[CRNET_INTERFACE_NAME_CAPACITY]) {
 	out[0] = '\0';
 	if (address->scope_id) {
+#ifdef _WIN32
+		crnet_interface_properties properties;
+		if (find_interface(instance, NULL, address->scope_id, &properties))
+			snprintf(out, CRNET_INTERFACE_NAME_CAPACITY, "%s", properties.name);
+#else
 		char name[IF_NAMESIZE + 1];
 		if (if_indextoname(address->scope_id, name))
 			snprintf(out, CRNET_INTERFACE_NAME_CAPACITY, "%s", name);
+#endif
 		return;
 	}
 	crnet_interface_list list = NULL;
@@ -375,9 +559,11 @@ static int drive(const char *self) {
 	crnet_udp_socket six        = open_udp(instance, "::", 0);
 	check(four && six, "the driver's UDP sockets, IPv4 and IPv6");
 	char active[IF_NAMESIZE + 1];
-	default_interface(active);
+	default_interface(instance, active);
+#ifndef _WIN32
 	if (!active[0] && if_nametoindex("en0"))
 		snprintf(active, sizeof(active), "en0");
+#endif
 	note("the active interface: %s", active[0] ? active : "none (the off-loopback half is not run)");
 
 	for (int round = 0; round < 2; ++round) {
@@ -391,9 +577,10 @@ static int drive(const char *self) {
 		struct spawned advertiser;
 		memset(&advertiser, 0, sizeof(advertiser));
 		if (!spawn_advertiser(self, &advertiser)) {
-			int status = 0;
-			if (advertiser.pid > 0 && waitpid(advertiser.pid, &status, 0) == advertiser.pid)
-				note("the advertiser %s with %d", WIFEXITED(status) ? "exited" : "was ended", WIFEXITED(status) ? WEXITSTATUS(status) : WTERMSIG(status));
+			bool ended_killed = false;
+			int  code         = 0;
+			if (spawned_at_all(&advertiser) && reap(&advertiser, &ended_killed, &code))
+				note("the advertiser %s with %d", ended_killed ? "was ended" : "exited", code);
 			check(false, "the advertiser spawned and REGISTERED within its bound");
 			crnet_service_browser_destroy(browser);
 			continue;
@@ -456,7 +643,7 @@ static int drive(const char *self) {
 					interface_of(instance, &addresses[i], where);
 					char text[CRNET_MAX_ADDRESS_STRING_LEN] = "?";
 					crnet_address_to_string(&addresses[i], text);
-					const bool loopback = strcmp(where, "lo0") == 0 || strcmp(where, "lo") == 0;
+					const bool loopback = interface_is_loopback(instance, where);
 					if (pass == 0 && !loopback)
 						continue;
 					if (pass == 1 && loopback)
@@ -476,7 +663,13 @@ static int drive(const char *self) {
 					*reached      = *reached || echoed;
 				}
 			}
+#ifdef _WIN32
+			// Windows' resolve gives the host's addresses on the network,
+			// at most one per family, never loopback's (crnet.h).
+			check(loopback_four || loopback_six || active_four || active_six, "an address reached (Windows resolves no loopback address)");
+#else
 			check(loopback_four || loopback_six, "loopback reached");
+#endif
 			if (active[0])
 				note("off loopback on %s: IPv4 %s, fe80:: %s", active, active_four ? "reached" : "not reached or not found",
 				     active_six ? "reached" : "not reached or not found");
@@ -486,16 +679,24 @@ static int drive(const char *self) {
 			crnet_address_from_string("127.0.0.1", advertiser.port, 0, &quit_to);
 			crnet_udp_socket_send_to(four, &quit_to, "QUIT", 4, 1000);
 		} else {
-			kill(advertiser.pid, SIGKILL);
+			kill_advertiser(&advertiser);
 		}
 
-		const uint64_t gone_at = now_ms();
-		int            status  = 0;
-		const pid_t    reaped  = waitpid(advertiser.pid, &status, 0);
-		check(reaped == advertiser.pid && (killed ? (WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL) : (WIFEXITED(status) && WEXITSTATUS(status) == 0)),
-		      killed ? "the advertiser killed" : "the advertiser exited cleanly");
+		const uint64_t gone_at      = now_ms();
+		bool           ended_killed = false;
+		int            code         = -1;
+		const bool     reaped       = reap(&advertiser, &ended_killed, &code);
+		check(reaped && (killed ? ended_killed : (!ended_killed && code == 0)), killed ? "the advertiser killed" : "the advertiser exited cleanly (%d)", code);
+#ifdef _WIN32
+		// Windows hands over each answer and each goodbye it hears: FOUND
+		// and LOST may each come several times for one instance.
+		browse(browser, advertiser.name, BOUND_MS, found, 1, &found, &lost, NULL);
+		check(lost >= 1, "and seen gone: LOST %u time%s (after %u FOUND) within %u ms (%llu ms)", lost, lost == 1 ? "" : "s", found, BOUND_MS,
+		      (unsigned long long)(now_ms() - gone_at));
+#else
 		browse(browser, advertiser.name, BOUND_MS, found, found, &found, &lost, NULL);
 		check(lost == found, "and seen gone: LOST %u of %u within %u ms (%llu ms)", lost, found, BOUND_MS, (unsigned long long)(now_ms() - gone_at));
+#endif
 		crnet_service_browser_destroy(browser);
 	}
 	crnet_udp_socket_destroy(four);
@@ -506,8 +707,10 @@ static int drive(const char *self) {
 }
 
 int main(int argc, char **argv) {
+#ifndef _WIN32
 	signal(SIGPIPE, SIG_IGN);
+#endif
 	if (argc >= 3 && strcmp(argv[1], "advertiser") == 0)
-		return advertise(atoi(argv[2]));
+		return advertise(argv[2]);
 	return drive(argv[0]);
 }

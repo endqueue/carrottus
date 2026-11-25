@@ -469,8 +469,10 @@ static inline void crnet_atomic_store32(volatile int32_t *value, int32_t to) {
 
 /* A UDP socket (crnet.h, "UDP sockets"). The front end, src/net/crnetudp.c,
  * makes it, checks every call and keeps its error records; the backend owns
- * `native` and `wake`: on POSIX the descriptor and a pipe an abort writes
- * to (-1 for none), on Windows whatever its backend keeps there. */
+ * `native`, `wake` and `backend`: on POSIX the descriptor and a pipe an
+ * abort writes to (-1 for none), `backend` unused; on Windows the SOCKET in
+ * `native` (what a wait set polls) and its events in `backend`, `wake`
+ * unused. */
 struct crnet_udp_socket_t {
 	cr_object_head       head;
 	crnet_instance       instance;
@@ -479,6 +481,7 @@ struct crnet_udp_socket_t {
 	crnet_error      errors[CRNET_ERROR_SIDE_COUNT];
 	intptr_t         native;
 	intptr_t         wake[2];
+	void            *backend;
 	volatile int32_t aborted;
 };
 

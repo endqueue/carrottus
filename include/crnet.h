@@ -2132,10 +2132,26 @@ void crnet_udp_socket_destroy(crnet_udp_socket socket);
  * @brief DNS-SD over multicast DNS on the local network, through
  * the system's own service: dns_sd on Apple, Windows' DNS-SD API, Avahi on
  * Linux. Known problems: on Linux a create blocks in avahi-daemon's
- * D-Bus round trips, with no limit of the caller's; Windows' browse names
- * no interface, and its reporting of departures and name conflicts is
- * untried; a destroy on Windows waits for the system's cancel callback;
- * on iOS a suspended app's discovery objects may need making again.
+ * D-Bus round trips, with no limit of the caller's; on iOS a suspended
+ * app's discovery objects may need making again; and on Windows (seen on
+ * Windows 11 build 26300, 2026-11-24):
+ *
+ * - a browse names no interface, and hands over every answer and goodbye
+ *   the system hears, so FOUND may come several times for one instance
+ *   and LOST once for each goodbye (two after one advert's destroy); and
+ *   while another program on the machine registers and cancels adverts
+ *   in quick succession, a departing advert's LOST may never come (none
+ *   in 30 s, four runs of four; one killed was reported at once);
+ * - of two adverts of one name on one machine, records differing, the
+ *   second was REGISTERED in most runs and ended with NAME_CONFLICT in
+ *   one: Windows' answer varies (another machine's claim untried);
+ * - a resolve has no time-out of its own (none came in 60 s): a resolver
+ *   of an instance that has gone stays silent, and the caller's limit is
+ *   all there is; its answer gives the host's addresses on the network, at
+ *   most one per family, never loopback's;
+ * - a destroy waits for the system's last callback: DnsServiceRegisterCancel,
+ *   DnsServiceBrowseCancel and DnsServiceResolveCancel called back inside
+ *   the call, DnsServiceDeRegister within milliseconds after it.
  *
  * Three objects, each a translation of one operation of the system's:
  *
@@ -2448,11 +2464,13 @@ typedef enum CRNET_SERVICE_BROWSE_EVENT_KIND {
 	CRNET_SERVICE_BROWSE_EVENT_NONE = 0,
 	/** An instance of the type is there, on `interface_index` (0 on
 	 * Windows, which doesn't say). dns_sd: kDNSServiceFlagsAdd;
-	 * Avahi: AVAHI_BROWSER_NEW; Windows: a PTR record with a TTL. */
+	 * Avahi: AVAHI_BROWSER_NEW; Windows: a PTR record with a TTL, each
+	 * time one is heard. */
 	CRNET_SERVICE_BROWSE_EVENT_FOUND = 1,
 	/** One FOUND of before has gone: the same name and interface.
 	 * dns_sd: a reply without kDNSServiceFlagsAdd; Avahi:
-	 * AVAHI_BROWSER_REMOVE; Windows: believed a TTL of 0. */
+	 * AVAHI_BROWSER_REMOVE; Windows: a PTR record with a TTL of 0, each
+	 * goodbye heard. */
 	CRNET_SERVICE_BROWSE_EVENT_LOST = 2,
 	/** Events were dropped because the ring was full: what the caller
 	 * holds may be stale. `name` is empty. */
@@ -2738,9 +2756,10 @@ CR_RESULT crnet_service_resolver_create(
  * @retval CR_RESULT_NET_ABORTED crnet_service_resolver_abort() was called.
  * @retval CR_RESULT_NET_DISCOVERY_DENIED The system refused it after it
  *         was made.
- * @retval CR_RESULT_NET_SERVICE_NOT_ANSWERING On Avahi and Windows,
- *         their own time-out for an instance that didn't answer; the
- *         resolver is over, the system well.
+ * @retval CR_RESULT_NET_SERVICE_NOT_ANSWERING On Avahi, its own time-out
+ *         for an instance that didn't answer; the resolver is over, the
+ *         system well. Never on dns_sd; none seen on Windows, whose resolve
+ *         has no time-out of its own (known problems above).
  * @retval CR_RESULT_NET_DISCOVERY_FAILED The system's service failed the
  *         resolve or went away; the resolver is over.
  *         crnet_service_resolver_get_error() has its code.

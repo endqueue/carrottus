@@ -1125,6 +1125,222 @@ CR_RESULT crnet_resolver_wait(
 	return result;
 }
 
+// --------------------------------------------------------------------------
+// UDP sockets (crnetshared.h, "UDP"; the front end is src/net/crnetudp.c)
+// --------------------------------------------------------------------------
+
+#if CRNET_EXT_UDP
+
+/*
+ * A UDP socket here is a TCP socket's endpoint (above): the SOCKET, tied
+ * to one network event by WSAEventSelect, which also makes it
+ * non-blocking, and a readable, a writable and an abort event, so a
+ * receive and a send may wait on one socket at once (crnet.h's Thread:
+ * note). `native` is the SOCKET, which a wait set polls through WSAPoll as
+ * a TCP socket's; the endpoint is in `backend`, made through the socket's
+ * allocator. `wake` is unused here.
+ *
+ * A send is one sendto and a receive one WSARecvFrom: Winsock sends a
+ * datagram whole or not at all, and says one was longer than the buffer
+ * with WSAEMSGSIZE (or MSG_PARTIAL), the buffer filled. SIO_UDP_CONNRESET
+ * and SIO_UDP_NETRESET are switched off, so an ICMP error for an earlier
+ * datagram never fails a later receive (crnet.h). Windows maps nothing to
+ * CR_RESULT_NET_ACCESS_DENIED: WSAEACCES at a bind is another program's
+ * exclusive use of the port, ADDRESS_IN_USE, as crnet.h says.
+ */
+
+#include <mswsock.h>
+
+static struct crnet_win_endpoint *crnet_win_udp_endpoint(struct crnet_udp_socket_t *socket) { return (struct crnet_win_endpoint *)socket->backend; }
+
+void crnet_udp_backend_reset(struct crnet_udp_socket_t *socket) {
+	socket->native  = (intptr_t)INVALID_SOCKET;
+	socket->wake[0] = -1;
+	socket->wake[1] = -1;
+	socket->backend = NULL;
+	crnet_atomic_store32(&socket->aborted, 0);
+}
+
+/* A refusal of Winsock's in a create, for WSAGetLastError's `error`. */
+static CR_RESULT crnet_win_udp_open_failed(crnet_error *out_error, int error) {
+	const CR_RESULT result = error == WSAEADDRINUSE || error == WSAEACCES ? CR_RESULT_NET_ADDRESS_IN_USE : CR_RESULT_NET_BIND_FAILED;
+	return crnet_win_socket_failed(out_error, result, error);
+}
+
+/* A socket option an int holds. False with WSAGetLastError set on a
+ * refusal. */
+static bool crnet_win_udp_option(SOCKET handle, int level, int option, int value) {
+	return setsockopt(handle, level, option, (const char *)&value, sizeof(value)) == 0;
+}
+
+/* Switches one of Winsock's UDP ICMP reports off (SIO_UDP_CONNRESET,
+ * SIO_UDP_NETRESET). */
+static bool crnet_win_udp_report_off(SOCKET handle, DWORD code) {
+	BOOL  on       = FALSE;
+	DWORD returned = 0;
+	return WSAIoctl(handle, code, &on, sizeof(on), NULL, 0, &returned, NULL, NULL) == 0;
+}
+
+/* A new datagram socket. Its own function for the reason crnet_win_open_tcp
+ * is. Not inherited by a child process, as no socket here is. */
+static SOCKET crnet_win_open_udp(int family) {
+	return WSASocketW(family, SOCK_DGRAM, IPPROTO_UDP, NULL, 0, WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
+}
+
+CR_RESULT crnet_udp_backend_open(struct crnet_udp_socket_t *socket, const crnet_udp_socket_desc *desc, crnet_error *out_error) {
+	struct crnet_win_endpoint *endpoint = CR_NEW_ZEROED(&socket->head.allocator, struct crnet_win_endpoint);
+	if (!endpoint)
+		return CR_RESULT_OUT_OF_MEMORY;
+	socket->backend = endpoint;
+	if (!crnet_win_endpoint_init(endpoint))
+		return crnet_win_socket_failed(out_error, CR_RESULT_NET_BIND_FAILED, (int)GetLastError());
+
+	const int    family = desc->local.family == CRNET_ADDRESS_FAMILY_IPV4 ? AF_INET : AF_INET6;
+	const SOCKET handle = crnet_win_open_udp(family);
+	if (handle == INVALID_SOCKET)
+		return crnet_win_udp_open_failed(out_error, WSAGetLastError());
+	socket->native = (intptr_t)handle;
+	if (!crnet_win_endpoint_attach(endpoint, handle, FD_READ | FD_WRITE | FD_CLOSE))
+		return crnet_win_udp_open_failed(out_error, WSAGetLastError());
+
+	// crnet.h fixes an IPv6 socket to IPv6 alone on every system; Windows'
+	// default is the same, set anyway so it never rests on a default.
+	if (family == AF_INET6 && !crnet_win_udp_option(handle, IPPROTO_IPV6, IPV6_V6ONLY, 1))
+		return crnet_win_udp_open_failed(out_error, WSAGetLastError());
+	// EXCLUSIVE: no later bind of the port may share it. SHARED: Windows'
+	// SO_REUSEADDR, which every socket on the port needs.
+	if (desc->sharing == CRNET_UDP_PORT_SHARING_EXCLUSIVE && !crnet_win_udp_option(handle, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, 1))
+		return crnet_win_udp_open_failed(out_error, WSAGetLastError());
+	if (desc->sharing == CRNET_UDP_PORT_SHARING_SHARED && !crnet_win_udp_option(handle, SOL_SOCKET, SO_REUSEADDR, 1))
+		return crnet_win_udp_open_failed(out_error, WSAGetLastError());
+	// A size Windows refuses fails the create (crnet.h).
+	if (desc->receive_buffer_size != CRNET_SOCKET_BUFFER_SIZE_SYSTEM &&
+	    !crnet_win_udp_option(handle, SOL_SOCKET, SO_RCVBUF, desc->receive_buffer_size > (uint32_t)INT_MAX ? INT_MAX : (int)desc->receive_buffer_size))
+		return crnet_win_udp_open_failed(out_error, WSAGetLastError());
+	if (desc->send_buffer_size != CRNET_SOCKET_BUFFER_SIZE_SYSTEM &&
+	    !crnet_win_udp_option(handle, SOL_SOCKET, SO_SNDBUF, desc->send_buffer_size > (uint32_t)INT_MAX ? INT_MAX : (int)desc->send_buffer_size))
+		return crnet_win_udp_open_failed(out_error, WSAGetLastError());
+	if (!crnet_win_udp_report_off(handle, SIO_UDP_CONNRESET) || !crnet_win_udp_report_off(handle, SIO_UDP_NETRESET))
+		return crnet_win_udp_open_failed(out_error, WSAGetLastError());
+
+	struct sockaddr_storage storage;
+	const uint32_t          length = crnet_sockaddr_from_address(&desc->local, &storage, sizeof(storage));
+	if (bind(handle, (const struct sockaddr *)&storage, (int)length) != 0)
+		return crnet_win_udp_open_failed(out_error, WSAGetLastError());
+	return CR_SUCCESS;
+}
+
+void crnet_udp_backend_close(struct crnet_udp_socket_t *socket) {
+	struct crnet_win_endpoint *endpoint = crnet_win_udp_endpoint(socket);
+	if (endpoint) {
+		// Closes the SOCKET too: the endpoint took it over at its attach.
+		crnet_win_endpoint_free(endpoint);
+		CR_DELETE(&socket->head.allocator, struct crnet_win_endpoint, endpoint);
+	} else if ((SOCKET)socket->native != INVALID_SOCKET) {
+		closesocket((SOCKET)socket->native);
+	}
+	socket->backend = NULL;
+	socket->native  = (intptr_t)INVALID_SOCKET;
+}
+
+void crnet_udp_backend_wake(struct crnet_udp_socket_t *socket) {
+	struct crnet_win_endpoint *endpoint = crnet_win_udp_endpoint(socket);
+	if (endpoint)
+		crnet_win_endpoint_abort(endpoint);
+}
+
+CR_RESULT crnet_udp_backend_send_to(struct crnet_udp_socket_t *socket, const crnet_address *to, const void *data, uint32_t size, uint32_t timeout_ms) {
+	struct crnet_win_endpoint *endpoint = crnet_win_udp_endpoint(socket);
+	struct sockaddr_storage    storage;
+	const uint32_t             length = crnet_sockaddr_from_address(to, &storage, sizeof(storage));
+	// An empty datagram is sent from a byte of its own, as on POSIX.
+	static const char nothing = 0;
+	const char       *bytes   = data ? (const char *)data : &nothing;
+	crnet_error      *record  = &socket->errors[CRNET_ERROR_SIDE_SENDING];
+	const ULONGLONG   start   = GetTickCount64();
+	for (;;) {
+		// Reset before the try, so room that comes between it and the wait
+		// still wakes the wait.
+		ResetEvent(endpoint->writable_event);
+		if (sendto(endpoint->handle, bytes, (int)size, 0, (const struct sockaddr *)&storage, (int)length) != SOCKET_ERROR)
+			return CR_SUCCESS; // a datagram goes whole or not at all
+		const int error = WSAGetLastError();
+		if (error == WSAEMSGSIZE)
+			return crnet_win_socket_failed(record, CR_RESULT_NET_DATAGRAM_TOO_BIG, error);
+		if (error != WSAEWOULDBLOCK && error != WSAENOBUFS)
+			return crnet_win_socket_failed(record, CR_RESULT_NET_SEND_FAILED, error);
+		// WSAENOBUFS is a full queue as WSAEWOULDBLOCK is; the writable
+		// news that ends the wait comes the same way.
+		const CR_RESULT waited = crnet_win_endpoint_wait(endpoint, endpoint->writable_event, start, timeout_ms);
+		if (CR_FAILED(waited))
+			return waited;
+	}
+}
+
+CR_RESULT crnet_udp_backend_recv_from(struct crnet_udp_socket_t *socket, void *buffer, uint32_t capacity, uint32_t timeout_ms, uint32_t *out_size,
+                                       crnet_address *out_from) {
+	struct crnet_win_endpoint *endpoint = crnet_win_udp_endpoint(socket);
+	crnet_error               *record   = &socket->errors[CRNET_ERROR_SIDE_RECEIVING];
+	const ULONGLONG            start    = GetTickCount64();
+	for (;;) {
+		ResetEvent(endpoint->readable_event);
+		struct sockaddr_storage from;
+		memset(&from, 0, sizeof(from));
+		INT    from_length = (INT)sizeof(from);
+		WSABUF piece;
+		piece.buf          = (CHAR *)buffer;
+		piece.len          = capacity > (uint32_t)INT_MAX ? (ULONG)INT_MAX : (ULONG)capacity;
+		DWORD received     = 0;
+		DWORD flags        = 0;
+		const int outcome  = WSARecvFrom(endpoint->handle, &piece, 1, &received, &flags, (struct sockaddr *)&from, &from_length, NULL, NULL);
+		const int error    = outcome == 0 ? 0 : WSAGetLastError();
+		if (outcome == 0 || error == WSAEMSGSIZE) {
+			crnet_address source;
+			if (!crnet_address_from_sockaddr(&from, (size_t)from_length, 0, &source, NULL))
+				continue; // no IPv4 or IPv6 source: not a datagram this socket can hand over
+			*out_from = source;
+			if (error == WSAEMSGSIZE || (flags & MSG_PARTIAL)) {
+				*out_size = (uint32_t)piece.len;
+				return CR_RESULT_NET_DATAGRAM_TRUNCATED;
+			}
+			*out_size = (uint32_t)received;
+			return CR_SUCCESS;
+		}
+		if (error != WSAEWOULDBLOCK)
+			return crnet_win_socket_failed(record, CR_RESULT_NET_RECV_FAILED, error);
+		const CR_RESULT waited = crnet_win_endpoint_wait(endpoint, endpoint->readable_event, start, timeout_ms);
+		if (CR_FAILED(waited))
+			return waited;
+	}
+}
+
+CR_RESULT crnet_udp_backend_local_address(struct crnet_udp_socket_t *socket, crnet_address *out_address) {
+	struct sockaddr_storage storage;
+	int                     length = (int)sizeof(storage);
+	if (getsockname((SOCKET)socket->native, (struct sockaddr *)&storage, &length) != 0)
+		return CR_RESULT_NET_INVALID_UDP_SOCKET;
+	crnet_address address;
+	if (!crnet_address_from_sockaddr(&storage, (size_t)length, 0, &address, NULL))
+		return CR_RESULT_NET_INVALID_UDP_SOCKET;
+	*out_address = address;
+	return CR_SUCCESS;
+}
+
+CR_RESULT crnet_udp_backend_buffer_sizes(struct crnet_udp_socket_t *socket, uint32_t *out_receive_buffer_size, uint32_t *out_send_buffer_size) {
+	int receive = 0, send = 0;
+	int length  = (int)sizeof(receive);
+	if (getsockopt((SOCKET)socket->native, SOL_SOCKET, SO_RCVBUF, (char *)&receive, &length) != 0)
+		return CR_RESULT_NET_INVALID_UDP_SOCKET;
+	length = (int)sizeof(send);
+	if (getsockopt((SOCKET)socket->native, SOL_SOCKET, SO_SNDBUF, (char *)&send, &length) != 0)
+		return CR_RESULT_NET_INVALID_UDP_SOCKET;
+	*out_receive_buffer_size = receive < 0 ? 0 : (uint32_t)receive;
+	*out_send_buffer_size    = send < 0 ? 0 : (uint32_t)send;
+	return CR_SUCCESS;
+}
+
+#endif // CRNET_EXT_UDP
+
 #if __cplusplus
 }
 #endif

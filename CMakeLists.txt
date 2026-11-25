@@ -124,8 +124,8 @@ if(NOT TARGET carrottus)
             src/net/backends/windows/crnetwindows.c
             src/net/backends/windows/crnetwinhttp.c
             src/net/backends/windows/crnetwinhttphead.h
-            src/net/backends/windows/crnetwindowslocal.c
-            src/net/backends/stub/crnetdiscoverystub.c
+            src/net/backends/windows/crnetwinifaces.c
+            src/net/backends/windows/crnetwindnssd.c
             src/memory/backends/windows/crmemorywindows.c
         )
     endif()
@@ -346,7 +346,10 @@ if(NOT TARGET carrottus)
         target_compile_definitions(carrottus PUBLIC CARROTTUS_PLATFORM_WINDOWS=1)
         # winhttp: CrNet's HTTP and WebSocket clients. crypt32: their
         # certificate checks against a caller's own roots and pins.
-        target_link_libraries(carrottus PRIVATE shlwapi ws2_32 winhttp crypt32 bcrypt)
+        # iphlpapi: the interface listing (GetAdaptersAddresses,
+        # GetIfTable2). Discovery's dnsapi.dll is opened at run time by each
+        # object, so it is not linked.
+        target_link_libraries(carrottus PRIVATE shlwapi ws2_32 winhttp crypt32 bcrypt iphlpapi)
     elseif (UNIX AND NOT APPLE)
         target_compile_definitions(carrottus PUBLIC CARROTTUS_PLATFORM_LINUX=1)
         # glibc's extensions (pread, pwrite, st_mtim, renameat2 and
@@ -905,6 +908,11 @@ if(NOT TARGET carrottus)
             find_package(Threads REQUIRED)
             target_link_libraries(crnet_test PRIVATE Threads::Threads)
         endif()
+        if(WIN32)
+            # The interface part checks each index against
+            # ConvertInterfaceLuidToIndex.
+            target_link_libraries(crnet_test PRIVATE iphlpapi)
+        endif()
         # The parts that need no server, each a ctest of its own with a
         # limit, so a system that never answers (a refused permission, a
         # stopped mDNSResponder) fails the test rather than hanging it.
@@ -912,6 +920,11 @@ if(NOT TARGET carrottus)
             add_test(NAME crnet_test_${_part} COMMAND crnet_test - ${_part})
             set_tests_properties(crnet_test_${_part} PROPERTIES TIMEOUT 120)
         endforeach()
+        # The discovery tests share the system's one responder and one
+        # service type, and count what it reports: never two at once under
+        # `ctest -j` (on Windows another process's churn of adverts kept a
+        # departure from being reported at all).
+        set_tests_properties(crnet_test_discovery PROPERTIES RESOURCE_LOCK crnet_discovery)
         # Service discovery's front end from inside: its ring written from a
         # fake system thread (run it under -tsan), a fake responder's names,
         # the advert's ring. No network; on every platform.
@@ -924,13 +937,36 @@ if(NOT TARGET carrottus)
         add_test(NAME crnet_discovery_ring_test COMMAND crnet_discovery_ring_test)
         set_tests_properties(crnet_discovery_ring_test PROPERTIES TIMEOUT 120)
         # Discovery and UDP between two processes through the system's
-        # service: the driver spawns itself as the advertiser. POSIX; Apple
-        # only until Linux's Avahi backend is built.
-        if(APPLE AND NOT IOS)
+        # service: the driver spawns itself as the advertiser. Apple and
+        # Windows; Linux once its Avahi backend is built.
+        if((APPLE AND NOT IOS) OR WIN32)
             add_executable(crnet_discovery_two_process tests/crnet_discovery_two_process.c)
             target_link_libraries(crnet_discovery_two_process PRIVATE carrottus)
+            if(WIN32)
+                target_link_libraries(crnet_discovery_two_process PRIVATE iphlpapi ws2_32)
+            endif()
             add_test(NAME crnet_discovery_two_process COMMAND crnet_discovery_two_process)
-            set_tests_properties(crnet_discovery_two_process PROPERTIES TIMEOUT 120)
+            set_tests_properties(crnet_discovery_two_process PROPERTIES TIMEOUT 120 RESOURCE_LOCK crnet_discovery)
+        endif()
+        # Windows' discovery opens dnsapi.dll per object: each case in a
+        # process of its own, which has loaded nothing of CrNet's first.
+        # "missing" is a test build of the discovery backend whose library
+        # name points elsewhere (a compile definition, never a variable),
+        # linked ahead of carrottus so the library's own copy of that file
+        # is never pulled in.
+        if(WIN32)
+            add_executable(crnet_discovery_library_test tests/crnet_discovery_library_test.c)
+            target_link_libraries(crnet_discovery_library_test PRIVATE carrottus)
+            foreach(_case start timing cycles three bare pinned)
+                add_test(NAME crnet_discovery_library_${_case} COMMAND crnet_discovery_library_test ${_case})
+                set_tests_properties(crnet_discovery_library_${_case} PROPERTIES TIMEOUT 120 RESOURCE_LOCK crnet_discovery)
+            endforeach()
+            add_executable(crnet_discovery_library_missing tests/crnet_discovery_library_test.c src/net/backends/windows/crnetwindnssd.c)
+            target_compile_definitions(crnet_discovery_library_missing PRIVATE "CRNET_WIN_DNSAPI_LIBRARY=L\"crnet-no-such-dnsapi.dll\"")
+            target_include_directories(crnet_discovery_library_missing PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+            target_link_libraries(crnet_discovery_library_missing PRIVATE carrottus eqstd)
+            add_test(NAME crnet_discovery_library_missing COMMAND crnet_discovery_library_missing missing)
+            set_tests_properties(crnet_discovery_library_missing PROPERTIES TIMEOUT 120)
         endif()
 
         # CrNet's parsers of the network's bytes, each fuzz target in
