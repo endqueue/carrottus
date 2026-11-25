@@ -1944,7 +1944,8 @@ typedef struct crnet_udp_socket_desc {
  *         `out_error` has it.
  * @retval CR_RESULT_NET_BIND_FAILED The system refused to open, set up or
  *         bind the socket for any other reason (an address this machine
- *         doesn't hold); `out_error` has it.
+ *         doesn't hold; a port below the system's unprivileged start, EACCES
+ *         at the bind on Linux); `out_error` has it.
  */
 CR_RESULT crnet_udp_socket_create(
     crnet_instance instance,
@@ -2131,10 +2132,24 @@ void crnet_udp_socket_destroy(crnet_udp_socket socket);
  * @ingroup crnet
  * @brief DNS-SD over multicast DNS on the local network, through
  * the system's own service: dns_sd on Apple, Windows' DNS-SD API, Avahi on
- * Linux. Known problems: on Linux a create blocks in avahi-daemon's
- * D-Bus round trips, with no limit of the caller's; on iOS a suspended
- * app's discovery objects may need making again; and on Windows (seen on
- * Windows 11 build 26300, 2026-11-24):
+ * Linux. Known problems: on iOS a suspended app's discovery objects may
+ * need making again; on Linux (seen on Fedora 44, Avahi 0.9-rc2,
+ * 2026-11-25):
+ *
+ * - a create, and a destroy, blocks in avahi-daemon's D-Bus round trips,
+ *   with no limit of the caller's (a create about 0.3 to 1.4 ms in a
+ *   Release build here, the first in a process the longest);
+ * - a resolve ends with CR_RESULT_NET_SERVICE_NOT_ANSWERING after
+ *   avahi-daemon's own time limit, about 5 s;
+ * - an object in a wait set may be named with nothing to hand over,
+ *   which the wait set's rules allow: a browser for Avahi's "cache
+ *   exhausted" and "all for now" (within about 3 s of its create), and
+ *   every object whenever a program joins or leaves the system's D-Bus
+ *   (Avahi's client listens to the bus's NameOwnerChanged);
+ * - a TXT record too long for one packet of a link (1400 bytes on a
+ *   1500-byte link) is never resolved over it, only over loopback;
+ *
+ * and on Windows (seen on Windows 11 build 26300, 2026-11-24):
  *
  * - a browse names no interface, and hands over every answer and goodbye
  *   the system hears, so FOUND may come several times for one instance
@@ -2425,7 +2440,8 @@ void crnet_service_advert_get_error(
 /**
  * @brief Stops advertising and frees the advert: the system's
  * service sends its goodbye, so browsers elsewhere see LOST. Known problem:
- * on Windows it waits for DnsServiceDeRegister's callback.
+ * on Windows it waits for DnsServiceDeRegister's callback; on Linux for
+ * avahi-daemon's D-Bus round trips.
  *
  * @param[in] advert The advert to destroy. NULL is taken and nothing is
  *                   done with it.
@@ -2596,7 +2612,7 @@ void crnet_service_browser_get_error(
 /**
  * @brief Stops browsing and frees the browser and its unread
  * events. Known problem: on Windows it waits for DnsServiceBrowseCancel's
- * callback.
+ * callback; on Linux for avahi-daemon's D-Bus round trips.
  *
  * @param[in] browser The browser to destroy. NULL is taken and nothing is
  *                    done with it.
@@ -2793,7 +2809,8 @@ void crnet_service_resolver_get_error(
 /**
  * @brief Stops resolving and frees the resolver and its unread
  * events. Known problem: on Windows it waits for
- * DnsServiceResolveCancel's callback when the resolve hasn't ended.
+ * DnsServiceResolveCancel's callback when the resolve hasn't ended; on
+ * Linux for avahi-daemon's D-Bus round trips.
  *
  * @param[in] resolver The resolver to destroy. NULL is taken and nothing
  *                     is done with it.

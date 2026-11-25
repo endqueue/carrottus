@@ -1070,7 +1070,9 @@ CR_RESULT crnet_resolver_wait(
  * record. EACCES and EPERM are CR_RESULT_NET_ACCESS_DENIED on Linux only,
  * which is where Android's permissions show them; on Apple they stay
  * SEND_FAILED, RECV_FAILED and BIND_FAILED, as crnet.h's Apple notes say
- * (claude_made_decisions.md, 2026-11-23).
+ * (claude_made_decisions.md, 2026-11-23). At the bind they are
+ * BIND_FAILED on Linux too: a port below the unprivileged start is the
+ * bind refused, not the program refused the network (settled 2026-11-25).
  */
 
 void crnet_udp_backend_reset(struct crnet_udp_socket_t *socket) {
@@ -1084,14 +1086,18 @@ void crnet_udp_backend_reset(struct crnet_udp_socket_t *socket) {
  * for the reason crnet_posix_open_tcp is. */
 static int crnet_posix_open_udp(int family) { return crnet_posix_prepare(socket(family, SOCK_DGRAM, IPPROTO_UDP)); }
 
-/* What a refusal of the system's in a create is, for errno `error`. */
-static CR_RESULT crnet_udp_open_failed(crnet_error *out_error, int error) {
+/* What a refusal of the system's in a create is, for errno `error`;
+ * `at_bind` for the bind's own, where EACCES and EPERM are the port
+ * refused (BIND_FAILED), not the network. */
+static CR_RESULT crnet_udp_open_failed(crnet_error *out_error, int error, bool at_bind) {
 	CR_RESULT result = CR_RESULT_NET_BIND_FAILED;
 	if (error == EADDRINUSE)
 		result = CR_RESULT_NET_ADDRESS_IN_USE;
 #if CARROTTUS_PLATFORM_LINUX
-	else if (error == EACCES || error == EPERM)
+	else if (!at_bind && (error == EACCES || error == EPERM))
 		result = CR_RESULT_NET_ACCESS_DENIED;
+#else
+	(void)at_bind;
 #endif
 	return crnet_posix_failed(out_error, result, error);
 }
@@ -1130,7 +1136,7 @@ CR_RESULT crnet_udp_backend_open(struct crnet_udp_socket_t *socket, const crnet_
 	const int family = desc->local.family == CRNET_ADDRESS_FAMILY_IPV4 ? AF_INET : AF_INET6;
 	const int fd     = crnet_posix_open_udp(family);
 	if (fd < 0)
-		return crnet_udp_open_failed(out_error, errno);
+		return crnet_udp_open_failed(out_error, errno, false);
 	socket->native = fd;
 
 	// Whether an IPv6 socket also takes IPv4 differs between systems;
@@ -1138,26 +1144,26 @@ CR_RESULT crnet_udp_backend_open(struct crnet_udp_socket_t *socket, const crnet_
 	if (family == AF_INET6) {
 		int v6_only = 1;
 		if (setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6_only, sizeof(v6_only)) != 0)
-			return crnet_udp_open_failed(out_error, errno);
+			return crnet_udp_open_failed(out_error, errno, false);
 	}
 	// EXCLUSIVE sets nothing: with no reuse option a second bind of the
 	// same address and port is refused on Apple and Linux.
 	if (desc->sharing == CRNET_UDP_PORT_SHARING_SHARED) {
 		int reuse = 1;
 		if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) != 0)
-			return crnet_udp_open_failed(out_error, errno);
+			return crnet_udp_open_failed(out_error, errno, false);
 #ifdef SO_REUSEPORT
 		if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof(reuse)) != 0)
-			return crnet_udp_open_failed(out_error, errno);
+			return crnet_udp_open_failed(out_error, errno, false);
 #endif
 	}
 	if (!crnet_udp_set_buffer(fd, SO_RCVBUF, desc->receive_buffer_size) || !crnet_udp_set_buffer(fd, SO_SNDBUF, desc->send_buffer_size))
-		return crnet_udp_open_failed(out_error, errno);
+		return crnet_udp_open_failed(out_error, errno, false);
 
 	struct sockaddr_storage storage;
 	const uint32_t          length = crnet_sockaddr_from_address(&desc->local, &storage, sizeof(storage));
 	if (bind(fd, (struct sockaddr *)&storage, (socklen_t)length) != 0)
-		return crnet_udp_open_failed(out_error, errno);
+		return crnet_udp_open_failed(out_error, errno, true);
 	return CR_SUCCESS;
 }
 

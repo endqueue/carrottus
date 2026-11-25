@@ -4214,6 +4214,28 @@ static void test_udp(void) {
 		crnet_udp_socket_desc unheld = udp_desc("192.0.2.1", 0, CRNET_UDP_PORT_SHARING_EXCLUSIVE);
 		if (expect(crnet_udp_socket_create(g_instance, &unheld, &socket, &error), CR_RESULT_NET_BIND_FAILED, "create: an address this machine doesn't hold (192.0.2.1)"))
 			note_error("192.0.2.1", &error);
+#if CARROTTUS_PLATFORM_LINUX
+		// A port below the system's unprivileged start is the bind refused,
+		// not the program refused the network: BIND_FAILED (EACCES at the
+		// bind). Skipped for root and where port 1 is anyone's.
+		{
+			FILE *start_file = fopen("/proc/sys/net/ipv4/ip_unprivileged_port_start", "r");
+			int   start      = 0;
+			if (start_file) {
+				if (fscanf(start_file, "%d", &start) != 1)
+					start = 0;
+				fclose(start_file);
+			}
+			if (start > 1 && geteuid() != 0) {
+				crnet_udp_socket_desc privileged = udp_desc("127.0.0.1", 1, CRNET_UDP_PORT_SHARING_EXCLUSIVE);
+				note("ports are unprivileged from %d", start);
+				if (expect(crnet_udp_socket_create(g_instance, &privileged, &socket, &error), CR_RESULT_NET_BIND_FAILED, "create: a privileged port (127.0.0.1:1)"))
+					note_error("127.0.0.1:1", &error);
+			} else {
+				note("a privileged port: skipped (root, or ip_unprivileged_port_start %d)", start);
+			}
+		}
+#endif
 
 		crnet_udp_socket a = udp_open(&desc, "a socket for the call checks");
 		if (a) {
@@ -5030,6 +5052,27 @@ static void test_discovery(void) {
 				check((waited == CR_RESULT_NET_TIMED_OUT || waited == CR_SUCCESS) && only,
 				      "drained, named again only for a repeated FOUND of the same instance (%s, %u repeated)", cr_result_str(waited), again);
 			}
+#elif CARROTTUS_PLATFORM_LINUX
+			{
+				// Avahi tells a browser CACHE_EXHAUSTED and ALL_FOR_NOW, and
+				// each object's D-Bus connection hears every program joining
+				// or leaving the system bus: no event, but the set may name
+				// the objects for them ("a reason to try, not a promise",
+				// crnet.h). Drained, any naming after hands over nothing.
+				uint32_t       named = 0, again = 0;
+				const uint64_t quiet = now_ms();
+				while (now_ms() - quiet < 1800) {
+					if (crnet_wait_set_wait(set, 300, events, 4, &count) != CR_SUCCESS)
+						continue;
+					named += count;
+					while (crnet_service_browser_next(watcher, CRNET_NO_WAIT, &bevent) == CR_SUCCESS)
+						again++;
+					crnet_service_advert_event aevent = advert_event();
+					while (crnet_service_advert_next(announced, CRNET_NO_WAIT, &aevent) == CR_SUCCESS)
+						again++;
+				}
+				check(again == 0, "drained, a naming after it hands over nothing (%u named, %u events)", named, again);
+			}
 #else
 			expect(crnet_wait_set_wait(set, 300, events, 4, &count), CR_RESULT_NET_TIMED_OUT, "drained, nothing is named again");
 #endif
@@ -5203,7 +5246,9 @@ static void test_discovery(void) {
 			for (int kind = 0; kind < 3; ++kind) {
 				uint32_t refusals = 0;
 				bool     clean    = true;
-				for (size_t nth = 1; nth < 16; ++nth) {
+				// Up to 64: Avahi's creates hand the object's allocator a
+				// watch and a timeout for each blocking D-Bus call.
+				for (size_t nth = 1; nth < 64; ++nth) {
 					tracker.refuse_only = tracker.asked + nth;
 					CR_RESULT result    = CR_SUCCESS;
 					if (kind == 0) {

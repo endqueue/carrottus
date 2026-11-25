@@ -15,7 +15,8 @@
  *
  * The backend (crnet_discovery_backend_*, crnetshared.h) only talks to the
  * system's service: dns_sd on Apple (backends/apple/crnetdnssd.c), Avahi on
- * Linux and Windows' DNS-SD calls (each still a stub that refuses).
+ * Linux (backends/linux/crnetavahi.c) and Windows' DNS-SD calls
+ * (backends/windows/crnetwindnssd.c).
  *
  * The ring is written under its lock, so a backend whose system calls back
  * on threads of its own (Windows) reports straight into it; dns_sd and

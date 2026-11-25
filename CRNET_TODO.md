@@ -1432,9 +1432,9 @@ with the contract text as approved (marks removed):
 - The wait set's UDP socket and three discovery kinds
   (`src/net/crnetwaitset.c`).
 - Windows' listing and UDP verbs (`backends/windows/crnetwindowslocal.c`)
-  and Windows' and Linux's discovery (`backends/stub/crnetdiscoverystub.c`)
-  refuse with CR_RESULT_NOT_IMPLEMENTED_YET until their prompts build
-  them, so carrottus still builds there.
+  and Windows' and Linux's discovery (`backends/stub/crnetdiscoverystub.c`,
+  removed on Fedora) refused with CR_RESULT_NOT_IMPLEMENTED_YET until their
+  prompts built them, so carrottus still built there.
 
 **The tests' table.** One row per bullet of each draft's Tests section:
 see the record's "Run", "The tests' table". In short: every bullet is run
@@ -1630,6 +1630,146 @@ each, nothing found.
 - **The departure under churn** and the varying conflict are Windows'
   answers, said in the header; a caller that needs a departure for sure
   keeps its own liveness (as it must for a killed peer on any system).
+
+### Built on Fedora (2026-11-25, carrottus 0.5.0)
+
+By `../prompts/crnet_local_network_fedora.md`; the record, with every
+figure, is the meta repo's `prompts/crnet_local_network_fedora_record.md`.
+Fedora 44 on the ThinkPad P1 Gen 5 (kernel 6.19.10), GCC 16.2.1 and clang
+22.1.8, glibc 2.43, Avahi 0.9-rc2 (avahi-daemon running, firewalld's
+FedoraWorkstation zone letting mDNS in), libdbus 1.16.4, 20 cores.
+
+**What was built** (no public name added or changed; text only in
+`crnet.h`, below):
+- The listing and UDP: the Mac's POSIX files compiled with GCC and clang,
+  no warning and no change (AF_PACKET's index, SIOCGIFMTU, EACCES and
+  EPERM as ACCESS_DENIED all as written).
+- Discovery, `backends/linux/crnetavahi.c`, in place of the stub, which is
+  removed (no platform compiled it any more: Android's discovery is 0):
+  each object opens libavahi-common.so.3 and libavahi-client.so.3 (dlopen,
+  RTLD_NODELETE, below), finds its calls into a table of its own, and is
+  one AvahiClient made without AVAHI_CLIENT_NO_FAIL over an AvahiPoll of
+  its own: its watches and timeouts (the latter absolute on gettimeofday's
+  clock, turned into waits) are run by `pump` inside `_next` beside an
+  abort pipe, and handed to a wait set (`crnet_wait_poll_add` for the
+  D-Bus socket, `crnet_wait_poll_timer` for the earliest timeout, as
+  libcurl's are). Frees from inside a dispatch only mark, and are taken
+  out once the walk is over; Avahi's own cleanup hands back NULL, taken.
+  An advert is an entry group (the front end's TXT record through
+  `avahi_string_list_parse`), a browser an AvahiServiceBrowser of every
+  protocol, a resolver an AvahiServiceResolver (SERVICE once, at most one
+  address a family). Codes under CR_PLATFORM_ERROR_SOURCE_OTHER, "avahi:
+  <call>: <avahi_strerror>"; the loader's words under
+  CR_PLATFORM_ERROR_SOURCE_DLERROR. `avahi_set_allocator` never called.
+- CMake: Avahi's headers only (pkg-config `avahi-client`'s include
+  directories, not on Android). `readelf -d`: no NEEDED libavahi or libdbus
+  in the library's tests.
+- Tests: `crnet_discovery_two_process` on Linux; the library test's Linux
+  half (`start`, `timing`, `cycles`, `three`, `missing` as Windows', and
+  Avahi's own `txt`, `vanished`, `timer`, `restart`, `stopped`, the last
+  two needing `sudo -n systemctl` and skipping 77 without it);
+  `crnet_test`'s Linux branch of the wait set's drain; the injected
+  out-of-memory loop up to 64 allocations (an Avahi create makes up to
+  16); the libdbus suppression (`tests/sanitizers/linux-tsan.supp`) set on
+  the discovery tests.
+- Found and fixed on the way: Avahi's D-Bus glue calls `timeout_free(NULL)`
+  after a refused `timeout_new` (a crash, the frees take NULL now); a
+  refusal of the object's allocator inside Avahi comes back as Avahi's or
+  libdbus' own failure, so a create failing after one is OUT_OF_MEMORY; a
+  resolver's TXT list is in the record's order while
+  `avahi_string_list_serialize` writes a list from its tail (Avahi's own
+  lists are built by prepending), so the backend writes the wire form
+  itself (seen against the bytes on the wire, an mDNS query of a record
+  `avahi-publish` made; avahi-browse prints these lists reversed too).
+
+**Run:** `linux-vulkan` with GCC and clang, Debug and Release, no warning,
+33 ctests each passing (restart and stopped skipped, 77), `crnet_test`
+791 of 791 (Debug) and 790 of 790 (Release), every part but `internet`;
+`-asan` and `-tsan` with both compilers the same with no report beyond
+the one suppressed (libdbus' lock order); the new tests 20 times in
+Release and 5 under each of the four sanitizer builds at `-j 20`, every
+run passing; `cr_misuse_tests` ten times, 0 failures; `cr_noalloc_tests`
+none of ours (Release: a UDP frame of one datagram 2.72 us, of sixteen
+from eight sockets 30.12 us, 1.9 us a datagram; discovery's idle round
+over Avahi 1.93 us; Debug 1.52 us); the four fuzz targets 5 minutes each
+(`linux-fuzz`, its one configuration Debug; 8.7 to 85 million runs),
+nothing found.
+
+**What Fedora showed:**
+- The listing equals `ip -o link` and `ip -o addr` (lo 1, 65536; wlp0s20f3
+  2, 1500; 127.0.0.1/8, ::1/128, 172.20.2.6/16, fe80::/64 scope 2). C2.13
+  for Linux: 0 embedded.
+- UDP: buffers 212992 each way by default, 262144 asked gives 524288
+  (Linux doubles); 65507 goes, 65508 and 70000 TOO_BIG; 192.0.2.1
+  BIND_FAILED (errno 99); both overlaps of SHARED and EXCLUSIVE across
+  0.0.0.0 and 127.0.0.1 ADDRESS_IN_USE, as EXCLUSIVE's comment says; a
+  send to a closed port succeeds and nothing reaches a receive (no
+  IP_RECVERR); a bind of 127.0.0.1:1 (unprivileged ports from 1024) was
+  ACCESS_DENIED, errno 13, and is BIND_FAILED since (below).
+- Discovery: REGISTERED in 0.8 to 0.9 s; FOUND before REGISTERED (about
+  0.14 s), once per interface and protocol (three here), one LOST for
+  each; a second advert of one name with other records refused by
+  avahi-daemon at the add (AVAHI_ERR_COLLISION, "Local name collision"),
+  the create succeeding and its `_next` NAME_CONFLICT; two identical
+  adverts both REGISTERED, as on the Mac; a resolve of an instance never
+  there or gone is NOT_ANSWERING after avahi-daemon's 5 s; a TXT record of
+  1400 bytes resolves over loopback only (it fits no packet of a 1500-byte
+  link; avahi-browse alike); an empty record comes back as one zero byte.
+- Each object polls one descriptor (its D-Bus socket) and keeps one
+  timeout (D-Bus' dispatch); a browser's create makes seven short ones,
+  one per blocking round trip. Avahi tells a browser CACHE_EXHAUSTED and
+  ALL_FOR_NOW (no event) within about 3 s, and every object's connection
+  hears each program joining or leaving the system bus (avahi-client's
+  NameOwnerChanged match): a set holding one is then named with nothing to
+  hand over, which "a reason to try" allows; the tests check that no such
+  naming hands anything over and that nothing spins (13 us of CPU in a
+  second of bus churn). Said in `crnet.h`'s known problems.
+- **The libraries' lifetime:** with a plain dlopen, each time the last
+  object went libdbus was unloaded and the memory its globals hold was
+  lost for good (LeakSanitizer: about 3.7 KB, 34 allocations, an unload;
+  75 KB over twenty; nothing when the libraries stayed mapped). So both
+  are opened RTLD_NODELETE: each object still opens and closes them, and
+  the loader keeps them, with libdbus, once the first object has opened
+  them, as dnsapi.dll keeps itself on Windows. Neither is mapped at a
+  process's start or by an instance.
+- A create, in fresh processes (`crnet_discovery_library_test timing`,
+  three each): the first 1.8 to 2.8 ms in Debug, 0.9 to 1.4 ms in Release;
+  with another object alive, a mean of 0.66 to 1.5 ms in Debug and 0.34 to
+  0.45 ms in Release. The daemon's round trips.
+- libdbus' own lock order (its global bus lock and a connection's, both
+  ways, on one thread, inside `avahi_client_new` and `_free`) is reported
+  by TSan with both runtimes: suppressed by module, with its reason.
+
+**The wait set's check** (the record's "Part 2: the scratch check" ported,
+glibc's `backtrace`, an HTTP transfer as a seventh kind, 21 members at the
+mark, Release): warm-up 12 allocations (the poll's two arrays at the first
+wait, 128 bytes each, and their growth to 256 inside a discovery member's
+prepare; one 8-byte `curl_waitfd` array per HTTP transfer and per
+WebSocket, libcurl's backend's own, counted apart), a fresh set's 4; the
+1000 counted rounds of every pass **0** through the instance's allocator,
+0 of Carrottus's own by alloctrace. On Linux every kind polls one
+descriptor. The draft's owed Linux cells: **UDP socket 1, advert, browser
+and resolver 1** (recorded here; the draft stays as approved).
+
+**Settled with you 2026-11-25** ("do what's recommended"):
+- **RTLD_NODELETE** stays: each object opens and closes the libraries,
+  the loader keeps them; the approval session's "unloaded and loaded
+  again" can't hold without losing libdbus' memory at each unload.
+- **A privileged port is BIND_FAILED:** EACCES or EPERM at the bind is
+  the port refused, not the program refused the network; at `socket()`
+  they stay ACCESS_DENIED (Android without INTERNET). Built in
+  `crnetsockets.c` (Linux's branch; Apple's results unchanged), seen
+  failing first (`crnet_test`'s "udp": ACCESS_DENIED), and
+  `crnet_udp_socket_create()`'s BIND_FAILED names it. The send's and
+  receive's EPERM stay as written.
+- **Empty namings stay:** the wait set's rules allow them; running Avahi
+  inside the set's prepare would make a wait a call on the object, a rule
+  `crnet.h` would have to add. Not wanted.
+
+**Still yours:** avahi-daemon stopped and restarted
+(`crnet_discovery_library_stopped` and `_restart`, 77 here without
+`sudo -n`), the cross-machine check, and the Mac compiling
+`crnetsockets.c`'s change once: all in `../prompts/host_revamp_test.md`.
 
 ### The wait set's draft (2026-11-23, approved the same day)
 

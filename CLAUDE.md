@@ -44,7 +44,7 @@ Every module returns the shared `CR_RESULT` enum (`crcore.h`, 165 values with
 | Carrottus GPU | `crgpu.h` | `crgpu_` | Vulkan, D3D12, Metal |
 | Carrottus Files | `crfiles.h` | `crfiles_` | Windows, Linux, macOS |
 | Carrottus Memory | `crmemory.h` | `crmem_` | Windows, POSIX (Linux + Apple, one file) |
-| Carrottus Net | `crnet.h` | `crnet_` | TCP and UDP sockets: Winsock2, BSD sockets (Linux + Apple, one file). HTTP + WebSocket: WinHTTP, libcurl, NSURLSession. The interface listing: getifaddrs (Linux + Apple), GetAdaptersAddresses. Service discovery: dns_sd (Apple), Avahi (Linux), Windows' DNS-SD calls; 0 on Android and watchOS. Since 0.5.0: built on the Mac (2026-11-23) and Windows (2026-11-24: GetAdaptersAddresses and GetIfTable2, Winsock UDP on TCP's endpoint, dnsapi.dll opened by each object); Linux's discovery refuses with `CR_RESULT_NOT_IMPLEMENTED_YET` until built, and its UDP and listing are the POSIX files, written, not compiled |
+| Carrottus Net | `crnet.h` | `crnet_` | TCP and UDP sockets: Winsock2, BSD sockets (Linux + Apple, one file). HTTP + WebSocket: WinHTTP, libcurl, NSURLSession. The interface listing: getifaddrs (Linux + Apple), GetAdaptersAddresses. Service discovery: dns_sd (Apple), Avahi (Linux), Windows' DNS-SD calls; 0 on Android and watchOS. Since 0.5.0: built on the Mac (2026-11-23), Windows (2026-11-24: GetAdaptersAddresses and GetIfTable2, Winsock UDP on TCP's endpoint, dnsapi.dll opened by each object) and Fedora (2026-11-25: the POSIX listing and UDP compiled unchanged; Avahi's client over D-Bus, `backends/linux/crnetavahi.c`, its two libraries opened by each object, RTLD_NODELETE); no stub left, discovery being 0 on Android and watchOS |
 | Carrottus Audio | `craudio.h` | `craudio_` / `CR_RESULT_SAUD_*` | WASAPI (Windows), ALSA (Linux), CoreAudio (macOS), RemoteIO (iOS and iPadOS: `craudioremoteio.c` and the session half `craudiosession.m`, since 2026-11-02); an argument-checking stub where no API is compiled in (watchOS) |
 | Carrottus Input | `crinput.h` | `crinput_` / `CR_RESULT_CRINPUT_*` | GameController (macOS, iOS, iPadOS), evdev (Linux), GameInput (Windows). Not written: XInput (Windows); with no API built in, no instance can be made |
 | Carrottus Core | `crcore.h` | `cr_` / `CR_RESULT` | platform-agnostic |
@@ -1614,9 +1614,15 @@ evening on the Mac (Known gaps below, `CRGPU_DEVICE_TODO.md`).
   (`crnetwindows.c`, the endpoint in the internal socket's `backend`), and
   dnsapi.dll's DNS-SD calls opened by each object, its callbacks on the
   system's threads reporting into the ring and waking a `pump` event
-  (`crnetwindnssd.c`). Linux's discovery refuses with
-  `CR_RESULT_NOT_IMPLEMENTED_YET` (`backends/stub/crnetdiscoverystub.c`)
-  until `../prompts/crnet_local_network_fedora.md`.
+  (`crnetwindnssd.c`). Built on Fedora 44 2026-11-25
+  (`../prompts/crnet_local_network_fedora_record.md`; `CRNET_TODO.md`,
+  "Built on Fedora"): getifaddrs and BSD UDP compiled as the Mac wrote
+  them, and Avahi (`backends/linux/crnetavahi.c`): each object opens
+  libavahi-common and libavahi-client itself (RTLD_NODELETE, since libdbus
+  loses its globals' memory at every unload) and is one AvahiClient over
+  an AvahiPoll of its own, whose D-Bus socket and timeouts `pump` polls
+  inside `_next` and a wait set is handed; neither library nor libdbus is
+  linked, the build taking Avahi's headers only. The stub is gone.
   `crnet_instance_get_local_ipv4_addresses()` is gone (no caller outside
   carrottus). A discovery object's events are a ring sized at its create,
   written under its lock so a system thread (Windows) can report into it
@@ -1635,7 +1641,16 @@ evening on the Mac (Known gaps below, `CRGPU_DEVICE_TODO.md`).
   of its own, so no NOT_ANSWERING (`crnet.h`'s known problems); each
   cancel's last callback comes inside the call (C2.10: always, for
   DnsServiceResolveCancel); and dnsapi.dll keeps itself loaded once one of
-  its DNS-SD calls has run.
+  its DNS-SD calls has run. On Fedora: Linux refuses both of UDP's port
+  overlaps and doubles a buffer size asked for; a privileged port's bind
+  is BIND_FAILED (EACCES at the bind, settled 2026-11-25); a second advert of one name on one machine is
+  refused by avahi-daemon at the add (AVAHI_ERR_COLLISION), handed over as
+  NAME_CONFLICT; FOUND once per interface and protocol; a resolve's own
+  time-out (about 5 s) is NOT_ANSWERING; a resolver's TXT list comes in the
+  record's order, which `avahi_string_list_serialize` would reverse, so the
+  backend writes the wire form itself; and an object's D-Bus connection is
+  woken by every program joining or leaving the system bus, naming it in a
+  wait set with nothing to hand over (`crnet.h`'s known problems).
 - **The largest image sizes (0.4.0, card S33,
   `crgpu_max_image_size_draft.h`, approved 2026-11-14):**
   `CRGPU_ADAPTER_PROPERTIES` ends with five upper bounds (1D, 2D, 3D, cube,

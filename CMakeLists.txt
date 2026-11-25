@@ -134,7 +134,7 @@ if(NOT TARGET carrottus)
             src/files/backends/posix/crfilesposix.c
             src/net/backends/posix/crnetsockets.c
             src/net/backends/posix/crnetifaddrs.c
-            src/net/backends/stub/crnetdiscoverystub.c
+            src/net/backends/linux/crnetavahi.c
             src/net/backends/linux/crnetcurl.c
             src/memory/backends/posix/crmemoryposix.c
         )
@@ -379,6 +379,18 @@ if(NOT TARGET carrottus)
         # CrFiles' library calls (dlopen, dlsym, dlclose, dlerror): in libc
         # from glibc 2.34, in libdl before it; CMAKE_DL_LIBS names whichever.
         target_link_libraries(carrottus PRIVATE ${CMAKE_DL_LIBS})
+        # CrNet's service discovery (crnetavahi.c): Avahi's headers only
+        # (avahi-devel / libavahi-client-dev). Each discovery object opens
+        # libavahi-client.so.3 and libavahi-common.so.3 itself at run time
+        # (dlopen, CrFiles' dl calls above), so neither library nor libdbus
+        # is linked; a machine without them gets
+        # CR_RESULT_NET_DISCOVERY_UNAVAILABLE. Android has no Avahi and no
+        # discovery (CRNET_EXT_DISCOVERY 0), so it needs no headers.
+        if(NOT ANDROID)
+            find_package(PkgConfig REQUIRED)
+            pkg_check_modules(CARROTTUS_AVAHI REQUIRED avahi-client)
+            target_include_directories(carrottus PRIVATE ${CARROTTUS_AVAHI_INCLUDE_DIRS})
+        endif()
         if(CURL_VERSION_STRING VERSION_LESS "8.11")
             message(WARNING "CrNet: libcurl ${CURL_VERSION_STRING} is older than 8.11 - crnet_websocket_* will return CR_RESULT_NET_UNSUPPORTED.")
         endif()
@@ -937,9 +949,10 @@ if(NOT TARGET carrottus)
         add_test(NAME crnet_discovery_ring_test COMMAND crnet_discovery_ring_test)
         set_tests_properties(crnet_discovery_ring_test PROPERTIES TIMEOUT 120)
         # Discovery and UDP between two processes through the system's
-        # service: the driver spawns itself as the advertiser. Apple and
-        # Windows; Linux once its Avahi backend is built.
-        if((APPLE AND NOT IOS) OR WIN32)
+        # service: the driver spawns itself as the advertiser. Apple (not
+        # iOS, which can't spawn), Windows and Linux (not Android, which has
+        # no discovery).
+        if((APPLE AND NOT IOS) OR WIN32 OR (UNIX AND NOT APPLE AND NOT ANDROID))
             add_executable(crnet_discovery_two_process tests/crnet_discovery_two_process.c)
             target_link_libraries(crnet_discovery_two_process PRIVATE carrottus)
             if(WIN32)
@@ -967,6 +980,35 @@ if(NOT TARGET carrottus)
             target_link_libraries(crnet_discovery_library_missing PRIVATE carrottus eqstd)
             add_test(NAME crnet_discovery_library_missing COMMAND crnet_discovery_library_missing missing)
             set_tests_properties(crnet_discovery_library_missing PROPERTIES TIMEOUT 120)
+        endif()
+        # Linux's discovery opens libavahi-client.so.3 and libavahi-common.so.3
+        # per object (crnetavahi.c): the same cases, read from
+        # /proc/self/maps, and Avahi's own. restart and stopped need
+        # `sudo -n systemctl` and skip (77) without it. "missing" is the
+        # backend built again with the client library's name pointing
+        # elsewhere, ahead of carrottus.
+        if(UNIX AND NOT APPLE AND NOT ANDROID)
+            add_executable(crnet_discovery_library_test tests/crnet_discovery_library_test.c)
+            target_link_libraries(crnet_discovery_library_test PRIVATE carrottus)
+            foreach(_case start timing cycles three txt vanished timer restart stopped)
+                add_test(NAME crnet_discovery_library_${_case} COMMAND crnet_discovery_library_test ${_case})
+                set_tests_properties(crnet_discovery_library_${_case} PROPERTIES TIMEOUT 120 RESOURCE_LOCK crnet_discovery SKIP_RETURN_CODE 77)
+            endforeach()
+            add_executable(crnet_discovery_library_missing tests/crnet_discovery_library_test.c src/net/backends/linux/crnetavahi.c)
+            target_compile_definitions(crnet_discovery_library_missing PRIVATE "CRNET_AVAHI_CLIENT_LIBRARY=\"libcrnet-no-such-avahi-client.so.3\"" _GNU_SOURCE)
+            target_include_directories(crnet_discovery_library_missing PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CARROTTUS_AVAHI_INCLUDE_DIRS})
+            target_link_libraries(crnet_discovery_library_missing PRIVATE carrottus eqstd)
+            add_test(NAME crnet_discovery_library_missing COMMAND crnet_discovery_library_missing missing)
+            set_tests_properties(crnet_discovery_library_missing PROPERTIES TIMEOUT 120)
+            # Under the -asan and -tsan presets: what libdbus reports from
+            # inside avahi_client_new and _free, third-party code, each entry
+            # with its reason in the file (tests/sanitizers/).
+            foreach(_test crnet_test_discovery crnet_discovery_two_process crnet_discovery_library_start crnet_discovery_library_timing
+                    crnet_discovery_library_cycles crnet_discovery_library_three crnet_discovery_library_txt crnet_discovery_library_vanished
+                    crnet_discovery_library_timer crnet_discovery_library_restart crnet_discovery_library_stopped crnet_discovery_library_missing)
+                set_tests_properties(${_test} PROPERTIES ENVIRONMENT_MODIFICATION
+                    "LSAN_OPTIONS=string_append::suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tests/sanitizers/linux-lsan.supp;TSAN_OPTIONS=string_append::suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tests/sanitizers/linux-tsan.supp")
+            endforeach()
         endif()
 
         # CrNet's parsers of the network's bytes, each fuzz target in

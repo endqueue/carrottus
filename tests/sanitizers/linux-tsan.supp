@@ -1,6 +1,7 @@
-# ThreadSanitizer suppressions for craudio_test on Linux, under the -tsan
-# presets (set on the test in CMakeLists.txt). Third-party code only, each
-# with its reason; Carrottus's own reports are fixed, never listed here.
+# ThreadSanitizer suppressions for craudio_test and Carrottus Net's discovery
+# tests on Linux, under the -tsan presets (set on each test in
+# CMakeLists.txt). Third-party code only, each with its reason; Carrottus's
+# own reports are fixed, never listed here.
 
 # ALSA's pipewire PCM plugin takes PipeWire's thread-loop lock (libspa's
 # loop_lock) and alsa-lib's PCM lock in both orders inside libasound:
@@ -28,3 +29,15 @@ deadlock:libspa-support.so
 # its one thread. Seen 2026-11-04 on Fedora 44, PipeWire 1.6.2,
 # alsa-lib 1.2.16.1 (ThinkPad P1).
 race:snd_pcm_area_copy
+
+# libdbus' own lock order, under Carrottus Net's discovery on Avahi
+# (crnetavahi.c): opening a private bus connection (internal_bus_get, inside
+# avahi_client_new) takes libdbus' global bus lock and then the new
+# connection's lock (_dbus_connection_new_for_transport), and closing one
+# (dbus_connection_close, inside avahi_client_free) takes the connection's
+# lock and then the global one (_dbus_connection_get_dispatch_status_unlocked).
+# Both locks and both orders are libdbus', on the one thread that makes or
+# destroys a discovery object; Carrottus's frames are only the calls below
+# avahi_client_new and avahi_client_free. Seen 2026-11-25 on Fedora 44,
+# libdbus 1.16.4, Avahi 0.9-rc2, GCC's and clang's runtimes.
+deadlock:libdbus-1.so
