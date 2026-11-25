@@ -2623,3 +2623,24 @@ Not b (leave it, the cost recorded). A Carrottus draft first (seven
 critique passes; what changes for a caller that leaned on Metal's
 tracking, and the heaps' tracked mode above); **not yet written**.
 Approved 2026-11-20 with the user after a second seven-pass critique: `carrottus/crgpu_concurrent_compute_draft.h` version 3, 930e661f; not built.
+
+## Three checks found beside the draw checks' draft (cards S61 to S63, decided 2026-11-24 with the user: a each)
+
+Found 2026-11-20 critiquing `crgpu_draw_dispatch_checks_draft.h` ("Found
+in the code" 7 and 8, and what it left out). Built with or after that
+draft:
+- **S61, a clear inside a pass on Metal:** today it opens a second render
+  encoder over the open one and never ends the first. A clear inside a
+  pass records into the open render encoder (a draw of the cleared
+  rectangle, as Vulkan's `vkCmdClearAttachments` clears), tested on
+  every backend. A fix within the contract: no draft.
+- **S62, an index buffer's offset alignment:** the index view's create
+  (or `set_index_buffer()`) refuses an offset that isn't a multiple of
+  the index size, with a code of its own (Vulkan's
+  VUID-vkCmdBindIndexBuffer-offset-08783, Metal's index-size multiple).
+  A new result code: a short draft for approval first.
+- **S63, a pipeline's attachment formats against its pass:** a bind (or
+  draw) inside a pass refuses a graphics pipeline whose colour or depth
+  formats don't match the pass's (Vulkan's VUIDs 06179, 08910, 08912),
+  with a code of its own, by a short draft for approval first.
+

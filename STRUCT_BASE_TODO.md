@@ -477,3 +477,12 @@ and evdev builds, which needed no change but have not been compiled.
    based struct is held by value.
 6. Rewrite this file's "Which structs get which" as a record of what was
    done, then shorten `CLAUDE.md`'s note to the rules and a pointer here.
+
+## `CRGPU_CLEAR_VALUE`'s union (card A79, decided 2026-11-24 with you)
+
+Kept as `CONVENTIONS.md`'s named exception to "Bindable as written": the
+struct is frozen, so it could only be replaced by a new type, and its
+anonymous union of `color` and `depth_stencil` is the right layout.
+Owed: a layout test in carrottus's struct tests (`format` at offset 0,
+the union after it, its size the larger member's), and a line in
+`crgpu.h` naming it the exception and its tag `format`. No ABI change.
