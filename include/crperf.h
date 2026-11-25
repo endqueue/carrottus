@@ -40,7 +40,7 @@ extern "C" {
  *
  * @return The counter's current value, in ticks of that counter.
  */
-uint64_t crperf_catch_current_clock_cycle();
+uint64_t crperf_catch_current_clock_cycle(void);
 
 /**
  * @brief Reads how much physical memory the calling process is using.
@@ -86,7 +86,7 @@ void crperf_get_ram_usage(
  *
  * @return Milliseconds since the clock's epoch.
  */
-uint64_t crperf_get_current_time_milliseconds();
+uint64_t crperf_get_current_time_milliseconds(void);
 
 /**
  * @brief Reads the host's monotonic clock, in nanoseconds.

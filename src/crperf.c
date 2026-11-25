@@ -20,7 +20,7 @@
 extern "C" {
 #endif
 
-uint64_t crperf_catch_current_clock_cycle() {
+uint64_t crperf_catch_current_clock_cycle(void) {
 #if defined(_MSC_VER) && !defined(_M_ARM64)
 	return __rdtsc();
 #elif defined(__aarch64__) || defined(__arm64__)
@@ -94,7 +94,7 @@ void crperf_get_ram_usage(
 #endif
 }
 
-uint64_t crperf_get_current_time_milliseconds() {
+uint64_t crperf_get_current_time_milliseconds(void) {
 #if CARROTTUS_PLATFORM_WIN32
 	// Fixed at boot and read from shared memory, so asked each call rather
 	// than cached in a static.

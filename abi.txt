@@ -899,7 +899,7 @@ fn crfiles_directory_rename CR_RESULT (crfiles_instance, const char *, const cha
 fn crfiles_file_close void (crfiles_file)
 fn crfiles_file_flush CR_RESULT (crfiles_file, CRFILES_FLUSH_LEVEL)
 fn crfiles_file_get_size CR_RESULT (crfiles_file, uint64_t *)
-fn crfiles_file_lock CR_RESULT (crfiles_file, CRFILES_LOCK, bool)
+fn crfiles_file_lock CR_RESULT (crfiles_file, CRFILES_LOCK, _Bool)
 fn crfiles_file_map CR_RESULT (crfiles_file, uint64_t, uint64_t, crfiles_mapping *)
 fn crfiles_file_open CR_RESULT (crfiles_instance, const crfiles_open_desc *, crfiles_file *)
 fn crfiles_file_read_at CR_RESULT (crfiles_file, uint64_t, void *, uint64_t, uint64_t *)
@@ -928,7 +928,7 @@ fn crgpu_acceleration_structure_get_reference CR_RESULT (crgpu_acceleration_stru
 fn crgpu_adapter_enumerate CR_RESULT (crgpu_instance, const crgpu_adapter **, uint32_t *)
 fn crgpu_adapter_get_format_capabilities CR_RESULT (crgpu_adapter, CRGPU_FORMAT, CRGPU_FORMAT_CAPABILITIES *)
 fn crgpu_adapter_get_properties CR_RESULT (crgpu_adapter, CRGPU_ADAPTER_PROPERTIES *)
-fn crgpu_adapter_supports_surface CR_RESULT (crgpu_adapter, crgpu_surface, bool *)
+fn crgpu_adapter_supports_surface CR_RESULT (crgpu_adapter, crgpu_surface, _Bool *)
 [linux,windows] fn crgpu_bindless_register_sampled_image CR_RESULT (crgpu_device, crgpu_image_view, uint32_t *)
 [linux,windows] fn crgpu_bindless_register_storage_buffer CR_RESULT (crgpu_device, crgpu_buffer_view, uint32_t *)
 [linux,windows] fn crgpu_bindless_register_storage_image CR_RESULT (crgpu_device, crgpu_image_view, uint32_t *)
@@ -964,7 +964,7 @@ fn crgpu_command_list_bind_graphics_pipeline void (crgpu_command_list, crgpu_gra
 fn crgpu_command_list_blit_image void (crgpu_command_list, crgpu_image, crgpu_image, const crgpu_image_blit_desc *)
 fn crgpu_command_list_build_acceleration_structures CR_RESULT (crgpu_command_list, const crgpu_acceleration_structure_build *, uint32_t)
 fn crgpu_command_list_clear_color_attachment void (crgpu_command_list, crgpu_image_view, float, float, float, float, uint32_t, uint32_t)
-fn crgpu_command_list_clear_depth_attachment void (crgpu_command_list, crgpu_image_view, bool, bool, float, uint32_t, uint32_t, uint32_t)
+fn crgpu_command_list_clear_depth_attachment void (crgpu_command_list, crgpu_image_view, _Bool, _Bool, float, uint32_t, uint32_t, uint32_t)
 fn crgpu_command_list_copy_acceleration_structure CR_RESULT (crgpu_command_list, crgpu_acceleration_structure, crgpu_acceleration_structure, CRGPU_ACCELERATION_STRUCTURE_COPY_MODE)
 fn crgpu_command_list_copy_buffer void (crgpu_command_list, crgpu_buffer, crgpu_buffer, uint64_t, uint64_t, uint64_t)
 fn crgpu_command_list_copy_buffer_to_image CR_RESULT (crgpu_command_list, crgpu_buffer, crgpu_image, const crgpu_image_buffer_copy_desc *)
@@ -1025,7 +1025,7 @@ fn crgpu_fence_create CR_RESULT (crgpu_device, CRGPU_FENCE_FLAGS, uint64_t, crgp
 fn crgpu_fence_destroy void (crgpu_fence)
 fn crgpu_fence_get_value uint64_t (crgpu_fence)
 fn crgpu_fence_signal CR_RESULT (crgpu_device, crgpu_fence, uint64_t)
-fn crgpu_fence_wait CR_RESULT (crgpu_device, crgpu_fence *, const uint64_t *, uint32_t, bool, uint64_t)
+fn crgpu_fence_wait CR_RESULT (crgpu_device, crgpu_fence *, const uint64_t *, uint32_t, _Bool, uint64_t)
 fn crgpu_format_from_string CRGPU_FORMAT (const char *)
 fn crgpu_format_get_bit_count uint32_t (CRGPU_FORMAT)
 fn crgpu_format_get_texel_block CR_RESULT (CRGPU_FORMAT, uint32_t *, uint32_t *, uint32_t *)
@@ -1078,7 +1078,7 @@ fn crinput_gamepad_get_properties CR_RESULT (crinput_instance, crinput_gamepad_i
 fn crinput_gamepad_get_state CR_RESULT (crinput_instance, crinput_gamepad_id, CRINPUT_GAMEPAD_STATE *)
 fn crinput_gamepad_get_touch CR_RESULT (crinput_instance, crinput_gamepad_id, uint32_t, CRINPUT_GAMEPAD_TOUCH_STATE *)
 fn crinput_gamepad_set_light_color CR_RESULT (crinput_instance, crinput_gamepad_id, float, float, float)
-fn crinput_gamepad_set_motion_enabled CR_RESULT (crinput_instance, crinput_gamepad_id, bool)
+fn crinput_gamepad_set_motion_enabled CR_RESULT (crinput_instance, crinput_gamepad_id, _Bool)
 fn crinput_gamepad_set_player_indicator CR_RESULT (crinput_instance, crinput_gamepad_id, uint32_t)
 fn crinput_gamepad_set_rumble CR_RESULT (crinput_instance, crinput_gamepad_id, const CRINPUT_GAMEPAD_RUMBLE *)
 fn crinput_instance_create CR_RESULT (const CRINPUT_INSTANCE_DESC *, crinput_instance *)
@@ -1152,7 +1152,7 @@ fn crnet_tcp_socket_get_error void (crnet_tcp_socket, CRNET_ERROR_SIDE, crnet_er
 fn crnet_tcp_socket_get_peer_address CR_RESULT (crnet_tcp_socket, char *, uint16_t *)
 fn crnet_tcp_socket_recv CR_RESULT (crnet_tcp_socket, void *, uint64_t, uint32_t, uint64_t *)
 fn crnet_tcp_socket_send CR_RESULT (crnet_tcp_socket, const void *, uint64_t, uint32_t, uint64_t *)
-fn crnet_tcp_socket_set_no_delay CR_RESULT (crnet_tcp_socket, bool)
+fn crnet_tcp_socket_set_no_delay CR_RESULT (crnet_tcp_socket, _Bool)
 fn crnet_udp_socket_abort void (crnet_udp_socket)
 fn crnet_udp_socket_create CR_RESULT (crnet_instance, const crnet_udp_socket_desc *, crnet_udp_socket *, crnet_error *)
 fn crnet_udp_socket_destroy void (crnet_udp_socket)
@@ -1192,10 +1192,10 @@ fn crnet_websocket_destroy void (crnet_websocket)
 fn crnet_websocket_flush CR_RESULT (crnet_websocket, uint32_t)
 fn crnet_websocket_get_close_code uint16_t (crnet_websocket)
 fn crnet_websocket_get_error void (crnet_websocket, CRNET_ERROR_SIDE, crnet_error *)
-fn crnet_websocket_recv CR_RESULT (crnet_websocket, void *, uint64_t, uint32_t, uint64_t *, CRNET_WEBSOCKET_MESSAGE *, bool *)
+fn crnet_websocket_recv CR_RESULT (crnet_websocket, void *, uint64_t, uint32_t, uint64_t *, CRNET_WEBSOCKET_MESSAGE *, _Bool *)
 fn crnet_websocket_send CR_RESULT (crnet_websocket, CRNET_WEBSOCKET_MESSAGE, const void *, uint64_t, uint32_t)
-fn crperf_catch_current_clock_cycle uint64_t ()
-fn crperf_get_current_time_milliseconds uint64_t ()
+fn crperf_catch_current_clock_cycle uint64_t (void)
+fn crperf_get_current_time_milliseconds uint64_t (void)
 fn crperf_get_monotonic_time_ns uint64_t (void)
 fn crperf_get_ram_usage void (uint64_t *, uint64_t *)
 fn crperf_sleep_until_monotonic_ms void (uint64_t)
@@ -1381,13 +1381,13 @@ field CRAUDIO_DEVICE_PROPERTIES.persistent_id @144 char[256]
 field CRAUDIO_DEVICE_PROPERTIES.direction @400 CRAUDIO_DIRECTION
 field CRAUDIO_DEVICE_PROPERTIES.default_roles @404 CRAUDIO_DEFAULT_ROLES
 field CRAUDIO_DEVICE_PROPERTIES.native_format @408 CRAUDIO_FORMAT
-field CRAUDIO_DEVICE_PROPERTIES.supports_exclusive @488 bool
+field CRAUDIO_DEVICE_PROPERTIES.supports_exclusive @488 _Bool
 struct CRAUDIO_FORMAT size=80 align=4
 field CRAUDIO_FORMAT.sample_format @0 CRAUDIO_SAMPLE_FORMAT
 field CRAUDIO_FORMAT.sample_rate @4 uint32_t
 field CRAUDIO_FORMAT.channel_count @8 uint32_t
 field CRAUDIO_FORMAT.positions @12 CRAUDIO_CHANNEL_POSITION[64]
-field CRAUDIO_FORMAT.interleaved @76 bool
+field CRAUDIO_FORMAT.interleaved @76 _Bool
 struct CRAUDIO_INSTANCE_DESC size=32 align=8
 field CRAUDIO_INSTANCE_DESC.base @0 CR_STRUCT_BASE
 field CRAUDIO_INSTANCE_DESC.allocator @16 const CR_ALLOCATOR *
@@ -1428,11 +1428,11 @@ field CRAUDIO_TIMING_CAPS.period_granularity_frames @28 uint32_t
 field CRAUDIO_TIMING_CAPS.default_period_frames @32 uint32_t
 field CRAUDIO_TIMING_CAPS.min_buffer_frames @36 uint32_t
 field CRAUDIO_TIMING_CAPS.max_buffer_frames @40 uint32_t
-field CRAUDIO_TIMING_CAPS.variable_callback_frames @44 bool
+field CRAUDIO_TIMING_CAPS.variable_callback_frames @44 _Bool
 struct CRFILES_LISTING_ENTRY size=1056 align=8
 field CRFILES_LISTING_ENTRY.base @0 CR_STRUCT_BASE_OUT
 field CRFILES_LISTING_ENTRY.kind @16 CRFILES_ENTRY_KIND
-field CRFILES_LISTING_ENTRY.name_is_utf8 @20 bool
+field CRFILES_LISTING_ENTRY.name_is_utf8 @20 _Bool
 field CRFILES_LISTING_ENTRY.name_size @24 uint32_t
 field CRFILES_LISTING_ENTRY.name @28 char[1024]
 struct CRFILES_PATH_INFO size=40 align=8
@@ -1449,14 +1449,14 @@ field CRGPU_ADAPTER_PROPERTIES.subsystem_id @152 uint32_t
 field CRGPU_ADAPTER_PROPERTIES.revision @156 uint32_t
 field CRGPU_ADAPTER_PROPERTIES.adapter_id @160 uint8_t[16]
 field CRGPU_ADAPTER_PROPERTIES.luid @176 uint8_t[8]
-field CRGPU_ADAPTER_PROPERTIES.luid_valid @184 bool
+field CRGPU_ADAPTER_PROPERTIES.luid_valid @184 _Bool
 field CRGPU_ADAPTER_PROPERTIES.adapter_type @188 CRGPU_ADAPTER_TYPE
 field CRGPU_ADAPTER_PROPERTIES.supported_features @192 CRGPU_FEATURES
 field CRGPU_ADAPTER_PROPERTIES.shader_formats @200 CRGPU_SHADER_FORMATS
 field CRGPU_ADAPTER_PROPERTIES.dedicated_video_memory @208 uint64_t
 field CRGPU_ADAPTER_PROPERTIES.dedicated_system_memory @216 uint64_t
 field CRGPU_ADAPTER_PROPERTIES.shared_system_memory @224 uint64_t
-field CRGPU_ADAPTER_PROPERTIES.unified_memory @232 bool
+field CRGPU_ADAPTER_PROPERTIES.unified_memory @232 _Bool
 field CRGPU_ADAPTER_PROPERTIES.uniform_buffer_offset_alignment @236 uint32_t
 field CRGPU_ADAPTER_PROPERTIES.storage_buffer_offset_alignment @240 uint32_t
 field CRGPU_ADAPTER_PROPERTIES.max_draw_indirect_count @244 uint32_t
@@ -1511,7 +1511,7 @@ field CRGPU_VIEWPORT.minDepth @16 float
 field CRGPU_VIEWPORT.maxDepth @20 float
 struct CRINPUT_GAMEPAD_BATTERY size=16 align=4
 field CRINPUT_GAMEPAD_BATTERY.state @0 CRINPUT_BATTERY_STATE
-field CRINPUT_GAMEPAD_BATTERY.level_known @4 bool
+field CRINPUT_GAMEPAD_BATTERY.level_known @4 _Bool
 field CRINPUT_GAMEPAD_BATTERY.level @8 float
 field CRINPUT_GAMEPAD_BATTERY.level_steps @12 uint32_t
 struct CRINPUT_GAMEPAD_MOTION_SAMPLE size=32 align=8
@@ -1525,7 +1525,7 @@ field CRINPUT_GAMEPAD_PROPERTIES.vendor_id @144 uint16_t
 field CRINPUT_GAMEPAD_PROPERTIES.product_id @146 uint16_t
 field CRINPUT_GAMEPAD_PROPERTIES.buttons @148 CRINPUT_GAMEPAD_BUTTONS
 field CRINPUT_GAMEPAD_PROPERTIES.axes @152 uint32_t
-field CRINPUT_GAMEPAD_PROPERTIES.analog_triggers @156 bool
+field CRINPUT_GAMEPAD_PROPERTIES.analog_triggers @156 _Bool
 field CRINPUT_GAMEPAD_PROPERTIES.features @160 CRINPUT_GAMEPAD_FEATURES
 field CRINPUT_GAMEPAD_PROPERTIES.player_indicator_max @164 uint32_t
 field CRINPUT_GAMEPAD_PROPERTIES.touch_surface_count @168 uint32_t
@@ -1555,7 +1555,7 @@ struct CRINPUT_INSTANCE_DESC size=40 align=8
 field CRINPUT_INSTANCE_DESC.base @0 CR_STRUCT_BASE
 field CRINPUT_INSTANCE_DESC.allocator @16 const CR_ALLOCATOR *
 field CRINPUT_INSTANCE_DESC.native_api @24 CRINPUT_NATIVE_API
-field CRINPUT_INSTANCE_DESC.read_in_background @28 bool
+field CRINPUT_INSTANCE_DESC.read_in_background @28 _Bool
 field CRINPUT_INSTANCE_DESC.motion_sample_capacity @32 uint32_t
 struct CR_ALLOCATOR size=24 align=8
 field CR_ALLOCATOR.user_data @0 void *
@@ -1626,7 +1626,7 @@ field crgpu_acceleration_structure_desc.base @0 CR_STRUCT_BASE
 field crgpu_acceleration_structure_desc.level @16 CRGPU_ACCELERATION_STRUCTURE_LEVEL
 field crgpu_acceleration_structure_desc.size @24 uint64_t
 field crgpu_acceleration_structure_desc.max_bottom_levels @32 uint32_t
-field crgpu_acceleration_structure_desc.allow_compaction @36 bool
+field crgpu_acceleration_structure_desc.allow_compaction @36 _Bool
 field crgpu_acceleration_structure_desc.debug_name @40 const char *
 struct crgpu_acceleration_structure_geometry size=64 align=8
 field crgpu_acceleration_structure_geometry.kind @0 CRGPU_ACCELERATION_STRUCTURE_GEOMETRY_KIND
@@ -1667,7 +1667,7 @@ field crgpu_acceleration_structure_sizes.storage_size @16 uint64_t
 field crgpu_acceleration_structure_sizes.build_scratch_size @24 uint64_t
 field crgpu_acceleration_structure_sizes.update_scratch_size @32 uint64_t
 struct crgpu_blend_attachment_desc size=28 align=4
-field crgpu_blend_attachment_desc.blend_enable @0 bool
+field crgpu_blend_attachment_desc.blend_enable @0 _Bool
 field crgpu_blend_attachment_desc.src_color_blend_factor @4 CRGPU_BLEND_FACTOR
 field crgpu_blend_attachment_desc.dst_color_blend_factor @8 CRGPU_BLEND_FACTOR
 field crgpu_blend_attachment_desc.color_blend_op @12 CRGPU_BLEND_OP
@@ -1794,15 +1794,15 @@ field crgpu_graphics_pipeline_desc.vertex_bindings @340 crgpu_vertex_binding_des
 field crgpu_graphics_pipeline_desc.vertex_binding_count @436 uint32_t
 field crgpu_graphics_pipeline_desc.primitive_topology @440 CRGPU_PRIMITIVE_TOPOLOGY
 field crgpu_graphics_pipeline_desc.cull_mode @444 CRGPU_CULL_MODE
-field crgpu_graphics_pipeline_desc.front_face_ccw @448 bool
-field crgpu_graphics_pipeline_desc.wireframe @449 bool
+field crgpu_graphics_pipeline_desc.front_face_ccw @448 _Bool
+field crgpu_graphics_pipeline_desc.wireframe @449 _Bool
 field crgpu_graphics_pipeline_desc.depth_bias_constant @452 int32_t
 field crgpu_graphics_pipeline_desc.depth_bias_slope @456 float
 field crgpu_graphics_pipeline_desc.depth_bias_clamp @460 float
-field crgpu_graphics_pipeline_desc.depth_test_enable @464 bool
-field crgpu_graphics_pipeline_desc.depth_write_enable @465 bool
+field crgpu_graphics_pipeline_desc.depth_test_enable @464 _Bool
+field crgpu_graphics_pipeline_desc.depth_write_enable @465 _Bool
 field crgpu_graphics_pipeline_desc.depth_compare_op @468 CRGPU_COMPARE_OP
-field crgpu_graphics_pipeline_desc.depth_bounds_test_enable @472 bool
+field crgpu_graphics_pipeline_desc.depth_bounds_test_enable @472 _Bool
 field crgpu_graphics_pipeline_desc.blend_attachments @476 crgpu_blend_attachment_desc[8]
 field crgpu_graphics_pipeline_desc.color_attachment_formats @700 CRGPU_FORMAT[8]
 field crgpu_graphics_pipeline_desc.color_attachment_count @732 uint32_t
@@ -1867,7 +1867,7 @@ field crgpu_image_desc.height @52 uint32_t
 field crgpu_image_desc.depth @56 uint32_t
 field crgpu_image_desc.array_layers @60 uint32_t
 field crgpu_image_desc.mip_levels @64 uint32_t
-field crgpu_image_desc.cube_capable @68 bool
+field crgpu_image_desc.cube_capable @68 _Bool
 field crgpu_image_desc.debug_name @72 const char *
 struct crgpu_image_view_desc size=72 align=8
 field crgpu_image_view_desc.base @0 CR_STRUCT_BASE
@@ -1905,7 +1905,7 @@ field crgpu_rendering_begin_desc.y @316 int32_t
 field crgpu_rendering_begin_desc.width @320 uint32_t
 field crgpu_rendering_begin_desc.height @324 uint32_t
 field crgpu_rendering_begin_desc.layer_count @328 uint32_t
-field crgpu_rendering_begin_desc.will_execute_bundles @332 bool
+field crgpu_rendering_begin_desc.will_execute_bundles @332 _Bool
 field crgpu_rendering_begin_desc.timestamp_set @336 crgpu_timestamp_set
 field crgpu_rendering_begin_desc.timestamp_begin_index @344 uint32_t
 field crgpu_rendering_begin_desc.timestamp_end_index @348 uint32_t
@@ -1921,7 +1921,7 @@ field crgpu_sampler_desc.mip_lod_bias @40 float
 field crgpu_sampler_desc.min_lod @44 float
 field crgpu_sampler_desc.max_lod @48 float
 field crgpu_sampler_desc.max_anisotropy @52 float
-field crgpu_sampler_desc.compare_enable @56 bool
+field crgpu_sampler_desc.compare_enable @56 _Bool
 field crgpu_sampler_desc.compare_op @60 CRGPU_COMPARE_OP
 field crgpu_sampler_desc.debug_name @64 const char *
 struct crgpu_shader_module_desc size=72 align=8
@@ -1965,7 +1965,7 @@ field crgpu_vertex_attribute_desc.offset @12 uint32_t
 struct crgpu_vertex_binding_desc size=12 align=4
 field crgpu_vertex_binding_desc.binding @0 uint32_t
 field crgpu_vertex_binding_desc.stride @4 uint32_t
-field crgpu_vertex_binding_desc.per_instance @8 bool
+field crgpu_vertex_binding_desc.per_instance @8 _Bool
 struct crgpu_write_descriptor_set size=72 align=8
 field crgpu_write_descriptor_set.base @0 CR_STRUCT_BASE
 field crgpu_write_descriptor_set.dst_set @16 crgpu_descriptor_set
@@ -2003,7 +2003,7 @@ field crnet_http_transfer_desc.headers @32 const crnet_header *
 field crnet_http_transfer_desc.header_count @40 uint32_t
 field crnet_http_transfer_desc.body @44 CRNET_HTTP_BODY
 field crnet_http_transfer_desc.body_size @48 uint64_t
-field crnet_http_transfer_desc.follow_redirects @56 bool
+field crnet_http_transfer_desc.follow_redirects @56 _Bool
 field crnet_http_transfer_desc.timeout_ms @60 uint32_t
 struct crnet_instance_desc size=24 align=8
 field crnet_instance_desc.base @0 CR_STRUCT_BASE
@@ -2059,7 +2059,7 @@ field crnet_service_resolve_event.host @20 char[256]
 field crnet_service_resolve_event.port @276 uint16_t
 field crnet_service_resolve_event.address @280 crnet_address
 field crnet_service_resolve_event.txt_size @308 uint32_t
-field crnet_service_resolve_event.txt_truncated @312 bool
+field crnet_service_resolve_event.txt_truncated @312 _Bool
 field crnet_service_resolve_event.txt @313 uint8_t[1300]
 struct crnet_service_resolver_desc size=48 align=8
 field crnet_service_resolver_desc.base @0 CR_STRUCT_BASE
@@ -2088,7 +2088,7 @@ struct crnet_tls_desc size=40 align=8
 field crnet_tls_desc.trust @0 CRNET_TLS_TRUST
 field crnet_tls_desc.roots @8 const crnet_tls_certificate *
 field crnet_tls_desc.root_count @16 uint32_t
-field crnet_tls_desc.skip_host_name_check @20 bool
+field crnet_tls_desc.skip_host_name_check @20 _Bool
 field crnet_tls_desc.pins @24 const crnet_tls_pin *
 field crnet_tls_desc.pin_count @32 uint32_t
 struct crnet_tls_pin size=32 align=1
@@ -2109,7 +2109,7 @@ field crnet_websocket_connect_desc.headers @24 const crnet_header *
 field crnet_websocket_connect_desc.header_count @32 uint32_t
 field crnet_websocket_connect_desc.timeout_ms @36 uint32_t
 field crnet_websocket_connect_desc.max_message_size @40 uint64_t
-field crnet_websocket_connect_desc.follow_redirects @48 bool
+field crnet_websocket_connect_desc.follow_redirects @48 _Bool
 field crnet_websocket_connect_desc.tls @56 crnet_tls_desc
 field crnet_websocket_connect_desc.proxy @96 crnet_proxy_desc
 typedef CRAUDIO_CALLBACK_FLAGS = uint32_t
@@ -2317,7 +2317,7 @@ typedef crgpu_shader_module = struct crgpu_shader_module_t *
 typedef crgpu_shader_module_desc = struct crgpu_shader_module_desc
 typedef crgpu_submit_desc = struct crgpu_submit_desc
 typedef crgpu_surface = struct crgpu_surface_t *
-typedef crgpu_surface_create_fn = bool (*)(void *, void *, void *)
+typedef crgpu_surface_create_fn = _Bool (*)(void *, void *, void *)
 typedef crgpu_swap_chain = struct crgpu_swap_chain_t *
 typedef crgpu_swap_chain_desc = struct crgpu_swap_chain_desc
 typedef crgpu_timestamp_set = struct crgpu_timestamp_set_t *
