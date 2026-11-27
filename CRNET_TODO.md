@@ -1842,7 +1842,7 @@ local carrier as a second caller: `crnet_wait_set_draft.h`, version 4.
    self-signed certificate, and one whose pin doesn't match, on each platform.
 4. ~~Compile and run on Windows and Linux.~~ Done 2026-10-14.
 
-## TCP addresses as `crnet_address` (card N26, decided 2026-11-25 with you; draft approved 2026-11-25; built on the Mac 2026-11-26, Windows and Fedora 2026-11-27; the locks next)
+## TCP addresses as `crnet_address` (card N26, decided 2026-11-25 with you; draft approved 2026-11-25; built on the Mac 2026-11-26, Windows and Fedora 2026-11-27; the locks moved 2026-11-27)
 
 **Why:** a link-local IPv6 address (fe80::/10) means something only with
 its interface, and Carrottus Net's TCP took and gave addresses as numeric
@@ -2013,24 +2013,20 @@ has the Mac's probes of BSD sockets with scopes).
     report, in a direct run of the `discovery` part, is libdbus' known lock
     order, which `tests/sanitizers/linux-tsan.supp` already holds for the
     ctests.
-  - **The callers on Fedora** (each against its pre-N26 baseline, the
-    record's tables): rabbittus 73 of 73 (plain, `-asan`, `-tsan`),
-    trellislib 88 of 88, latran 197 of 197, crlab's page 20 of 20 (crlab
-    has no Linux native side), Pigeonous's `test_qr_link_local_only`
-    passing (built with clang: GCC refuses a test file, below); nothing
-    N26 changed failed. For you, each its repository's own and not N26's:
-    Pigeonous's and the client's test files GCC 16 refuses
-    (`-Werror=unused-but-set-variable`, `-Werror=format-truncation`),
-    Pigeonous's `-tsan` preset lacking the libdbus suppression,
-    Pigeonous's two Avahi waits (`discovery_remakes`,
-    `resolve_link_local_route`'s pairing advert), the client's
-    `eqc_noalloc_tests` limit (120 s; 142 s under TSan alone), and
-    linxercore not compiling with glibc (`linxerbody.cpp`'s `key_t`).
-- **Owed:**
-  - **The five locks** (`../prompts/crnet_tcp_address_build_fedora.md`,
-    Part 2, on resume after the commit).
-  - Pigeonous's own step 3 Windows and Fedora prompts (its link-local
-    half built on the Mac 2026-11-27).
+  - **The callers on Fedora:** each rebuilt against 0.6.0 from the
+    workspace and run against its own pre-N26 baseline: nothing N26
+    changed failed, and the caller's link-local test passes here. What
+    failed is each caller's own (GCC 16's refusals in test files, a
+    sanitizer preset's missing suppression, discovery waits, a test's time
+    limit, a type name glibc also defines), written up in the meta repo's
+    record of the run, not here.
+- **The locks moved 2026-11-27** (`../prompts/crnet_tcp_address_build_fedora.md`,
+  Part 2): `../check.sh --update-locks` wrote 0.6.0's commit into the
+  five locks, the hand-pinned lines kept, and each lock was built as
+  locked from GitHub on Fedora; `dep-locks` clean. The record has each
+  locked build's suite.
+- **Owed:** the caller's own Windows and Fedora prompts for its
+  link-local half (built on the Mac 2026-11-27).
 - **For you:** the draft itself names the callers (its file-by-file
   list), so `check.sh caller-names` counts 24 lines in
   `crnet_tcp_address_draft.h`; an approved draft is never edited, and
