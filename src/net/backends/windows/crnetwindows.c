@@ -394,8 +394,13 @@ CR_RESULT crnet_tcp_listener_create(
 	// that name - it lets a second socket bind a port that is in active
 	// use - and is not wanted.
 
+	// The port is taken: WSAEADDRINUSE where another socket binds the same
+	// address, WSAEACCES where one holds it with SO_EXCLUSIVEADDRUSE on the
+	// wildcard and this binds a particular address (or the port is in the
+	// system's excluded ranges), as UDP's create reads both.
 	if (bind(handle, (struct sockaddr *)&storage, length) != 0) {
-		if (WSAGetLastError() == WSAEADDRINUSE)
+		const int error = WSAGetLastError();
+		if (error == WSAEADDRINUSE || error == WSAEACCES)
 			result = CR_RESULT_NET_ADDRESS_IN_USE;
 		goto failed;
 	}

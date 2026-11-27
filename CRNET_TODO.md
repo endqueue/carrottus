@@ -1842,7 +1842,7 @@ local carrier as a second caller: `crnet_wait_set_draft.h`, version 4.
    self-signed certificate, and one whose pin doesn't match, on each platform.
 4. ~~Compile and run on Windows and Linux.~~ Done 2026-10-14.
 
-## TCP addresses as `crnet_address` (card N26, decided 2026-11-25 with you; draft approved 2026-11-25; built on the Mac 2026-11-26, Windows and Fedora next)
+## TCP addresses as `crnet_address` (card N26, decided 2026-11-25 with you; draft approved 2026-11-25; built on the Mac 2026-11-26, Windows 2026-11-27, Fedora next)
 
 **Why:** a link-local IPv6 address (fe80::/10) means something only with
 its interface, and Carrottus Net's TCP took and gave addresses as numeric
@@ -1913,12 +1913,52 @@ has the Mac's probes of BSD sockets with scopes).
     getter's two `CR_RESULT_NET_INVALID_TCP_SOCKET` lines are one
     `@retval` each, naming both cases and where the second is checked,
     since doxygen refuses two of one value.
+- **Built on Windows 2026-11-26 to 27** (the ThinkPad P1 Gen 5, Windows 11
+  build 26300, MSVC 14.51.36231, SDK 10.0.26100.0, unattended;
+  `../prompts/crnet_tcp_address_build_windows.md`, its record
+  `../prompts/crnet_tcp_address_build_windows_record.md`, which has every
+  figure). The draft's hash checked first.
+  - **The Mac-written Windows backend compiled as written:** no error, no
+    warning, no fix (`windows-d3d12` and `windows-vulkan`, Debug and
+    Release, `-asan`; a scratch `/W4` tree of the library and the five
+    test targets, no warning either).
+  - **Before the change** (0.5.0 built from a worktree, the text form):
+    Windows refused most of what the Mac connected (a mapped address,
+    0.0.0.0, ::, "::1%1", 2^28 + 1: WSAEADDRNOTAVAIL), but **chose an
+    interface itself for a link-local connect with no scope** (the case
+    INVALID_SCOPE closes) and lost the scope of every peer read back;
+    one connect allocated 7 of Winsock's, 4 of them GetAddrInfoW's parse.
+  - **GetAddrInfoExW and '%'** (`AI_NUMERICHOST`): "fe80::1%41" gives
+    sin6_scope_id 41; a FriendlyName, an AdapterName GUID, "nosuch" and an
+    empty one are WSAHOST_NOT_FOUND (11001); "fe80::1%268435457" keeps
+    0x10000001 whole (Zone 1, Level 1); "2001:db8::1%41" keeps 41 on a
+    global address. So the resolver's refusal of '%' (Part B) is what keeps
+    its answers one model here too.
+  - **The SCOPE_ID Level seen:** 0. A link-local connection's raw
+    sin6_scope_id, read through plain Winsock sockets of the test's own on
+    both sides (getpeername and getsockname), is 0x00000029: Zone 41, the
+    interface's ipv6_index. **The listing against Ipv6IfIndex:**
+    GetAdaptersAddresses' own sin6_scope_id is Zone = Ipv6IfIndex, Level
+    0, on every adapter (T2.14 agrees).
+  - **The system's answers:** an index no interface has (0x0FFFFFFE),
+    fe80::1 at 2^28 - 1 and another interface's index are CONNECT_FAILED
+    at once (WSAENETUNREACH, 10051; never TIMED_OUT), and LISTEN_FAILED
+    at a listener (WSAEADDRNOTAVAIL, 10049).
+  - **Tests:** `crnet_address_rule_test` 91 of 91, its Zone mask rows on
+    their Windows half; `tcp_addresses` 154 of 154 with
+    `CRNET_TEST_REQUIRE_LINK_LOCAL=1` (Ethernet asserted, the only UP
+    interface with an fe80:: address; the wrong-interface cases take the
+    loopback's index, `tcp_link_locals()` now giving one where no second
+    link-local interface does); `crnet_test` 978 of 978 Debug and 977 of
+    977 Release on both backends and under `-asan`, `internet` 27 of 27;
+    the misuse tests' two stale lines; the two new tests 20 times in
+    Release and 5 under `-asan`; `crnet_fuzz_ifaddr` 300 s (22,382,876
+    runs, nothing found) and every replay passing. No sanitizer report
+    of Carrottus Net's.
+  - **Fixed here, within the listener's contract:** the TCP listener's
+    WSAEACCES at its bind (below, "Found on the way"), seen failing first.
+  - **Held, for you:** `cr_noalloc_tests` (below).
 - **Owed:**
-  - **Windows** (`../prompts/crnet_tcp_address_build_windows.md`): the
-    backend's first compile; the SCOPE_ID Level read back, the listing's
-    link-local scope against Ipv6IfIndex, GetAddrInfoExW's '%name' and
-    '%number' (through a temporary text-form test first);
-    `CRNET_TEST_REQUIRE_LINK_LOCAL=1`; and the listener's WSAEACCES, below.
   - **Fedora** (`../prompts/crnet_tcp_address_build_fedora.md`): the POSIX
     file under GCC and clang, `-asan` and `-tsan`; the kernel's EINVAL and
     ENODEV, the multicast bind refused by the front end, glibc's '%' parse;
@@ -1931,15 +1971,48 @@ has the Mac's probes of BSD sockets with scopes).
   `crnet_tcp_address_draft.h`; an approved draft is never edited, and
   `check.baseline` already holds one so (the client's). Its entry is in
   `check.baseline` with that reason, for your review.
+- **For you, from Windows** (2026-11-27):
+  - **`cr_noalloc_tests` fails on Windows, held.** Its traced connect is
+    0 of ours, as everywhere, but not 0 of the platform's: the 4
+    allocations of the old parse are gone, and what is left, 1 to 3 a run,
+    is all under `socket()` inside connect (WahInsertHandleContext, and
+    an internal ws2_32 frame its nearest export names WSAAddressToStringA):
+    Winsock keeps a user-mode context for each socket, which POSIX
+    systems' kernel sockets don't need, and N26 doesn't move the socket's
+    creation. The draft's "and none of the platform's either" can't hold
+    on Windows as the test is written. Options: (a) on Windows, hold the
+    platform's allocations to those under the socket's own creation, by
+    attributing each to its nearest frame of ours, a function
+    `alloctrace.h` would gain in every library's copy (recommended: it
+    keeps the claim that nothing of the address is parsed, and fails if a
+    parse comes back); (b) trace from after the socket is made, which
+    needs the socket opened before connect, so the family at create (a
+    public change); (c) Windows asserts 0 of ours only. The ctest fails on
+    every Windows tree until you choose.
+  - **An excluded port reads ADDRESS_IN_USE** at a TCP listener now, as at
+    UDP's create: Windows refuses a port in its excluded ranges (`netsh
+    interface ipv4 show excludedportrange`) with the same WSAEACCES.
+  - **`crnet.h`'s overlapping listeners** ("Windows refuses it too", a
+    listener on every address beside one on a particular address of the
+    same port): Winsock allows both when neither sets
+    SO_EXCLUSIVEADDRUSE, in either order, and Carrottus Net's listeners
+    set none; it refuses only over an exclusive holder (the probe in the
+    Windows record). The text wants correcting to what Winsock does; not
+    changed in this build, which kept `crnet.h` as approved.
 
-**Found on the way, not N26's** (cycle 4, T4.11): on Windows the TCP
-listener maps only WSAEADDRINUSE, so a bind refused with WSAEACCES because
-another socket holds the port with SO_EXCLUSIVEADDRUSE is
-`CR_RESULT_NET_LISTEN_FAILED`, where UDP's create (`crnetwindows.c`, its
-bind) says `CR_RESULT_NET_ADDRESS_IN_USE` for the same fact. A fix within
-the listener's contract ("The address and port are taken"), to make in
-the Windows backend in its own change with a test (an SO_EXCLUSIVEADDRUSE
-holder, then a TCP listener), on the next Windows session; no draft.
+**Found on the way, not N26's** (cycle 4, T4.11): **done on Windows
+2026-11-27.** The TCP listener mapped only WSAEADDRINUSE at its bind, so
+WSAEACCES was `CR_RESULT_NET_LISTEN_FAILED`, where UDP's create says
+`CR_RESULT_NET_ADDRESS_IN_USE`. A probe first (plain Winsock, every pair
+of a holder and a plain bind): a plain bind over an SO_EXCLUSIVEADDRUSE
+holder of the same address is WSAEADDRINUSE, as documented, but a plain
+bind of a particular address (127.0.0.1, ::1) over an exclusive holder of
+the wildcard is WSAEACCES, and so is any bind to a port in the system's
+excluded ranges. The test (`crnet_test`'s `tcp`, under `_WIN32`: an
+exclusive holder on the wildcard, then a listener on loopback at its
+port) failed first with LISTEN_FAILED and WSAEACCES, both families; the
+bind now reads WSAEADDRINUSE or WSAEACCES as ADDRESS_IN_USE, and it
+passes. `crnet.h` unchanged.
 
 ### UDP's scope rule (card N36, decided 2026-11-25 with you, a; not drafted)
 

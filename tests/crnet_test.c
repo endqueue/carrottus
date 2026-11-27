@@ -39,6 +39,7 @@
 #ifdef _WIN32
 #include <intrin.h>
 #include <winsock2.h>
+#include <ws2tcpip.h>
 #include <iphlpapi.h>
 #include <windows.h>
 typedef HANDLE test_thread;
@@ -440,6 +441,49 @@ static void test_tcp(void) {
 	expect(in_use, CR_RESULT_NET_ADDRESS_IN_USE, "a second listener on the same address and port");
 	note_error("address in use", &error);
 	crnet_tcp_listener_destroy(second);
+#ifdef _WIN32
+	// Another program's socket with SO_EXCLUSIVEADDRUSE on the wildcard
+	// holds its port on every address: a plain bind of a specific one is
+	// WSAEACCES there, not WSAEADDRINUSE (the probe in the Windows build's
+	// record), and the port is taken all the same, as UDP's create says.
+	for (int family = 0; family < 2; ++family) {
+		const int               af     = family == 0 ? AF_INET : AF_INET6;
+		const char             *within = family == 0 ? "127.0.0.1" : "::1";
+		struct sockaddr_storage wild;
+		memset(&wild, 0, sizeof(wild));
+		wild.ss_family = (ADDRESS_FAMILY)af;
+		const int wild_length = af == AF_INET ? (int)sizeof(struct sockaddr_in) : (int)sizeof(struct sockaddr_in6);
+		SOCKET    holder      = socket(af, SOCK_STREAM, IPPROTO_TCP);
+		BOOL      exclusive   = TRUE;
+		DWORD     v6_only     = 1;
+		if (af == AF_INET6)
+			setsockopt(holder, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&v6_only, sizeof(v6_only));
+		if (holder == INVALID_SOCKET || setsockopt(holder, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&exclusive, sizeof(exclusive)) != 0 ||
+		    bind(holder, (struct sockaddr *)&wild, wild_length) != 0 || listen(holder, 4) != 0) {
+			check(false, "a plain Winsock socket holding the wildcard with SO_EXCLUSIVEADDRUSE (%d)", WSAGetLastError());
+			if (holder != INVALID_SOCKET)
+				closesocket(holder);
+			continue;
+		}
+		int length = (int)sizeof(wild);
+		getsockname(holder, (struct sockaddr *)&wild, &length);
+		const uint16_t held = ntohs(af == AF_INET ? ((struct sockaddr_in *)&wild)->sin_port : ((struct sockaddr_in6 *)&wild)->sin6_port);
+
+		crnet_tcp_listener_desc taken;
+		memset(&taken, 0, sizeof(taken));
+		taken.base.type             = CR_STRUCT_TYPE_NET_TCP_LISTENER_DESC;
+		taken.local                 = tcp_text(within, held);
+		taken.backlog               = 4;
+		crnet_tcp_listener refused  = NULL;
+		const CR_RESULT    result   = crnet_tcp_listener_create(g_instance, &taken, &refused, &error);
+		check(result == CR_RESULT_NET_ADDRESS_IN_USE && refused == NULL,
+		      "a listener on %s port %u, which another socket holds on the wildcard with SO_EXCLUSIVEADDRUSE: %s (want CR_RESULT_NET_ADDRESS_IN_USE)", within,
+		      (unsigned)held, cr_result_str(result));
+		check(error.source == CR_PLATFORM_ERROR_SOURCE_WIN32 && error.code == WSAEACCES, "  the record's error WSAEACCES (%lld)", (long long)error.code);
+		crnet_tcp_listener_destroy(refused);
+		closesocket(holder);
+	}
+#endif
 
 	crnet_tcp_socket no_one = NULL;
 	expect(crnet_tcp_listener_accept(listener, CRNET_NO_WAIT, &no_one), CR_RESULT_NET_TIMED_OUT, "accept with CRNET_NO_WAIT and nobody connecting");
@@ -5405,6 +5449,7 @@ static uint32_t tcp_link_locals(struct tcp_link_local *out, uint32_t capacity, u
 		const uint32_t up = CRNET_INTERFACE_FLAG_UP | CRNET_INTERFACE_FLAG_RUNNING;
 		if ((properties.flags & up) != up)
 			continue;
+		bool listed = false;
 		for (uint32_t a = 0; a < properties.address_count; ++a) {
 			crnet_interface_address address = address_struct();
 			if (crnet_interface_list_get_address(list, i, a, &address) != CR_SUCCESS || !tcp_is_link_local_unicast(&address.address))
@@ -5415,8 +5460,14 @@ static uint32_t tcp_link_locals(struct tcp_link_local *out, uint32_t capacity, u
 			entry->flags      = properties.flags;
 			entry->address    = address.address;
 			entry->address.port = 0;
+			listed              = true;
 			break;
 		}
+		// Another interface's index for the wrong-interface cases where only
+		// one interface has a link-local address (Windows' and Linux's
+		// loopback has none): an UP one with an IPv6 index of its own.
+		if (!listed && *out_other_index == 0 && properties.ipv6_index != 0)
+			*out_other_index = properties.ipv6_index;
 	}
 	crnet_interface_list_destroy(list);
 	return found;
@@ -5833,6 +5884,119 @@ static void tcp_resolver_values(void) {
 		check(count == 1, "  gives 1 (%u)", (unsigned)count);
 }
 
+#ifdef _WIN32
+/* Windows only (the draft's "Tests"): a link-local sin6_scope_id as Winsock
+ * hands it over, before the shared reader keeps its Zone, read through
+ * plain Winsock sockets of the test's own on each side of a connection
+ * with Carrottus Net's: SCOPE_ID's Zone (low 28 bits) asserted to be the
+ * interface's ipv6_index, its Level (top 4) printed. */
+static void tcp_windows_scope_seen(const char *what, const struct sockaddr_storage *seen, uint32_t ipv6_index) {
+	const struct sockaddr_in6 *in6 = (const struct sockaddr_in6 *)seen;
+	check(seen->ss_family == AF_INET6, "%s: an IPv6 sockaddr", what);
+	if (seen->ss_family != AF_INET6)
+		return;
+	const unsigned long raw   = (unsigned long)in6->sin6_scope_id;
+	const unsigned long zone  = raw & 0x0FFFFFFFul;
+	const unsigned long level = raw >> 28;
+	check(zone == ipv6_index, "%s: raw sin6_scope_id 0x%08lx, its Zone %lu the interface's ipv6_index (%u)", what, raw, zone, (unsigned)ipv6_index);
+	note("%s: SCOPE_ID Level %lu%s", what, level, level == 0 || level == 2 ? (level == 0 ? " (none given)" : " (ScopeLevelLink)") : " (neither 0 nor ScopeLevelLink)");
+}
+
+static void tcp_windows_raw_scope(const struct tcp_link_local *link) {
+	char                text[96];
+	crnet_error         error;
+	struct sockaddr_in6 own;
+	memset(&own, 0, sizeof(own));
+	own.sin6_family = AF_INET6;
+	memcpy(&own.sin6_addr, link->address.bytes, sizeof(own.sin6_addr));
+	own.sin6_scope_id = link->ipv6_index;
+
+	// (a) A plain client connected to Carrottus Net's link-local listener.
+	crnet_tcp_listener            listener = NULL;
+	const crnet_tcp_listener_desc ld       = tcp_listen_desc(link->address, 4);
+	if (expect(crnet_tcp_listener_create(g_instance, &ld, &listener, &error), CR_SUCCESS, "raw SCOPE_ID (a): Carrottus Net's listener on the link-local address")) {
+		uint16_t port = 0;
+		crnet_tcp_listener_get_port(listener, &port);
+		struct sockaddr_in6 to = own;
+		to.sin6_port           = htons(port);
+		SOCKET plain           = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+		const bool connected = plain != INVALID_SOCKET && connect(plain, (const struct sockaddr *)&to, (int)sizeof(to)) == 0;
+		check(connected, "raw SCOPE_ID (a): a plain client connects to it (%d)", connected ? 0 : WSAGetLastError());
+		if (connected) {
+			struct sockaddr_storage seen;
+			int                     length = (int)sizeof(seen);
+			memset(&seen, 0, sizeof(seen));
+			if (getpeername(plain, (struct sockaddr *)&seen, &length) == 0)
+				tcp_windows_scope_seen("raw SCOPE_ID (a): the plain client's getpeername()", &seen, link->ipv6_index);
+			length = (int)sizeof(seen);
+			memset(&seen, 0, sizeof(seen));
+			if (getsockname(plain, (struct sockaddr *)&seen, &length) == 0)
+				tcp_windows_scope_seen("raw SCOPE_ID (a): the plain client's getsockname()", &seen, link->ipv6_index);
+			crnet_tcp_socket accepted = NULL;
+			if (expect(crnet_tcp_listener_accept(listener, PATIENCE_MS, &accepted), CR_SUCCESS, "raw SCOPE_ID (a): accepted by Carrottus Net")) {
+				crnet_address peer;
+				memset(&peer, 0xA5, sizeof(peer));
+				expect(crnet_tcp_socket_get_peer_address(accepted, &peer), CR_SUCCESS, "raw SCOPE_ID (a): the accepted socket's peer read");
+				check(tcp_same_but_port(&peer, &link->address) && peer.port != 0, "raw SCOPE_ID (a): read as the address with its scope, the Zone alone: %s",
+				      tcp_address_text(&peer, text, sizeof(text)));
+			}
+			crnet_tcp_socket_destroy(accepted);
+		}
+		if (plain != INVALID_SOCKET)
+			closesocket(plain);
+		crnet_tcp_listener_destroy(listener);
+	}
+
+	// (b) A plain listener on the same address and scope that Carrottus
+	// Net's connect reaches: the accepted socket's getpeername() is the
+	// connection Carrottus Net's own getpeername() reads from the other end.
+	SOCKET              plain_listener = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+	DWORD               v6_only        = 1;
+	struct sockaddr_in6 bound          = own;
+	int                 bound_length   = (int)sizeof(bound);
+	if (plain_listener != INVALID_SOCKET)
+		setsockopt(plain_listener, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&v6_only, sizeof(v6_only));
+	const bool listening = plain_listener != INVALID_SOCKET && bind(plain_listener, (const struct sockaddr *)&own, (int)sizeof(own)) == 0 &&
+	                       listen(plain_listener, 4) == 0 && getsockname(plain_listener, (struct sockaddr *)&bound, &bound_length) == 0;
+	check(listening, "raw SCOPE_ID (b): a plain listener on the link-local address (%d)", listening ? 0 : WSAGetLastError());
+	if (!listening) {
+		if (plain_listener != INVALID_SOCKET)
+			closesocket(plain_listener);
+		return;
+	}
+	crnet_address to = link->address;
+	to.port          = ntohs(bound.sin6_port);
+	crnet_tcp_socket client = NULL;
+	crnet_tcp_socket_create(g_instance, &client);
+	const crnet_tcp_socket_connect_desc cd = tcp_connect_desc(to, PATIENCE_MS);
+	if (expect(crnet_tcp_socket_connect(client, &cd), CR_SUCCESS, "raw SCOPE_ID (b): Carrottus Net's connect to the plain listener")) {
+		struct sockaddr_storage seen;
+		int                     length   = (int)sizeof(seen);
+		SOCKET                  accepted = accept(plain_listener, (struct sockaddr *)&seen, &length);
+		check(accepted != INVALID_SOCKET, "raw SCOPE_ID (b): the plain listener accepts it (%d)", accepted != INVALID_SOCKET ? 0 : WSAGetLastError());
+		if (accepted != INVALID_SOCKET) {
+			length = (int)sizeof(seen);
+			memset(&seen, 0, sizeof(seen));
+			if (getpeername(accepted, (struct sockaddr *)&seen, &length) == 0)
+				tcp_windows_scope_seen("raw SCOPE_ID (b): the plain accepted socket's getpeername() (Carrottus Net's end)", &seen, link->ipv6_index);
+			length = (int)sizeof(seen);
+			memset(&seen, 0, sizeof(seen));
+			if (getsockname(accepted, (struct sockaddr *)&seen, &length) == 0)
+				tcp_windows_scope_seen("raw SCOPE_ID (b): the plain accepted socket's getsockname() (what Carrottus Net's getpeername() names)", &seen,
+				                       link->ipv6_index);
+			crnet_address peer;
+			memset(&peer, 0xA5, sizeof(peer));
+			expect(crnet_tcp_socket_get_peer_address(client, &peer), CR_SUCCESS, "raw SCOPE_ID (b): Carrottus Net's peer read");
+			check(memcmp(&peer, &to, sizeof(peer)) == 0, "raw SCOPE_ID (b): Carrottus Net's peer equals (memcmp) the plain listener's address: %s",
+			      tcp_address_text(&peer, text, sizeof(text)));
+			closesocket(accepted);
+		}
+	}
+	crnet_tcp_socket_destroy(client);
+	closesocket(plain_listener);
+}
+#endif
+
 static void test_tcp_addresses(void) {
 	part("TCP addresses (crnet_address, link-local with its interface)");
 
@@ -5872,7 +6036,12 @@ static void test_tcp_addresses(void) {
 			if ((int)i != main_link && links[i].ipv6_index != links[main_link].ipv6_index)
 				other = links[i].ipv6_index;
 		}
+		if (other == 0 && other_index != links[main_link].ipv6_index)
+			other = other_index;
 		tcp_system_answers(&links[main_link].address, other);
+#ifdef _WIN32
+		tcp_windows_raw_scope(&links[main_link]);
+#endif
 	}
 	for (uint32_t i = 0; i < count; ++i) {
 		if ((int)i != main_link)

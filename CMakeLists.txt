@@ -922,8 +922,10 @@ if(NOT TARGET carrottus)
         endif()
         if(WIN32)
             # The interface part checks each index against
-            # ConvertInterfaceLuidToIndex.
-            target_link_libraries(crnet_test PRIVATE iphlpapi)
+            # ConvertInterfaceLuidToIndex; tcp_addresses reads a link-local
+            # peer's raw SCOPE_ID through plain Winsock sockets of its own,
+            # and tcp holds a port with one.
+            target_link_libraries(crnet_test PRIVATE iphlpapi ws2_32)
         endif()
         # The parts that need no server, each a ctest of its own with a
         # limit, so a system that never answers (a refused permission, a
