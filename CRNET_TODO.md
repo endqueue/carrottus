@@ -1842,7 +1842,7 @@ local carrier as a second caller: `crnet_wait_set_draft.h`, version 4.
    self-signed certificate, and one whose pin doesn't match, on each platform.
 4. ~~Compile and run on Windows and Linux.~~ Done 2026-10-14.
 
-## TCP addresses as `crnet_address` (card N26, decided 2026-11-25 with you; draft approved 2026-11-25; built on the Mac 2026-11-26, Windows 2026-11-27, Fedora next)
+## TCP addresses as `crnet_address` (card N26, decided 2026-11-25 with you; draft approved 2026-11-25; built on the Mac 2026-11-26, Windows and Fedora 2026-11-27; the locks next)
 
 **Why:** a link-local IPv6 address (fe80::/10) means something only with
 its interface, and Carrottus Net's TCP took and gave addresses as numeric
@@ -1958,14 +1958,79 @@ has the Mac's probes of BSD sockets with scopes).
   - **Fixed here, within the listener's contract:** the TCP listener's
     WSAEACCES at its bind (below, "Found on the way"), seen failing first.
   - **Held, for you:** `cr_noalloc_tests` (below).
+- **Built on Fedora 2026-11-27** (the ThinkPad P1 Gen 5, Fedora 44, kernel
+  6.19.10, glibc 2.43, GCC 16.2.1, clang 22.1.8, unattended;
+  `../prompts/crnet_tcp_address_build_fedora.md`, its record
+  `../prompts/crnet_tcp_address_build_fedora_record.md`, which has every
+  figure). The draft's hash checked first.
+  - **The BSD sockets file compiled on Linux as the Mac wrote it,** under
+    GCC and clang, Debug and Release, `-asan` and `-tsan` of each: no
+    error, no warning, no fix. Windows' `tcp_link_locals()` change too.
+  - **Before the change** (0.5.0 built from a worktree, the text form):
+    as on the Mac, a mapped address, 0.0.0.0, :: and "::1%1" connected and
+    a link-local peer read back lost its scope; but "<ll>%268435457"
+    failed (ENETUNREACH), glibc keeping 0x10000001 whole, where the Mac's
+    cut it to 1 and connected. One traced connect: 1 allocation counted
+    as ours, which is glibc's `getaddrinfo` (inside `libc.so.6`, which the
+    trace skips as the allocator's module, so it lands on the parse's
+    frame); now 0 of ours and 0 apart.
+  - **The kernel's answers** (plain sockets, every claim of the draft's
+    "BSD sockets, Linux"): confirmed EINVAL for a link-local connect and
+    bind with scope 0; ENODEV for a bind with an index no interface has
+    (0x0FFFFFFE, 0x0FFFFFFF); a global address's scope ignored at bind
+    (EADDRNOTAVAIL) and connect (ENETUNREACH, as with none); :: and
+    0.0.0.0 connect to this machine; a mapped destination ENETUNREACH with
+    IPV6_V6ONLY 1 and connected with 0 (the default here); multicast
+    ENETUNREACH at connect; getpeername's scope the bound device on the
+    connector's side and the SYN's interface on a `::` listener's accepted
+    socket, which is bound to that device (`SO_BINDTOIFINDEX`: the
+    `inet_csk_clone_lock()` step the draft hadn't read). **Not confirmed:**
+    a multicast bind (`ff02::1` with a scope, and without) is EINVAL from
+    the kernel, not passed: the draft's commentary is wrong there, the
+    contract isn't (the front end refuses it first, INVALID_ADDRESS, on
+    every system). Not claimed and seen: an index no interface has at
+    connect is ENETUNREACH at once; another interface's index is
+    EADDRNOTAVAIL at bind and no answer at connect.
+  - **glibc's '%'** (`getaddrinfo`, `AI_NUMERICHOST`): a name through the
+    interface names ("%enp86s0u1c2" 2, "%lo" 1), a number kept as 32 bits
+    ("%99999" 99999, "%268435457" 0x10000001), "%nosuch" and "%" refused
+    (EAI_NONAME), and a scope kept on a global address ("2001:db8::1%2"):
+    a third reading, unlike Apple's and Windows'. Part B's refusal keeps
+    the resolver one model.
+  - **Tests:** `crnet_address_rule_test` 91 of 91, the Zone mask rows "as
+    given"; `tcp_addresses` 149 of 149 with `CRNET_TEST_REQUIRE_LINK_LOCAL=1`
+    (Ethernet `enp86s0u1c2` asserted, Wi-Fi `wlp0s20f3` the other
+    interface, both connecting to themselves); the system's answers
+    CONNECT_FAILED (ENETUNREACH) for an unknown index and fe80::1 at
+    2^28 - 1, TIMED_OUT for another interface's index, LISTEN_FAILED
+    (ENODEV; EADDRNOTAVAIL for another interface's); 35 ctests in every
+    tree; `crnet_test` 947 of 947 Debug, 946 of 946 Release and under each
+    sanitizer, `internet` 29 of 29; the two new tests 20 times in each
+    Release and 5 under each sanitizer, every run passing, at most 0.55 s;
+    `crnet_fuzz_ifaddr` 301 s (89,733,767 runs, nothing found);
+    `cr_noalloc_tests` 0 and 0; the misuse tests' two stale lines; `abi`
+    unchanged. No sanitizer report of Carrottus Net's TCP: the one TSan
+    report, in a direct run of the `discovery` part, is libdbus' known lock
+    order, which `tests/sanitizers/linux-tsan.supp` already holds for the
+    ctests.
+  - **The callers on Fedora** (each against its pre-N26 baseline, the
+    record's tables): rabbittus 73 of 73 (plain, `-asan`, `-tsan`),
+    trellislib 88 of 88, latran 197 of 197, crlab's page 20 of 20 (crlab
+    has no Linux native side), Pigeonous's `test_qr_link_local_only`
+    passing (built with clang: GCC refuses a test file, below); nothing
+    N26 changed failed. For you, each its repository's own and not N26's:
+    Pigeonous's and the client's test files GCC 16 refuses
+    (`-Werror=unused-but-set-variable`, `-Werror=format-truncation`),
+    Pigeonous's `-tsan` preset lacking the libdbus suppression,
+    Pigeonous's two Avahi waits (`discovery_remakes`,
+    `resolve_link_local_route`'s pairing advert), the client's
+    `eqc_noalloc_tests` limit (120 s; 142 s under TSan alone), and
+    linxercore not compiling with glibc (`linxerbody.cpp`'s `key_t`).
 - **Owed:**
-  - **Fedora** (`../prompts/crnet_tcp_address_build_fedora.md`): the POSIX
-    file under GCC and clang, `-asan` and `-tsan`; the kernel's EINVAL and
-    ENODEV, the multicast bind refused by the front end, glibc's '%' parse;
-    then the five locks.
-  - The caller's link-local half (its dial on each interface, its QR, its
-    rank), its own session after the Mac's, before its Windows and Fedora
-    prompts.
+  - **The five locks** (`../prompts/crnet_tcp_address_build_fedora.md`,
+    Part 2, on resume after the commit).
+  - Pigeonous's own step 3 Windows and Fedora prompts (its link-local
+    half built on the Mac 2026-11-27).
 - **For you:** the draft itself names the callers (its file-by-file
   list), so `check.sh caller-names` counts 24 lines in
   `crnet_tcp_address_draft.h`; an approved draft is never edited, and
