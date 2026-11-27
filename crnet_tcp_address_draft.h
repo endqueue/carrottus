@@ -7,6 +7,7 @@
  * APPROVED by the user 2026-11-25, version 6 (SHA-256 in CRNET_TODO.md,
  * N26's section), Part B with it; U1, U2 and U3 each answered a, as
  * recommended (DECISIONS.md, N34 to N37). Not built, not in any target.
+ * Built on the Mac 2026-11-26 (lines beginning "Built on" are left out of the approved hash).
  *   Version 1: the first.
  *   Version 2 (critique cycle 1, Carrottus's own rules): a scope's
  *   refusal has its own result, CR_RESULT_NET_INVALID_SCOPE [ADDED]

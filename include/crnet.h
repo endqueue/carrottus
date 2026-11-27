@@ -665,6 +665,115 @@ void crnet_instance_destroy(crnet_instance instance);
 #if CRNET_EXT_TCP
 
 /**
+ * @defgroup crnet_addresses Addresses
+ * @ingroup crnet
+ * @brief An IP address and a port as a value: what TCP and UDP sockets, the
+ * resolver, the interface listing and service discovery hand over and take.
+ *
+ * Why a value and not text: a datagram's source is read on every receive
+ * and compared with the peers the caller knows, and an IPv6 link-local
+ * address is only usable with its interface (its scope), which text
+ * carries as a suffix ("fe80::1%en0") the platforms parse differently.
+ *
+ * Two crnet_address values Carrottus Net made for one address and port
+ * are equal byte for byte: unused bytes and `reserved` are always 0. So a
+ * caller may compare them with memcmp and hash their bytes.
+ * @{
+ */
+
+/**
+ * @brief Room for any numeric address as text, with its terminator.
+ *
+ * The longest is an IPv6 one with an embedded IPv4 tail, 45 characters.
+ */
+#define CRNET_MAX_ADDRESS_STRING_LEN 46
+
+/** @brief Which family of addresses a lookup is limited to. */
+typedef enum CRNET_ADDRESS_FAMILY {
+	CRNET_ADDRESS_FAMILY_ANY  = 0, /**< Whichever the name has. */
+	CRNET_ADDRESS_FAMILY_IPV4 = 1, /**< IPv4 addresses only. */
+	CRNET_ADDRESS_FAMILY_IPV6 = 2, /**< IPv6 addresses only. */
+} CRNET_ADDRESS_FAMILY;
+
+/**
+ * @brief One IPv4 or IPv6 address and a port.
+ */
+/* Frozen: a value type, passed in and filled in alike. It never changes; a new need gets a new type. */
+typedef struct crnet_address {
+	/** CRNET_ADDRESS_FAMILY_IPV4 or CRNET_ADDRESS_FAMILY_IPV6. ANY is never
+	 * an address's family and is refused wherever one is taken. */
+	CRNET_ADDRESS_FAMILY family;
+	/** IPv6: the interface a link-local (fe80::/10) address is used through,
+	 * as sin6_scope_id has it: the interface's ipv6_index
+	 * (crnet_interface_properties), which on Windows may differ from its
+	 * index. 0 for a global address; which other addresses may carry one is
+	 * each call's rule. IPv4: always 0. */
+	uint32_t scope_id;
+	/** The address in network byte order, as on the wire: IPv4 in the first
+	 * 4 bytes and the other 12 zero, IPv6 in all 16. */
+	uint8_t bytes[16];
+	/** The port in the machine's own byte order; 0 where no port belongs
+	 * (an interface's address) or where 0 asks the system for one (a UDP
+	 * socket's local address). */
+	uint16_t port;
+	/** Always 0, so that equal addresses are equal byte for byte. Refused
+	 * when not. */
+	uint16_t reserved;
+} crnet_address;
+
+/**
+ * @brief Makes an address from numeric text. Pure: no system state, no
+ * instance, never blocks; inet_pton on every platform.
+ *
+ * Only a numeric address is taken, never a name ("localhost" is refused:
+ * a name is the resolver's). No '%' suffix is taken either: the scope is
+ * its own argument, an interface index as crnet_interface_properties has
+ * it, so it means the same on every platform.
+ *
+ * @param[in]  text        "192.168.1.20", "::1", "fe80::1c2b:..."; UTF-8
+ *                         and null-terminated. NULL is refused.
+ * @param[in]  port        The port, in the machine's byte order.
+ * @param[in]  scope_id    0, or for IPv6 the interface's ipv6_index;
+ *                         non-zero with an IPv4 address is refused.
+ * @param[out] out_address Receives the address. Left as it was on a
+ *                         failure.
+ *
+ * @retval CR_SUCCESS `out_address` was written.
+ * @retval CR_RESULT_NET_INVALID_ADDRESS `text` is NULL, not a numeric IPv4
+ *         or IPv6 address, holds a '%', or is IPv4 with a non-zero
+ *         `scope_id`.
+ * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_address` is NULL.
+ */
+CR_RESULT crnet_address_from_string(
+    const char *text,
+    uint16_t port,
+    uint32_t scope_id,
+    crnet_address *out_address);
+
+/**
+ * @brief Writes an address's numeric text, without its port or scope:
+ * inet_ntop on every platform, so IPv6 in RFC 5952's form (the longest run
+ * of zeroes as "::", lower case), and an IPv4-mapped IPv6 address as
+ * "::ffff:1.2.3.4". Pure, never blocks.
+ *
+ * @param[in]  address  The address. NULL is refused.
+ * @param[out] out_text Receives the text, null-terminated; room for
+ *                      CRNET_MAX_ADDRESS_STRING_LEN bytes. Untouched on
+ *                      failure.
+ *
+ * @retval CR_SUCCESS `out_text` was written.
+ * @retval CR_RESULT_NET_INVALID_ADDRESS `address` is NULL, or its family
+ *         is neither IPv4 nor IPv6, or its `reserved`, or an IPv4
+ *         address's last 12 bytes or scope, aren't 0.
+ * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_text` is NULL.
+ */
+CR_RESULT crnet_address_to_string(
+    const crnet_address *address,
+    char out_text[CRNET_MAX_ADDRESS_STRING_LEN]);
+
+/** @} */
+
+/**
  * @defgroup crnet_tcp TCP sockets
  * @ingroup crnet
  * @brief Winsock2 / BSD sockets: plain TCP over IPv4 or IPv6, no TLS. Known
@@ -685,8 +794,22 @@ void crnet_instance_destroy(crnet_instance instance);
  * by one crnet_tcp_socket_connect(). A socket is good for one connection:
  * after connect fails, or the connection ends, only destroy is left.
  *
- * Addresses are numeric: "192.168.1.20", "127.0.0.1", `"::1"`. The calls
- * that take one never look a name up, because the system's lookup can be
+ * Addresses are crnet_address values (@ref crnet_addresses "Addresses"):
+ * the bytes, the port and, for an IPv6 link-local address, its interface
+ * as scope_id, that interface's ipv6_index from the interface listing
+ * (which already puts it in every link-local address it lists). Connect
+ * and a listener hold an address to one rule, the same on every platform,
+ * checked before the system is asked:
+ * - CR_RESULT_NET_INVALID_ADDRESS for an address that isn't a valid
+ *   crnet_address (an IPv4 address with a scope among them), an fe80::/10
+ *   one outside link-local's fe80::/64, a multicast one, or an IPv4-mapped
+ *   IPv6 one (an IPv6 socket takes IPv6 only, so an IPv4 peer is given as
+ *   IPv4); and at connect, all-zero bytes or port 0;
+ * - CR_RESULT_NET_INVALID_SCOPE where an IPv6 address's scope doesn't fit:
+ *   it has one exactly when it is link-local, and it is below 2^28.
+ *   Carrottus Net never chooses an interface for an address that has none,
+ *   and doesn't pass on a scope the systems would ignore.
+ * The calls never look a name up, because the system's lookup can be
  * neither given a time limit nor interrupted, and a connect that hid one
  * couldn't keep its own. Turning a host name into addresses is its own
  * object, the crnet_resolver, and which of the answers to use is the
@@ -705,20 +828,6 @@ void crnet_instance_destroy(crnet_instance instance);
  * is, crnet_tcp_listener_abort() aside.
  * @{
  */
-
-/**
- * @brief Room for any numeric address as text, with its terminator.
- *
- * The longest is an IPv6 one with an embedded IPv4 tail, 45 characters.
- */
-#define CRNET_MAX_ADDRESS_STRING_LEN 46
-
-/** @brief Which family of addresses a lookup is limited to. */
-typedef enum CRNET_ADDRESS_FAMILY {
-	CRNET_ADDRESS_FAMILY_ANY  = 0, /**< Whichever the name has. */
-	CRNET_ADDRESS_FAMILY_IPV4 = 1, /**< IPv4 addresses only. */
-	CRNET_ADDRESS_FAMILY_IPV6 = 2, /**< IPv6 addresses only. */
-} CRNET_ADDRESS_FAMILY;
 
 /**
  * @defgroup crnet_resolvers Resolver
@@ -800,8 +909,10 @@ typedef struct crnet_resolver_desc {
 	CR_STRUCT_BASE base;
 	/** The name to look up, UTF-8 and null-terminated; NULL or an empty
 	 * string is refused. A numeric address comes back as itself without a
-	 * name server being asked. Copied; it doesn't have to outlast the
-	 * create call. */
+	 * name server being asked. No '%' suffix: a scope is never text here; a
+	 * link-local answer carries the system's scope in
+	 * crnet_resolver_wait()'s scope_id. Copied; it doesn't have to outlast
+	 * the create call. */
 	const char *host;
 	/** Limits the answer to one family, or CRNET_ADDRESS_FAMILY_ANY. */
 	CRNET_ADDRESS_FAMILY family;
@@ -824,7 +935,8 @@ typedef struct crnet_resolver_desc {
  * @retval CR_RESULT_STRUCT_WRONG_TYPE `desc->base.type` is not
  *         CR_STRUCT_TYPE_NET_RESOLVER_DESC.
  * @retval CR_RESULT_STRUCT_UNKNOWN_IN_CHAIN `desc->base.next` is not NULL.
- * @retval CR_RESULT_DESC_INVALID_PARAMETERS `desc->host` is NULL or empty.
+ * @retval CR_RESULT_DESC_INVALID_PARAMETERS `desc->host` is NULL, empty,
+ *         or holds a '%'.
  * @retval CR_RESULT_OUT_OF_MEMORY The resolver could not be allocated.
  * @retval CR_RESULT_NET_STARTUP_FAILED The platform wouldn't give the
  *         resolver its own start of the networking (Winsock; see "The
@@ -876,10 +988,13 @@ CR_RESULT crnet_resolver_run(crnet_resolver resolver);
 /**
  * @brief Waits for the lookup to finish and copies its addresses out.
  *
- * The addresses are numeric text, in the order the resolver gave them
- * (which is its preference). Once the lookup has finished, every wait
- * returns the same answer at once. A wait on a resolver nobody runs just
- * uses up its time limit.
+ * Each in the order the resolver gave them (its preference), port 0 (the
+ * caller's to set: a lookup has no port), and for an IPv6 link-local
+ * answer the interface the system gave as scope_id (0 where it gave
+ * none, which a connect refuses). Duplicates are dropped by the whole
+ * value, so one address on two interfaces is two entries. Once the lookup
+ * has finished, every wait returns the same answer at once. A wait on a
+ * resolver nobody runs just uses up its time limit.
  *
  * Thread: may overlap crnet_resolver_run() and crnet_resolver_abort().
  *
@@ -887,8 +1002,8 @@ CR_RESULT crnet_resolver_run(crnet_resolver resolver);
  * @param[in]  timeout_ms    The longest to wait
  *                           (@ref crnet_time "Time limits");
  *                           CRNET_NO_WAIT only looks.
- * @param[out] out_addresses Receives up to `out_capacity` addresses, each a
- *                           null-terminated string.
+ * @param[out] out_addresses Receives up to `out_capacity` addresses; any
+ *                           past it are dropped without a result.
  * @param[in]  out_capacity  How many addresses `out_addresses` has room for.
  * @param[out] out_count     Receives how many addresses were written; 0 on
  *                           any failure.
@@ -911,7 +1026,7 @@ CR_RESULT crnet_resolver_run(crnet_resolver resolver);
 CR_RESULT crnet_resolver_wait(
     crnet_resolver resolver,
     uint32_t timeout_ms,
-    char out_addresses[][CRNET_MAX_ADDRESS_STRING_LEN],
+    crnet_address *out_addresses,
     uint32_t out_capacity,
     uint32_t *out_count);
 
@@ -979,15 +1094,16 @@ typedef struct crnet_tcp_listener_desc {
 	 * chained onto this struct yet). Set by the caller. See
 	 * CR_STRUCT_BASE. */
 	CR_STRUCT_BASE base;
-	/** The local address to listen on, numeric and null-terminated:
-	 * "0.0.0.0" for every IPv4 interface, `"::"` for every IPv6 one,
-	 * "127.0.0.1" for this machine only, or one interface's own address. An
-	 * IPv6 listener takes IPv6 connections only, on every platform;
-	 * listening on both families is two listeners. NULL is refused. */
-	const char *address;
-	/** The port. 0 has the system pick a free one;
+	/** The local address and port to listen on. Its family is the
+	 * listener's, and an IPv6 listener takes IPv6 connections only, on every
+	 * platform; listening on both families is two listeners. All-zero bytes
+	 * is every interface of the family (0.0.0.0 or ::), 127.0.0.1 or ::1 this
+	 * machine only, or one interface's own address; an IPv6 link-local one
+	 * (fe80::/64) with its interface's ipv6_index as scope_id, and every
+	 * other address with scope_id 0; not multicast, not IPv4-mapped IPv6.
+	 * Port 0 has the system pick a free one;
 	 * crnet_tcp_listener_get_port() says which. */
-	uint16_t port;
+	crnet_address local;
 	/** How many connections may wait to be accepted before the system
 	 * starts turning new ones away. The system may cap it. 0 is refused. */
 	uint32_t backlog;
@@ -1031,29 +1147,43 @@ typedef struct crnet_tcp_listener_desc {
  * for each of those addresses and none for every address, which works
  * everywhere.
  *
+ * The address is held to the rule under "TCP sockets" before anything is
+ * opened.
+ *
  * @param[in]  instance     The instance the listener is made with.
  * @param[in]  desc         The address, port and backlog. Only read during
  *                          the call.
- * @param[out] out_listener Receives the new listener.
+ * @param[out] out_listener Receives the new listener. Untouched by the
+ *                          failures before its own check; NULL on every
+ *                          one after it.
  * @param[out] out_error    Receives the system's reason for a failure, which
  *                          leaves no listener to ask. May be NULL. See
  *                          @ref crnet_error_detail "Error detail".
  *
  * @retval CR_SUCCESS The listener is listening.
- * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_listener` is NULL.
+ * The failures, in the order they are checked:
  * @retval CR_RESULT_NET_INVALID_INSTANCE `instance` is NULL.
  * @retval CR_RESULT_NULL_DESC `desc` is NULL.
  * @retval CR_RESULT_STRUCT_WRONG_TYPE `desc->base.type` is not
  *         CR_STRUCT_TYPE_NET_TCP_LISTENER_DESC.
  * @retval CR_RESULT_STRUCT_UNKNOWN_IN_CHAIN `desc->base.next` is not NULL.
- * @retval CR_RESULT_DESC_INVALID_PARAMETERS `desc->address` is NULL or
- *         `desc->backlog` is 0.
- * @retval CR_RESULT_NET_INVALID_ADDRESS `desc->address` isn't a numeric
- *         address.
+ * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_listener` is NULL.
+ * @retval CR_RESULT_NET_INVALID_ADDRESS `desc->local` is not a valid
+ *         crnet_address (its family neither IPv4 nor IPv6, its `reserved`
+ *         not 0, IPv4 with a scope or with bytes past the fourth), is
+ *         fe80::/10 outside fe80::/64, is multicast, or is IPv4-mapped IPv6.
+ * @retval CR_RESULT_NET_INVALID_SCOPE `desc->local` is IPv6 link-local with
+ *         scope_id 0, is any other IPv6 address (all-zero bytes included)
+ *         with scope_id not 0, or has a scope_id of 2^28 or more.
+ * @retval CR_RESULT_DESC_INVALID_PARAMETERS `desc->backlog` is 0.
  * @retval CR_RESULT_OUT_OF_MEMORY The listener could not be allocated.
  * @retval CR_RESULT_NET_ADDRESS_IN_USE The address and port are taken.
  * @retval CR_RESULT_NET_LISTEN_FAILED The system refused to open, bind
- *         or listen on the socket for any other reason.
+ *         or listen on the socket for any other reason: among them a socket
+ *         of that family it couldn't open (no IPv6, no descriptor left), an
+ *         address this machine doesn't hold, a privileged port where the
+ *         system has them, and a link-local address whose scope is not an
+ *         interface it is on.
  * @retval CR_RESULT_GENERAL_FAILURE The system refused something else the
  *         listener is made of.
  */
@@ -1161,8 +1291,13 @@ typedef struct crnet_tcp_socket_connect_desc {
 	 * chained onto this struct yet). Set by the caller. See
 	 * CR_STRUCT_BASE. */
 	CR_STRUCT_BASE base;
-	const char *address; /**< Numeric and null-terminated; see crnet_resolver for names. NULL is refused. */
-	uint16_t port;       /**< The port the other end is listening on. */
+	/** The address and port the other end is listening on; its family is
+	 * the connection's. Not all-zero bytes, not multicast, not IPv4-mapped
+	 * IPv6, port not 0. An IPv6 link-local one (fe80::/64) with the
+	 * interface to reach it through as scope_id (that interface's
+	 * ipv6_index), and every other address with scope_id 0. A name is the
+	 * crnet_resolver's. */
+	crnet_address to;
 	/** The longest connecting may take. See
 	 * @ref crnet_time "Time limits". */
 	uint32_t timeout_ms;
@@ -1205,26 +1340,41 @@ CR_RESULT crnet_tcp_socket_create(
  * What is kept for the step: the socket's descriptor, already the
  * socket's, and a flag saying its connect is under way. Nothing else.
  *
+ * The destination is held to the rule under "TCP sockets" and checked
+ * before anything is begun, so a refused desc leaves the socket as it was
+ * and connect may be called again on it. A link-local destination whose
+ * scope is an interface it isn't reachable through, or no interface, is
+ * the system's to answer, as an unreachable address is: it may fail at
+ * once (CR_RESULT_NET_CONNECT_FAILED) or not answer until the limit
+ * (CR_RESULT_NET_TIMED_OUT, then CR_RESULT_NET_SYSTEM_TIMED_OUT). Trying
+ * one address on several interfaces is a socket for each.
+ *
  * @param[in] socket The socket to connect.
  * @param[in] desc   The address, port and time limit. Only read during the
  *                   call.
  *
  * @retval CR_SUCCESS The socket is connected.
- * @retval CR_RESULT_NET_INVALID_TCP_SOCKET `socket` is NULL, or connect
- *         has already been called on it.
+ * The failures, in the order they are checked:
+ * @retval CR_RESULT_NET_INVALID_TCP_SOCKET `socket` is NULL; and, checked
+ *         after the abort below, connect has already been called on it.
  * @retval CR_RESULT_NULL_DESC `desc` is NULL.
  * @retval CR_RESULT_STRUCT_WRONG_TYPE `desc->base.type` is not
  *         CR_STRUCT_TYPE_NET_TCP_SOCKET_CONNECT_DESC.
  * @retval CR_RESULT_STRUCT_UNKNOWN_IN_CHAIN `desc->base.next` is not NULL.
- * @retval CR_RESULT_DESC_INVALID_PARAMETERS `desc->address` is NULL.
- * @retval CR_RESULT_NET_INVALID_ADDRESS `desc->address` isn't a numeric
- *         address.
+ * @retval CR_RESULT_NET_INVALID_ADDRESS `desc->to` is not a valid
+ *         crnet_address, is fe80::/10 outside fe80::/64, is multicast, is
+ *         IPv4-mapped IPv6, has all-zero bytes, or has port 0.
+ * @retval CR_RESULT_NET_INVALID_SCOPE `desc->to` is IPv6 link-local with
+ *         scope_id 0, is any other IPv6 address with scope_id not 0, or has
+ *         a scope_id of 2^28 or more.
  * @retval CR_RESULT_NET_ABORTED crnet_tcp_socket_abort() was called.
  * @retval CR_RESULT_NET_TIMED_OUT The connection isn't made yet; the
  *         attempt goes on. Carry it on with
  *         crnet_tcp_socket_connect_continue().
  * @retval CR_RESULT_NET_CONNECT_FAILED The other end refuses or can't
- *         be reached.
+ *         be reached, or the system couldn't open a socket of the address's
+ *         family (no IPv6, no descriptor left), the system's error in the
+ *         record. The socket is spent either way.
  * @retval CR_RESULT_NET_SYSTEM_TIMED_OUT Nothing answered and the
  *         operating system stopped trying before `desc->timeout_ms` was up
  *         (@ref crnet_time "Time limits").
@@ -1381,24 +1531,30 @@ CR_RESULT crnet_tcp_socket_set_no_delay(
 /**
  * @brief Reads the address and port of the other end.
  *
- * @param[in]  socket      The connected socket.
- * @param[out] out_address Receives the peer's address as numeric,
- *                         null-terminated text.
- * @param[out] out_port    Receives the peer's port.
+ * getpeername(), read as UDP reads a datagram's source: for an IPv6
+ * link-local peer its interface as scope_id (its ipv6_index), as the
+ * system gave it, never 0; 0 for every other. Of the socket's own family,
+ * never IPv4-mapped (an IPv6 listener takes IPv6 only, and connect refuses
+ * a mapped destination). What it fills passes connect's rule, so it may
+ * be given to crnet_tcp_socket_connect_desc::to and to
+ * crnet_udp_socket_send_to() as it is.
  *
- * @retval CR_SUCCESS Both were written.
- * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_address` or `out_port` is
- *         NULL.
- * @retval CR_RESULT_NET_INVALID_TCP_SOCKET `socket` is NULL or isn't
- *         connected.
+ * @param[in]  socket      The connected socket.
+ * @param[out] out_address Receives the peer's address and port. Zeroed on
+ *                         every failure after its own check.
+ *
+ * @retval CR_SUCCESS `out_address` was written.
+ * The failures, in the order they are checked:
+ * @retval CR_RESULT_NET_INVALID_TCP_SOCKET `socket` is NULL; and, checked
+ *         after the abort below, `socket` isn't connected.
+ * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_address` is NULL.
  * @retval CR_RESULT_NET_ABORTED crnet_tcp_socket_abort() was called.
  * @retval CR_RESULT_GENERAL_FAILURE The system couldn't say who the peer
- *         is.
+ *         is: among them a link-local peer it gave with no interface.
  */
 CR_RESULT crnet_tcp_socket_get_peer_address(
     crnet_tcp_socket socket,
-    char out_address[CRNET_MAX_ADDRESS_STRING_LEN],
-    uint16_t *out_port);
+    crnet_address *out_address);
 
 /**
  * @brief Ends a wait on the socket, and every call after it.
@@ -1438,100 +1594,6 @@ void crnet_tcp_socket_get_error(
  *                   with it.
  */
 void crnet_tcp_socket_destroy(crnet_tcp_socket socket);
-
-/** @} */
-
-/**
- * @defgroup crnet_addresses Addresses
- * @ingroup crnet_tcp
- * @brief An IP address and a port as a value: what the interface listing,
- * UDP sockets and service discovery hand over and take.
- *
- * Why a value and not text: a datagram's source is read on every receive
- * and compared with the peers the caller knows, and an IPv6 link-local
- * address is only usable with its interface (its scope), which text
- * carries as a suffix ("fe80::1%en0") the platforms parse differently.
- * TCP keeps its numeric strings for now.
- *
- * Two crnet_address values Carrottus Net made for one address and port
- * are equal byte for byte: unused bytes and `reserved` are always 0. So a
- * caller may compare them with memcmp and hash their bytes.
- * @{
- */
-
-/**
- * @brief One IPv4 or IPv6 address and a port.
- */
-/* Frozen: a value type, passed in and filled in alike. It never changes; a new need gets a new type. */
-typedef struct crnet_address {
-	/** CRNET_ADDRESS_FAMILY_IPV4 or CRNET_ADDRESS_FAMILY_IPV6. ANY is never
-	 * an address's family and is refused wherever one is taken. */
-	CRNET_ADDRESS_FAMILY family;
-	/** IPv6: the interface index a link-local (fe80::/10) or other scoped
-	 * address is used through, as sin6_scope_id has it; 0 for a global
-	 * address. IPv4: always 0. */
-	uint32_t scope_id;
-	/** The address in network byte order, as on the wire: IPv4 in the first
-	 * 4 bytes and the other 12 zero, IPv6 in all 16. */
-	uint8_t bytes[16];
-	/** The port in the machine's own byte order; 0 where no port belongs
-	 * (an interface's address) or where 0 asks the system for one (a UDP
-	 * socket's local address). */
-	uint16_t port;
-	/** Always 0, so that equal addresses are equal byte for byte. Refused
-	 * when not. */
-	uint16_t reserved;
-} crnet_address;
-
-/**
- * @brief Makes an address from numeric text. Pure: no system state, no
- * instance, never blocks; inet_pton on every platform.
- *
- * Only a numeric address is taken, never a name ("localhost" is refused:
- * a name is the resolver's). No '%' suffix is taken either: the scope is
- * its own argument, an interface index as crnet_interface_properties has
- * it, so it means the same on every platform.
- *
- * @param[in]  text        "192.168.1.20", "::1", "fe80::1c2b:..."; UTF-8
- *                         and null-terminated. NULL is refused.
- * @param[in]  port        The port, in the machine's byte order.
- * @param[in]  scope_id    0, or for IPv6 the interface index; non-zero with
- *                         an IPv4 address is refused.
- * @param[out] out_address Receives the address. Left as it was on a
- *                         failure.
- *
- * @retval CR_SUCCESS `out_address` was written.
- * @retval CR_RESULT_NET_INVALID_ADDRESS `text` is NULL, not a numeric IPv4
- *         or IPv6 address, holds a '%', or is IPv4 with a non-zero
- *         `scope_id`.
- * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_address` is NULL.
- */
-CR_RESULT crnet_address_from_string(
-    const char *text,
-    uint16_t port,
-    uint32_t scope_id,
-    crnet_address *out_address);
-
-/**
- * @brief Writes an address's numeric text, without its port or scope:
- * inet_ntop on every platform, so IPv6 in RFC 5952's form (the longest run
- * of zeroes as "::", lower case), and an IPv4-mapped IPv6 address as
- * "::ffff:1.2.3.4". Pure, never blocks.
- *
- * @param[in]  address  The address. NULL is refused.
- * @param[out] out_text Receives the text, null-terminated; room for
- *                      CRNET_MAX_ADDRESS_STRING_LEN bytes. Untouched on
- *                      failure.
- *
- * @retval CR_SUCCESS `out_text` was written.
- * @retval CR_RESULT_NET_INVALID_ADDRESS `address` is NULL, or its family
- *         is neither IPv4 nor IPv6, or its `reserved`, or an IPv4
- *         address's last 12 bytes or scope, aren't 0.
- * @retval CR_RESULT_NULL_OUTPUT_PARAMETER `out_text` is NULL.
- */
-CR_RESULT crnet_address_to_string(
-    const crnet_address *address,
-    char out_text[CRNET_MAX_ADDRESS_STRING_LEN]);
 
 /** @} */
 
@@ -2853,8 +2915,8 @@ void crnet_service_resolver_destroy(crnet_service_resolver resolver);
  *
  * @par Host names
  * A URL here names its host, and the stack looks that name up itself -
- * unlike a TCP socket, which is given a numeric address and has the
- * crnet_resolver to get one. The two differ because what kept the lookup
+ * unlike a TCP socket, which is given its address as a crnet_address
+ * value and has the crnet_resolver to get one. The two differ because what kept the lookup
  * out of crnet_tcp_socket_connect() doesn't hold here: the stack's lookup
  * is part of the call that needed it, comes out of that call's time limit
  * and ends with its abort. And the stack can't do without the name, which

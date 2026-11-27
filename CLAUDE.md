@@ -60,7 +60,10 @@ top of `crnet.h` - `crnet_<object>_<verb>` names, `_create`/`_destroy`, desc
 structs with no defaults, one meaning for `timeout_ms` (`CRNET_NO_WAIT` stands in
 for a non-blocking mode), `_abort` from any thread, and `CR_RESULT_CRNET_*`
 results - so a new call follows it rather than the platform API it wraps. TCP
-addresses are numeric; name lookup is its own object (`crnet_resolver`) because
+addresses are crnet_address values, a link-local one with its interface
+(since 0.6.0, card N26, built on the Mac 2026-11-26; Windows and Fedora
+next); name lookup is its own object (`crnet_resolver`, handing over
+crnet_address values too) because
 the system's lookup can't be time-limited or interrupted: `crnet_resolver_run`
 blocks in it on a thread the caller supplies, `crnet_resolver_wait` waits for
 the answer on another. Carrottus Net itself starts no thread, anywhere. The HTTP and WebSocket clients follow the same

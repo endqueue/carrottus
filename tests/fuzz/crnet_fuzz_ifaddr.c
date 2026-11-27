@@ -4,8 +4,9 @@
  *
  * - crnet_address_from_sockaddr, over a sockaddr_in or sockaddr_in6 built
  *   from the input at any length, its scope taken from sin6_scope_id, a
- *   KAME stack's bytes 2 and 3, or the interface's index, against a plain
- *   reading of those rules; the result a valid crnet_address;
+ *   KAME stack's bytes 2 and 3, or the interface's index (on Windows the
+ *   scope's 28-bit Zone alone, before those), against a plain reading of
+ *   those rules; the result a valid crnet_address;
  * - crnet_netmask_prefix_length over a netmask from the input, contiguous
  *   or not, against a count of its bits by another means.
  *
@@ -82,9 +83,16 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 			CRFUZZ_CHECK(address.family == CRNET_ADDRESS_FAMILY_IPV6 && address.port == ntohs(in6.sin6_port));
 			if (link_local) {
 				const uint32_t in_bytes = ((uint32_t)bytes[2] << 8) | bytes[3];
-				const uint32_t want     = in6.sin6_scope_id ? in6.sin6_scope_id : in_bytes ? in_bytes : index;
+#if defined(_WIN32)
+				// Winsock's sin6_scope_id is a SCOPE_ID: the reader keeps its
+				// 28-bit Zone alone, before the fallbacks (card N26).
+				const uint32_t given = in6.sin6_scope_id & 0x0FFFFFFFu;
+#else
+				const uint32_t given = in6.sin6_scope_id;
+#endif
+				const uint32_t want = given ? given : in_bytes ? in_bytes : index;
 				CRFUZZ_CHECK(address.scope_id == want);
-				CRFUZZ_CHECK(embedded == (in6.sin6_scope_id == 0 && in_bytes != 0));
+				CRFUZZ_CHECK(embedded == (given == 0 && in_bytes != 0));
 				CRFUZZ_CHECK(address.bytes[2] == 0 && address.bytes[3] == 0);
 				bytes[2] = bytes[3] = 0;
 			} else {

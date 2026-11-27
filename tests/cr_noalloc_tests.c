@@ -1442,7 +1442,9 @@ static bool net_round(const idle_connection *c) {
 	uint64_t received = 0;
 	crnet_wait_event events[4];
 	uint32_t count = 0;
-	return crnet_tcp_socket_recv(c->client, buffer, sizeof(buffer), CRNET_NO_WAIT, &received) == CR_RESULT_NET_TIMED_OUT &&
+	crnet_address peer;
+	return crnet_tcp_socket_get_peer_address(c->client, &peer) == CR_SUCCESS &&
+	       crnet_tcp_socket_recv(c->client, buffer, sizeof(buffer), CRNET_NO_WAIT, &received) == CR_RESULT_NET_TIMED_OUT &&
 	       crnet_tcp_socket_recv(c->server, buffer, sizeof(buffer), CRNET_NO_WAIT, &received) == CR_RESULT_NET_TIMED_OUT &&
 	       crnet_wait_set_wait(c->set, CRNET_NO_WAIT, events, 4, &count) == CR_RESULT_NET_TIMED_OUT;
 }
@@ -1665,7 +1667,7 @@ static void test_net(void) {
 	crnet_tcp_listener_desc listen_desc;
 	memset(&listen_desc, 0, sizeof(listen_desc));
 	listen_desc.base.type         = CR_STRUCT_TYPE_NET_TCP_LISTENER_DESC;
-	listen_desc.address           = "127.0.0.1";
+	crnet_address_from_string("127.0.0.1", 0, 0, &listen_desc.local);
 	listen_desc.backlog           = 1;
 	crnet_tcp_listener listener = NULL;
 	if (crnet_tcp_listener_create(instance, &listen_desc, &listener, NULL) != CR_SUCCESS) {
@@ -1681,8 +1683,7 @@ static void test_net(void) {
 	crnet_tcp_socket_connect_desc connect_desc;
 	memset(&connect_desc, 0, sizeof(connect_desc));
 	connect_desc.base.type  = CR_STRUCT_TYPE_NET_TCP_SOCKET_CONNECT_DESC;
-	connect_desc.address    = "127.0.0.1";
-	connect_desc.port       = port;
+	crnet_address_from_string("127.0.0.1", port, 0, &connect_desc.to);
 	connect_desc.timeout_ms = 5000;
 	if (c.client)
 		CHECK(crnet_tcp_socket_connect(c.client, &connect_desc) == CR_SUCCESS);
@@ -1712,7 +1713,24 @@ static void test_net(void) {
 				best = took;
 		}
 		if (ok)
-			print_time("Carrottus Net idle round (two receives, a wait set poll)", best, TIMED_ITERATIONS);
+			print_time("Carrottus Net idle round (a peer read, two receives, a wait set poll)", best, TIMED_ITERATIONS);
+	}
+	// One connect, traced: the address is a crnet_address handed to the
+	// system as it is, so nothing is parsed and nothing allocated, the
+	// platform's included (before card N26 getaddrinfo's parse allocated 7
+	// on Apple). The socket is made before the trace.
+	{
+		crnet_tcp_socket traced = NULL, accepted = NULL;
+		CHECK(crnet_tcp_socket_create(instance, &traced) == CR_SUCCESS);
+		alloc_trace_start();
+		const CR_RESULT connected = crnet_tcp_socket_connect(traced, &connect_desc);
+		alloc_trace_stop();
+		CHECK(connected == CR_SUCCESS);
+		report("Carrottus Net's crnet_tcp_socket_connect() to a loopback listener, once");
+		CHECK(alloc_trace_apart() == 0);
+		CHECK(crnet_tcp_listener_accept(listener, 5000, &accepted) == CR_SUCCESS);
+		crnet_tcp_socket_destroy(accepted);
+		crnet_tcp_socket_destroy(traced);
 	}
 #if CRNET_EXT_WEBSOCKET
 	test_net_websocket(instance, listener, port);

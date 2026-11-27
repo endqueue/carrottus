@@ -62,6 +62,42 @@ bool crnet_address_valid(const crnet_address *address) {
 
 bool crnet_address_is_link_local(const uint8_t bytes[16]) { return bytes[0] == 0xFE && (bytes[1] & 0xC0) == 0x80; }
 
+/* fe80::/64, link-local unicast (RFC 4291, 2.5.6): fe80 and 54 zero bits. */
+static bool crnet_address_is_link_local_unicast(const uint8_t bytes[16]) {
+	if (bytes[0] != 0xFE || bytes[1] != 0x80)
+		return false;
+	for (int i = 2; i < 8; ++i) {
+		if (bytes[i] != 0)
+			return false;
+	}
+	return true;
+}
+
+/* The scope_id a Winsock SCOPE_ID's Level would change the meaning of. */
+#define CRNET_TCP_SCOPE_LIMIT 0x10000000u
+
+CR_RESULT crnet_tcp_address_check(const crnet_address *address, enum crnet_tcp_address_use use) {
+	if (!crnet_address_valid(address))
+		return CR_RESULT_NET_INVALID_ADDRESS;
+	const uint8_t *bytes = address->bytes;
+	const bool     six   = address->family == CRNET_ADDRESS_FAMILY_IPV6;
+	bool           zero  = true;
+	for (int i = 0; i < 16 && zero; ++i)
+		zero = bytes[i] == 0;
+	const bool link_local_outside = six && crnet_address_is_link_local(bytes) && !crnet_address_is_link_local_unicast(bytes);
+	const bool multicast          = six ? bytes[0] == 0xFF : (bytes[0] & 0xF0) == 0xE0;
+	bool       mapped             = six && bytes[10] == 0xFF && bytes[11] == 0xFF;
+	for (int i = 0; i < 10 && mapped; ++i)
+		mapped = bytes[i] == 0;
+	// The address's conditions, each the same result, joined; then the
+	// scope's. Two faults in one address have the address's answer.
+	if (link_local_outside || multicast || mapped || (use == CRNET_TCP_ADDRESS_REMOTE && (zero || address->port == 0)))
+		return CR_RESULT_NET_INVALID_ADDRESS;
+	if (six && (address->scope_id >= CRNET_TCP_SCOPE_LIMIT || crnet_address_is_link_local_unicast(bytes) != (address->scope_id != 0)))
+		return CR_RESULT_NET_INVALID_SCOPE;
+	return CR_SUCCESS;
+}
+
 CR_RESULT crnet_address_from_string(
     const char *text,
     uint16_t port,
@@ -169,7 +205,15 @@ bool crnet_address_from_sockaddr(const void *sockaddr, size_t length, uint32_t i
 			// way bytes 2 and 3 go back to 0, which is what they are in a
 			// link-local address on the wire (RFC 4291, 2.5.6).
 			const uint32_t embedded = ((uint32_t)address.bytes[2] << 8) | address.bytes[3];
-			uint32_t       scope    = in6.sin6_scope_id;
+#if CARROTTUS_PLATFORM_WIN32
+			// Winsock's sin6_scope_id is a SCOPE_ID: a 28-bit Zone and a
+			// 4-bit Level above it (ws2def.h). The Zone alone is the
+			// interface, as on every other platform; it is taken before the
+			// fallbacks for a scope of 0.
+			uint32_t scope = in6.sin6_scope_id & 0x0FFFFFFFu;
+#else
+			uint32_t scope = in6.sin6_scope_id;
+#endif
 			if (scope == 0 && embedded != 0) {
 				scope = embedded;
 				if (out_embedded_scope)
@@ -189,6 +233,23 @@ bool crnet_address_from_sockaddr(const void *sockaddr, size_t length, uint32_t i
 	}
 	*out_address = address;
 	return true;
+}
+
+CR_RESULT crnet_tcp_peer_from_sockaddr(const void *sockaddr, size_t length, int family, crnet_address *out_address) {
+	memset(out_address, 0, sizeof(*out_address));
+	crnet_address peer;
+	// getpeername names no interface: 0, so a link-local peer the system gave
+	// no scope comes out with none and is refused below.
+	if (!crnet_address_from_sockaddr(sockaddr, length, 0, &peer, NULL))
+		return CR_RESULT_GENERAL_FAILURE;
+	const int peer_family = peer.family == CRNET_ADDRESS_FAMILY_IPV4 ? AF_INET : AF_INET6;
+	if (peer_family != family)
+		return CR_RESULT_GENERAL_FAILURE;
+	if (peer.family == CRNET_ADDRESS_FAMILY_IPV6 && crnet_address_is_link_local(peer.bytes) &&
+	    (peer.scope_id == 0 || !crnet_address_is_link_local_unicast(peer.bytes)))
+		return CR_RESULT_GENERAL_FAILURE;
+	*out_address = peer;
+	return CR_SUCCESS;
 }
 
 uint32_t crnet_netmask_prefix_length(const void *netmask, size_t length, int family) {

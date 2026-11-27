@@ -363,6 +363,30 @@ bool crnet_address_valid(const crnet_address *address);
 /* True for fe80::/10. */
 bool crnet_address_is_link_local(const uint8_t bytes[16]);
 
+/* Which side of a TCP connection an address is for: a listener's own
+ * (LOCAL) or a connect's destination (REMOTE). */
+enum crnet_tcp_address_use {
+	CRNET_TCP_ADDRESS_LOCAL,
+	CRNET_TCP_ADDRESS_REMOTE,
+};
+
+/* TCP's address rule (crnet.h, "TCP sockets"), the same on every backend
+ * and checked before any system call: CR_SUCCESS, or the first of
+ * CR_RESULT_NET_INVALID_ADDRESS (not a valid crnet_address, fe80::/10
+ * outside fe80::/64, multicast, IPv4-mapped IPv6; and for REMOTE all-zero
+ * bytes or port 0) and CR_RESULT_NET_INVALID_SCOPE (an IPv6 address whose
+ * scope_id isn't there exactly when it is link-local, or is 2^28 or more).
+ * NULL is INVALID_ADDRESS. */
+CR_RESULT crnet_tcp_address_check(const crnet_address *address, enum crnet_tcp_address_use use);
+
+/* What a TCP peer getter fills from getpeername()'s `length` bytes, the
+ * socket being of `family` (AF_INET or AF_INET6): the reader below with
+ * interface 0, then CR_RESULT_GENERAL_FAILURE for a family it can't read,
+ * a family other than the socket's, a link-local peer with no scope, or an
+ * fe80::/10 peer outside fe80::/64, so what it fills always passes
+ * connect's rule. `*out_address` is zeroed on every failure. */
+CR_RESULT crnet_tcp_peer_from_sockaddr(const void *sockaddr, size_t length, int family, crnet_address *out_address);
+
 /* Writes `address` as a sockaddr_in or sockaddr_in6 into `out_storage`
  * (`capacity` bytes, a sockaddr_storage's worth) and returns its length; 0
  * when it doesn't fit. `address` is valid. */
@@ -370,7 +394,8 @@ uint32_t crnet_sockaddr_from_address(const crnet_address *address, void *out_sto
 
 /* Reads a sockaddr_in or sockaddr_in6 of `length` bytes (unaligned taken)
  * into `out_address`, false for any other family or a short length. An IPv6
- * link-local address's scope is its sin6_scope_id, or where that is 0 the
+ * link-local address's scope is its sin6_scope_id (on Windows its SCOPE_ID's
+ * 28-bit Zone alone, the Level above it dropped), or where that is 0 the
  * interface index a KAME stack embeds in bytes 2 and 3 (and
  * `*out_embedded_scope` is then true), or where both are 0
  * `interface_index`; bytes 2 and 3 come back 0. Every other address has

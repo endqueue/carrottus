@@ -1717,7 +1717,7 @@ static crnet_tcp_listener make_dead_crnet_tcp_listener(void) {
 	crnet_tcp_listener_desc desc;
 	memset(&desc, 0, sizeof(desc));
 	desc.base.type                = CR_STRUCT_TYPE_NET_TCP_LISTENER_DESC;
-	desc.address                  = "127.0.0.1";
+	crnet_address_from_string("127.0.0.1", 0, 0, &desc.local);
 	desc.backlog                  = 1;
 	crnet_tcp_listener listener = NULL;
 	if (crnet_tcp_listener_create(instance, &desc, &listener, NULL) == CR_SUCCESS)
@@ -2033,7 +2033,7 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crfiles_file dead = dead_crfiles_file();
 		if (dead) {
-			expect_refused("crfiles_file_lock", crfiles_file_lock(dead, (CRFILES_LOCK){0}, (bool){0}));
+			expect_refused("crfiles_file_lock", crfiles_file_lock(dead, (CRFILES_LOCK){0}, (_Bool){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -2281,7 +2281,7 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crgpu_adapter dead = dead_crgpu_adapter();
 		if (dead) {
-			expect_refused("crgpu_adapter_supports_surface", crgpu_adapter_supports_surface(dead, (crgpu_surface){0}, (bool *){0}));
+			expect_refused("crgpu_adapter_supports_surface", crgpu_adapter_supports_surface(dead, (crgpu_surface){0}, (_Bool *){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -2643,7 +2643,7 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crgpu_command_list dead = dead_crgpu_command_list();
 		if (dead) {
-			crgpu_command_list_clear_depth_attachment(dead, (crgpu_image_view){0}, (bool){0}, (bool){0}, (float){0}, (uint32_t){0}, (uint32_t){0}, (uint32_t){0});
+			crgpu_command_list_clear_depth_attachment(dead, (crgpu_image_view){0}, (_Bool){0}, (_Bool){0}, (float){0}, (uint32_t){0}, (uint32_t){0}, (uint32_t){0});
 			unchecked++;
 			calls++;
 		} else {
@@ -3232,7 +3232,7 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crgpu_device dead = dead_crgpu_device();
 		if (dead) {
-			expect_refused("crgpu_fence_wait", crgpu_fence_wait(dead, (crgpu_fence *){0}, (const uint64_t *){0}, (uint32_t){0}, (bool){0}, (uint64_t){0}));
+			expect_refused("crgpu_fence_wait", crgpu_fence_wait(dead, (crgpu_fence *){0}, (const uint64_t *){0}, (uint32_t){0}, (_Bool){0}, (uint64_t){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -3685,7 +3685,7 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crinput_instance dead = dead_crinput_instance();
 		if (dead) {
-			expect_refused("crinput_gamepad_set_motion_enabled", crinput_gamepad_set_motion_enabled(dead, (crinput_gamepad_id){0}, (bool){0}));
+			expect_refused("crinput_gamepad_set_motion_enabled", crinput_gamepad_set_motion_enabled(dead, (crinput_gamepad_id){0}, (_Bool){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -3965,7 +3965,7 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crnet_resolver dead = dead_crnet_resolver();
 		if (dead) {
-			expect_refused("crnet_resolver_wait", crnet_resolver_wait(dead, (uint32_t){0}, (char (*)[46]){0}, (uint32_t){0}, (uint32_t *){0}));
+			expect_refused("crnet_resolver_wait", crnet_resolver_wait(dead, (uint32_t){0}, (crnet_address *){0}, (uint32_t){0}, (uint32_t *){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -4241,7 +4241,7 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crnet_tcp_socket dead = dead_crnet_tcp_socket();
 		if (dead) {
-			expect_refused("crnet_tcp_socket_get_peer_address", crnet_tcp_socket_get_peer_address(dead, (char *){0}, (uint16_t *){0}));
+			expect_refused("crnet_tcp_socket_get_peer_address", crnet_tcp_socket_get_peer_address(dead, (crnet_address *){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -4268,7 +4268,7 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crnet_tcp_socket dead = dead_crnet_tcp_socket();
 		if (dead) {
-			expect_refused("crnet_tcp_socket_set_no_delay", crnet_tcp_socket_set_no_delay(dead, (bool){0}));
+			expect_refused("crnet_tcp_socket_set_no_delay", crnet_tcp_socket_set_no_delay(dead, (_Bool){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -4646,7 +4646,7 @@ static int freed_half(int *out_calls, int *out_unchecked, int *out_skipped)
 	{
 		crnet_websocket dead = dead_crnet_websocket();
 		if (dead) {
-			expect_refused("crnet_websocket_recv", crnet_websocket_recv(dead, (void *){0}, (uint64_t){0}, (uint32_t){0}, (uint64_t *){0}, (CRNET_WEBSOCKET_MESSAGE *){0}, (bool *){0}));
+			expect_refused("crnet_websocket_recv", crnet_websocket_recv(dead, (void *){0}, (uint64_t){0}, (uint32_t){0}, (uint64_t *){0}, (CRNET_WEBSOCKET_MESSAGE *){0}, (_Bool *){0}));
 			calls++;
 		} else {
 			skipped++;
@@ -4727,7 +4727,7 @@ int main(void)
 	calls++;
 	expect_error("crfiles_file_get_size", crfiles_file_get_size((crfiles_file){0}, (uint64_t *){0}));
 	calls++;
-	expect_error("crfiles_file_lock", crfiles_file_lock((crfiles_file){0}, (CRFILES_LOCK){0}, (bool){0}));
+	expect_error("crfiles_file_lock", crfiles_file_lock((crfiles_file){0}, (CRFILES_LOCK){0}, (_Bool){0}));
 	calls++;
 	expect_error("crfiles_file_map", crfiles_file_map((crfiles_file){0}, (uint64_t){0}, (uint64_t){0}, (crfiles_mapping *){0}));
 	calls++;
@@ -4788,7 +4788,7 @@ int main(void)
 	calls++;
 	expect_error("crgpu_adapter_get_properties", crgpu_adapter_get_properties((crgpu_adapter){0}, (CRGPU_ADAPTER_PROPERTIES *){0}));
 	calls++;
-	expect_error("crgpu_adapter_supports_surface", crgpu_adapter_supports_surface((crgpu_adapter){0}, (crgpu_surface){0}, (bool *){0}));
+	expect_error("crgpu_adapter_supports_surface", crgpu_adapter_supports_surface((crgpu_adapter){0}, (crgpu_surface){0}, (_Bool *){0}));
 	calls++;
 #if defined(__linux__) || defined(_WIN32)
 	expect_error("crgpu_bindless_register_sampled_image", crgpu_bindless_register_sampled_image((crgpu_device){0}, (crgpu_image_view){0}, (uint32_t *){0}));
@@ -4898,7 +4898,7 @@ int main(void)
 	crgpu_command_list_clear_color_attachment((crgpu_command_list){0}, (crgpu_image_view){0}, (float){0}, (float){0}, (float){0}, (float){0}, (uint32_t){0}, (uint32_t){0});
 	unchecked++;
 	calls++;
-	crgpu_command_list_clear_depth_attachment((crgpu_command_list){0}, (crgpu_image_view){0}, (bool){0}, (bool){0}, (float){0}, (uint32_t){0}, (uint32_t){0}, (uint32_t){0});
+	crgpu_command_list_clear_depth_attachment((crgpu_command_list){0}, (crgpu_image_view){0}, (_Bool){0}, (_Bool){0}, (float){0}, (uint32_t){0}, (uint32_t){0}, (uint32_t){0});
 	unchecked++;
 	calls++;
 	expect_error("crgpu_command_list_copy_acceleration_structure", crgpu_command_list_copy_acceleration_structure((crgpu_command_list){0}, (crgpu_acceleration_structure){0}, (crgpu_acceleration_structure){0}, (CRGPU_ACCELERATION_STRUCTURE_COPY_MODE){0}));
@@ -5060,7 +5060,7 @@ int main(void)
 	calls++;
 	expect_error("crgpu_fence_signal", crgpu_fence_signal((crgpu_device){0}, (crgpu_fence){0}, (uint64_t){0}));
 	calls++;
-	expect_error("crgpu_fence_wait", crgpu_fence_wait((crgpu_device){0}, (crgpu_fence *){0}, (const uint64_t *){0}, (uint32_t){0}, (bool){0}, (uint64_t){0}));
+	expect_error("crgpu_fence_wait", crgpu_fence_wait((crgpu_device){0}, (crgpu_fence *){0}, (const uint64_t *){0}, (uint32_t){0}, (_Bool){0}, (uint64_t){0}));
 	calls++;
 	(void)crgpu_format_from_string((const char *){0});
 	calls++;
@@ -5178,7 +5178,7 @@ int main(void)
 	calls++;
 	expect_error("crinput_gamepad_set_light_color", crinput_gamepad_set_light_color((crinput_instance){0}, (crinput_gamepad_id){0}, (float){0}, (float){0}, (float){0}));
 	calls++;
-	expect_error("crinput_gamepad_set_motion_enabled", crinput_gamepad_set_motion_enabled((crinput_instance){0}, (crinput_gamepad_id){0}, (bool){0}));
+	expect_error("crinput_gamepad_set_motion_enabled", crinput_gamepad_set_motion_enabled((crinput_instance){0}, (crinput_gamepad_id){0}, (_Bool){0}));
 	calls++;
 	expect_error("crinput_gamepad_set_player_indicator", crinput_gamepad_set_player_indicator((crinput_instance){0}, (crinput_gamepad_id){0}, (uint32_t){0}));
 	calls++;
@@ -5270,7 +5270,7 @@ int main(void)
 	calls++;
 	expect_error("crnet_resolver_run", crnet_resolver_run((crnet_resolver){0}));
 	calls++;
-	expect_error("crnet_resolver_wait", crnet_resolver_wait((crnet_resolver){0}, (uint32_t){0}, (char (*)[46]){0}, (uint32_t){0}, (uint32_t *){0}));
+	expect_error("crnet_resolver_wait", crnet_resolver_wait((crnet_resolver){0}, (uint32_t){0}, (crnet_address *){0}, (uint32_t){0}, (uint32_t *){0}));
 	calls++;
 	crnet_service_advert_abort((crnet_service_advert){0});
 	unchecked++;
@@ -5343,13 +5343,13 @@ int main(void)
 	crnet_tcp_socket_get_error((crnet_tcp_socket){0}, (CRNET_ERROR_SIDE){0}, (crnet_error *){0});
 	unchecked++;
 	calls++;
-	expect_error("crnet_tcp_socket_get_peer_address", crnet_tcp_socket_get_peer_address((crnet_tcp_socket){0}, (char *){0}, (uint16_t *){0}));
+	expect_error("crnet_tcp_socket_get_peer_address", crnet_tcp_socket_get_peer_address((crnet_tcp_socket){0}, (crnet_address *){0}));
 	calls++;
 	expect_error("crnet_tcp_socket_recv", crnet_tcp_socket_recv((crnet_tcp_socket){0}, (void *){0}, (uint64_t){0}, (uint32_t){0}, (uint64_t *){0}));
 	calls++;
 	expect_error("crnet_tcp_socket_send", crnet_tcp_socket_send((crnet_tcp_socket){0}, (const void *){0}, (uint64_t){0}, (uint32_t){0}, (uint64_t *){0}));
 	calls++;
-	expect_error("crnet_tcp_socket_set_no_delay", crnet_tcp_socket_set_no_delay((crnet_tcp_socket){0}, (bool){0}));
+	expect_error("crnet_tcp_socket_set_no_delay", crnet_tcp_socket_set_no_delay((crnet_tcp_socket){0}, (_Bool){0}));
 	calls++;
 	crnet_udp_socket_abort((crnet_udp_socket){0});
 	unchecked++;
@@ -5447,7 +5447,7 @@ int main(void)
 	crnet_websocket_get_error((crnet_websocket){0}, (CRNET_ERROR_SIDE){0}, (crnet_error *){0});
 	unchecked++;
 	calls++;
-	expect_error("crnet_websocket_recv", crnet_websocket_recv((crnet_websocket){0}, (void *){0}, (uint64_t){0}, (uint32_t){0}, (uint64_t *){0}, (CRNET_WEBSOCKET_MESSAGE *){0}, (bool *){0}));
+	expect_error("crnet_websocket_recv", crnet_websocket_recv((crnet_websocket){0}, (void *){0}, (uint64_t){0}, (uint32_t){0}, (uint64_t *){0}, (CRNET_WEBSOCKET_MESSAGE *){0}, (_Bool *){0}));
 	calls++;
 	expect_error("crnet_websocket_send", crnet_websocket_send((crnet_websocket){0}, (CRNET_WEBSOCKET_MESSAGE){0}, (const void *){0}, (uint64_t){0}, (uint32_t){0}));
 	calls++;

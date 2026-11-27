@@ -32,6 +32,7 @@
  */
 
 #include <arpa/inet.h>
+#include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -168,30 +169,15 @@ static CR_RESULT crnet_posix_connection_failed(crnet_error *record, CR_RESULT ot
 	return crnet_posix_failed(record, error == ETIMEDOUT ? CR_RESULT_NET_SYSTEM_TIMED_OUT : otherwise, error);
 }
 
-/* A numeric address and a port as the sockaddr bind() and connect() take.
- * AI_NUMERICHOST keeps getaddrinfo to parsing: it never asks a name server,
- * so it never waits. False for anything that isn't a numeric address. */
-static bool crnet_posix_parse_address(const char *address, uint16_t port, struct sockaddr_storage *out_storage, socklen_t *out_length) {
-	char port_text[8];
-	snprintf(port_text, sizeof(port_text), "%u", (unsigned)port);
-
-	struct addrinfo hints;
-	memset(&hints, 0, sizeof(hints));
-	hints.ai_family   = AF_UNSPEC;
-	hints.ai_socktype = SOCK_STREAM;
-	hints.ai_flags    = AI_NUMERICHOST | AI_NUMERICSERV;
-
-	struct addrinfo *parsed = NULL;
-	if (getaddrinfo(address, port_text, &hints, &parsed) != 0 || !parsed)
-		return false;
-	bool usable = (parsed->ai_family == AF_INET || parsed->ai_family == AF_INET6) && parsed->ai_addrlen <= sizeof(*out_storage);
-	if (usable) {
-		memset(out_storage, 0, sizeof(*out_storage));
-		memcpy(out_storage, parsed->ai_addr, parsed->ai_addrlen);
-		*out_length = (socklen_t)parsed->ai_addrlen;
-	}
-	freeaddrinfo(parsed);
-	return usable;
+/* A crnet_address the shared check has passed, as the sockaddr bind() and
+ * connect() take: the translation UDP uses (crnetinterfaces.c), so nothing
+ * is parsed and nothing allocated. A sockaddr_storage is always room
+ * enough, so its 0 for "too small" can't come. */
+static socklen_t crnet_posix_sockaddr(const crnet_address *address, struct sockaddr_storage *out_storage) {
+	memset(out_storage, 0, sizeof(*out_storage));
+	const uint32_t length = crnet_sockaddr_from_address(address, out_storage, sizeof(*out_storage));
+	assert(length != 0);
+	return (socklen_t)length;
 }
 
 /* A descriptor set up the way every one here is. -1 on failure. */
@@ -223,6 +209,7 @@ struct crnet_tcp_listener_t {
 	cr_object_head head; // its allocator, also every socket's it accepts
 	crnet_instance           instance; // also every socket's it accepts
 	int                        fd;
+	int                        family; // AF_INET or AF_INET6, every accepted socket's too
 	struct crnet_posix_abort abort;
 	// The last accept that failed.
 	crnet_error error;
@@ -235,6 +222,7 @@ struct crnet_tcp_socket_t {
 	// the connection is up (by a wait set once `connecting` does), and
 	// closed only by destroy.
 	int                        fd;
+	int                        family; // AF_INET or AF_INET6 once connect or accept has set it
 	struct crnet_posix_abort abort;
 	atomic_bool                connect_called;
 	// Its connect returned CR_RESULT_NET_TIMED_OUT and no call has
@@ -315,9 +303,6 @@ CR_RESULT crnet_tcp_listener_create(
     crnet_tcp_listener *out_listener,
     crnet_error *out_error) {
 	crnet_error_clear(out_error);
-	if (!out_listener)
-		return CR_RESULT_NULL_OUTPUT_PARAMETER;
-	*out_listener = NULL;
 	if (!instance)
 		return CR_RESULT_NET_INVALID_INSTANCE;
 	if (CR_STALE(instance, "crnet_tcp_listener_create", "instance"))
@@ -327,13 +312,17 @@ CR_RESULT crnet_tcp_listener_create(
 	const CR_RESULT base_sr = cr_struct_check(&desc->base, CR_STRUCT_TYPE_NET_TCP_LISTENER_DESC);
 	if (base_sr != CR_SUCCESS)
 		return base_sr;
-	if (!desc->address || desc->backlog == 0)
+	if (!out_listener)
+		return CR_RESULT_NULL_OUTPUT_PARAMETER;
+	*out_listener = NULL;
+	const CR_RESULT address_sr = crnet_tcp_address_check(&desc->local, CRNET_TCP_ADDRESS_LOCAL);
+	if (address_sr != CR_SUCCESS)
+		return address_sr;
+	if (desc->backlog == 0)
 		return CR_RESULT_DESC_INVALID_PARAMETERS;
 
 	struct sockaddr_storage storage;
-	socklen_t               length = 0;
-	if (!crnet_posix_parse_address(desc->address, desc->port, &storage, &length))
-		return CR_RESULT_NET_INVALID_ADDRESS;
+	const socklen_t         length = crnet_posix_sockaddr(&desc->local, &storage);
 
 	struct crnet_tcp_listener_t *listener = CR_NEW_ZEROED(&instance->head.allocator, struct crnet_tcp_listener_t);
 	if (!listener)
@@ -342,6 +331,7 @@ CR_RESULT crnet_tcp_listener_create(
 	CR_BIRTH_IN(listener, &instance->quarantine);
 	listener->instance       = instance;
 	listener->fd             = -1;
+	listener->family         = storage.ss_family;
 	if (!crnet_posix_abort_init(&listener->abort)) {
 		int error = errno;
 		crnet_tcp_listener_destroy(listener);
@@ -442,6 +432,7 @@ CR_RESULT crnet_tcp_listener_accept(
 				crnet_tcp_socket_destroy(socket);
 				return crnet_posix_failed(&listener->error, CR_RESULT_NET_ACCEPT_FAILED, error);
 			}
+			socket->family = listener->family;
 			atomic_store(&socket->connect_called, true);
 			atomic_store(&socket->open, true);
 			*out_socket = socket;
@@ -589,14 +580,13 @@ CR_RESULT crnet_tcp_socket_connect(
 	const CR_RESULT base_sr = cr_struct_check(&desc->base, CR_STRUCT_TYPE_NET_TCP_SOCKET_CONNECT_DESC);
 	if (base_sr != CR_SUCCESS)
 		return base_sr;
-	if (!desc->address)
-		return CR_RESULT_DESC_INVALID_PARAMETERS;
+	const CR_RESULT address_sr = crnet_tcp_address_check(&desc->to, CRNET_TCP_ADDRESS_REMOTE);
+	if (address_sr != CR_SUCCESS)
+		return address_sr;
 
 	uint64_t                start = crnet_posix_now_ms();
 	struct sockaddr_storage storage;
-	socklen_t               length = 0;
-	if (!crnet_posix_parse_address(desc->address, desc->port, &storage, &length))
-		return CR_RESULT_NET_INVALID_ADDRESS;
+	const socklen_t         length = crnet_posix_sockaddr(&desc->to, &storage);
 
 	if (atomic_load(&socket->abort.aborted))
 		return CR_RESULT_NET_ABORTED;
@@ -607,6 +597,7 @@ CR_RESULT crnet_tcp_socket_connect(
 	atomic_store(&socket->connect_called, true);
 
 	crnet_error *record = &socket->errors[CRNET_ERROR_SIDE_RECEIVING];
+	socket->family        = storage.ss_family;
 	socket->fd            = crnet_posix_open_tcp(storage.ss_family);
 	if (socket->fd < 0)
 		return crnet_posix_failed(record, CR_RESULT_NET_CONNECT_FAILED, errno);
@@ -729,12 +720,14 @@ CR_RESULT crnet_tcp_socket_set_no_delay(
 
 CR_RESULT crnet_tcp_socket_get_peer_address(
     crnet_tcp_socket socket,
-    char out_address[CRNET_MAX_ADDRESS_STRING_LEN],
-    uint16_t *out_port) {
-	if (!out_address || !out_port)
+    crnet_address *out_address) {
+	if (!socket)
+		return CR_RESULT_NET_INVALID_TCP_SOCKET;
+	if (CR_STALE(socket, "crnet_tcp_socket_get_peer_address", "socket"))
+		return CR_RESULT_NET_INVALID_TCP_SOCKET;
+	if (!out_address)
 		return CR_RESULT_NULL_OUTPUT_PARAMETER;
-	out_address[0]    = '\0';
-	*out_port         = 0;
+	memset(out_address, 0, sizeof(*out_address));
 	CR_RESULT usable = crnet_posix_socket_usable(socket, "crnet_tcp_socket_get_peer_address");
 	if (CR_FAILED(usable))
 		return usable;
@@ -743,21 +736,7 @@ CR_RESULT crnet_tcp_socket_get_peer_address(
 	socklen_t               length = sizeof(storage);
 	if (getpeername(socket->fd, (struct sockaddr *)&storage, &length) != 0)
 		return crnet_posix_failed(&socket->errors[CRNET_ERROR_SIDE_RECEIVING], CR_RESULT_GENERAL_FAILURE, errno);
-
-	const void *bytes = NULL;
-	if (storage.ss_family == AF_INET6) {
-		bytes     = &((struct sockaddr_in6 *)&storage)->sin6_addr;
-		*out_port = ntohs(((struct sockaddr_in6 *)&storage)->sin6_port);
-	} else {
-		bytes     = &((struct sockaddr_in *)&storage)->sin_addr;
-		*out_port = ntohs(((struct sockaddr_in *)&storage)->sin_port);
-	}
-	if (!inet_ntop(storage.ss_family, bytes, out_address, CRNET_MAX_ADDRESS_STRING_LEN)) {
-		out_address[0] = '\0';
-		*out_port      = 0;
-		return CR_RESULT_GENERAL_FAILURE;
-	}
-	return CR_SUCCESS;
+	return crnet_tcp_peer_from_sockaddr(&storage, length, socket->family, out_address);
 }
 
 // --------------------------------------------------------------------------
@@ -803,7 +782,7 @@ struct crnet_resolver_t {
 	pthread_mutex_t lock;
 	bool            finished;
 	CR_RESULT      result;
-	char (*addresses)[CRNET_MAX_ADDRESS_STRING_LEN];
+	crnet_address *addresses;
 	uint32_t      address_count;
 	uint32_t      address_capacity; // the entries `addresses` was allocated with
 	crnet_error error;
@@ -820,7 +799,7 @@ static void crnet_posix_resolver_release(struct crnet_resolver_t *resolver) {
 	pthread_mutex_destroy(&resolver->lock);
 	// The resolver's own copy: this may run after its instance is gone.
 	const CR_ALLOCATOR allocator = resolver->head.allocator;
-	cr_free_array(&allocator, resolver->addresses, resolver->address_capacity, CRNET_MAX_ADDRESS_STRING_LEN, 1);
+	CR_DELETE_ARRAY(&allocator, crnet_address, resolver->addresses, resolver->address_capacity);
 	cr_string_free(&allocator, resolver->host);
 	cr_string_free(&allocator, resolver->head.debug_name);
 	CR_DELETE(&allocator, struct crnet_resolver_t, resolver);
@@ -842,7 +821,9 @@ CR_RESULT crnet_resolver_create(
 	const CR_RESULT base_sr = cr_struct_check(&desc->base, CR_STRUCT_TYPE_NET_RESOLVER_DESC);
 	if (base_sr != CR_SUCCESS)
 		return base_sr;
-	if (!desc->host || desc->host[0] == '\0')
+	// A '%' is refused as crnet_address_from_string() refuses one: each
+	// system reads a scope suffix its own way (crnet.h, crnet_resolver_desc).
+	if (!desc->host || desc->host[0] == '\0' || strchr(desc->host, '%'))
 		return CR_RESULT_DESC_INVALID_PARAMETERS;
 
 	struct crnet_resolver_t *resolver = CR_NEW_ZEROED(&instance->head.allocator, struct crnet_resolver_t);
@@ -927,9 +908,9 @@ CR_RESULT crnet_resolver_run(crnet_resolver resolver) {
 	CR_RESULT    result = CR_RESULT_NET_ABORTED;
 	crnet_error error;
 	crnet_error_clear(&error);
-	char (*addresses)[CRNET_MAX_ADDRESS_STRING_LEN] = NULL;
-	uint32_t address_count                            = 0;
-	uint32_t address_capacity                         = 0;
+	crnet_address *addresses        = NULL;
+	uint32_t       address_count    = 0;
+	uint32_t       address_capacity = 0;
 
 	// An abort that came first spares the lookup; one that comes during it
 	// can't stop it.
@@ -963,8 +944,7 @@ CR_RESULT crnet_resolver_run(crnet_resolver resolver) {
 			// On the caller's thread in run, through the resolver's own
 			// allocator (the instance may be gone by now).
 			if (entries > 0) {
-				addresses = (char (*)[CRNET_MAX_ADDRESS_STRING_LEN])cr_allocate_array(
-				    &resolver->head.allocator, entries, CRNET_MAX_ADDRESS_STRING_LEN, 1, true);
+				addresses = CR_NEW_ARRAY_ZEROED(&resolver->head.allocator, crnet_address, entries);
 				if (addresses)
 					address_capacity = entries;
 			}
@@ -972,25 +952,22 @@ CR_RESULT crnet_resolver_run(crnet_resolver resolver) {
 				result = CR_RESULT_OUT_OF_MEMORY;
 
 			for (struct addrinfo *entry = found; entry != NULL && addresses; entry = entry->ai_next) {
-				const void *bytes = NULL;
-				if (entry->ai_family == AF_INET)
-					bytes = &((struct sockaddr_in *)entry->ai_addr)->sin_addr;
-				else if (entry->ai_family == AF_INET6)
-					bytes = &((struct sockaddr_in6 *)entry->ai_addr)->sin6_addr;
-				else
+				// The shared reader: a link-local answer keeps the system's
+				// scope (0 where it gave none, which a connect refuses).
+				crnet_address address;
+				if (!crnet_address_from_sockaddr(entry->ai_addr, entry->ai_addrlen, 0, &address, NULL))
 					continue;
-				char text[CRNET_MAX_ADDRESS_STRING_LEN];
-				if (!inet_ntop(entry->ai_family, bytes, text, sizeof(text)))
-					continue;
+				address.port = 0; // a lookup has no port
 
-				// The resolver can list one address more than once.
+				// The resolver can list one address more than once; one
+				// address on two interfaces is two values, and kept.
 				bool duplicate = false;
 				for (uint32_t i = 0; i < address_count && !duplicate; ++i)
-					duplicate = strcmp(addresses[i], text) == 0;
+					duplicate = memcmp(&addresses[i], &address, sizeof(address)) == 0;
 				if (duplicate)
 					continue;
-				memcpy(addresses[address_count++], text, strlen(text) + 1);
-				result = CR_SUCCESS;
+				addresses[address_count++] = address;
+				result                     = CR_SUCCESS;
 			}
 		}
 		if (found)
@@ -1022,7 +999,7 @@ CR_RESULT crnet_resolver_run(crnet_resolver resolver) {
 CR_RESULT crnet_resolver_wait(
     crnet_resolver resolver,
     uint32_t timeout_ms,
-    char out_addresses[][CRNET_MAX_ADDRESS_STRING_LEN],
+    crnet_address *out_addresses,
     uint32_t out_capacity,
     uint32_t *out_count) {
 	if (!out_addresses || !out_count)
@@ -1046,7 +1023,7 @@ CR_RESULT crnet_resolver_wait(
 	if (!CR_FAILED(result)) {
 		uint32_t count = resolver->address_count < out_capacity ? resolver->address_count : out_capacity;
 		for (uint32_t i = 0; i < count; ++i)
-			memcpy(out_addresses[i], resolver->addresses[i], CRNET_MAX_ADDRESS_STRING_LEN);
+			out_addresses[i] = resolver->addresses[i];
 		*out_count = count;
 	}
 	pthread_mutex_unlock(&resolver->lock);

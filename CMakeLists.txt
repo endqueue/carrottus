@@ -928,7 +928,7 @@ if(NOT TARGET carrottus)
         # The parts that need no server, each a ctest of its own with a
         # limit, so a system that never answers (a refused permission, a
         # stopped mDNSResponder) fails the test rather than hanging it.
-        foreach(_part interfaces udp discovery)
+        foreach(_part interfaces tcp_addresses udp discovery)
             add_test(NAME crnet_test_${_part} COMMAND crnet_test - ${_part})
             set_tests_properties(crnet_test_${_part} PROPERTIES TIMEOUT 120)
         endforeach()
@@ -948,6 +948,17 @@ if(NOT TARGET carrottus)
         endif()
         add_test(NAME crnet_discovery_ring_test COMMAND crnet_discovery_ring_test)
         set_tests_properties(crnet_discovery_ring_test PROPERTIES TIMEOUT 120)
+        # Carrottus Net TCP's address rule from inside (card N26): the shared
+        # check over its table, the peer getter's reader over made
+        # sockaddrs, Windows' Zone mask. No network; on every platform.
+        add_executable(crnet_address_rule_test tests/crnet_address_rule_test.c)
+        target_include_directories(crnet_address_rule_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(crnet_address_rule_test PRIVATE carrottus eqstd)
+        if(WIN32)
+            target_link_libraries(crnet_address_rule_test PRIVATE ws2_32)
+        endif()
+        add_test(NAME crnet_address_rule_test COMMAND crnet_address_rule_test)
+        set_tests_properties(crnet_address_rule_test PROPERTIES TIMEOUT 120)
         # Discovery and UDP between two processes through the system's
         # service: the driver spawns itself as the advertiser. Apple (not
         # iOS, which can't spawn), Windows and Linux (not Android, which has

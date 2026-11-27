@@ -11,9 +11,9 @@
  *
  *   crnet_test <info file>          every part
  *   crnet_test <info file> <part>   one of: tcp wait resolver http tls proxy websocket
- *                                   resumable interfaces udp discovery (or internet,
+ *                                   resumable interfaces tcp_addresses udp discovery (or internet,
  *                                   opt-in)
- *   crnet_test - <part>             interfaces, udp or discovery alone, which need no
+ *   crnet_test - <part>             interfaces, tcp_addresses, udp or discovery alone, which need no
  *                                   server (each a ctest of its own)
  *
  * tests/run_crnet_test.sh starts the server, runs this and stops the
@@ -183,6 +183,17 @@ static bool expect(CR_RESULT got, CR_RESULT want, const char *what) {
 static void note_error(const char *what, const crnet_error *error) {
 	note("%s: detail is %s, source %s, code %lld%s%s%s", what, cr_result_str(error->result), source_name(error->source), (long long)error->code,
 	     error->text[0] ? ", \"" : "", error->text, error->text[0] ? "\"" : "");
+}
+
+static const char *family_name(CRNET_ADDRESS_FAMILY family) { return family == CRNET_ADDRESS_FAMILY_IPV4 ? "IPv4" : family == CRNET_ADDRESS_FAMILY_IPV6 ? "IPv6" : "?"; }
+
+/* A numeric address and a port as a TCP desc takes them, scope 0. */
+static crnet_address tcp_text(const char *text, uint16_t port) {
+	crnet_address address;
+	memset(&address, 0, sizeof(address));
+	if (crnet_address_from_string(text, port, 0, &address) != CR_SUCCESS)
+		check(false, "the test's own address \"%s\" is numeric", text);
+	return address;
 }
 
 // --------------------------------------------------------------------------
@@ -358,8 +369,7 @@ static void test_instance(void) {
 	crnet_tcp_listener_desc listen_desc;
 	memset(&listen_desc, 0, sizeof(listen_desc));
 	listen_desc.base.type = CR_STRUCT_TYPE_NET_TCP_LISTENER_DESC;
-	listen_desc.address = "127.0.0.1";
-	listen_desc.port    = 0;
+	listen_desc.local = tcp_text("127.0.0.1", 0);
 	listen_desc.backlog = 4;
 	int tag             = 0;
 	if (expect(crnet_tcp_listener_create(second, &listen_desc, &listener, &error), CR_SUCCESS, "a listener made with the second instance") &&
@@ -412,8 +422,7 @@ static void test_tcp(void) {
 	crnet_tcp_listener_desc listen_desc;
 	memset(&listen_desc, 0, sizeof(listen_desc));
 	listen_desc.base.type = CR_STRUCT_TYPE_NET_TCP_LISTENER_DESC;
-	listen_desc.address = "127.0.0.1";
-	listen_desc.port    = 0;
+	listen_desc.local = tcp_text("127.0.0.1", 0);
 	listen_desc.backlog = 8;
 
 	crnet_tcp_listener listener = NULL;
@@ -425,7 +434,7 @@ static void test_tcp(void) {
 	check(port != 0, "the system picked a port (%u)", (unsigned)port);
 
 	// A second listener on what the first holds.
-	listen_desc.port                = port;
+	listen_desc.local.port                = port;
 	crnet_tcp_listener second     = NULL;
 	CR_RESULT           in_use     = crnet_tcp_listener_create(g_instance, &listen_desc, &second, &error);
 	expect(in_use, CR_RESULT_NET_ADDRESS_IN_USE, "a second listener on the same address and port");
@@ -448,8 +457,7 @@ static void test_tcp(void) {
 	crnet_tcp_socket_connect_desc connect_desc;
 	memset(&connect_desc, 0, sizeof(connect_desc));
 	connect_desc.base.type = CR_STRUCT_TYPE_NET_TCP_SOCKET_CONNECT_DESC;
-	connect_desc.address    = "127.0.0.1";
-	connect_desc.port       = port;
+	connect_desc.to    = tcp_text("127.0.0.1", port);
 	connect_desc.timeout_ms = PATIENCE_MS;
 	expect(crnet_tcp_socket_connect(client, &connect_desc), CR_SUCCESS, "connect to the listener");
 	expect(crnet_tcp_socket_connect(client, &connect_desc), CR_RESULT_NET_INVALID_TCP_SOCKET, "a second connect on the same socket");
@@ -461,10 +469,13 @@ static void test_tcp(void) {
 		return;
 	}
 
-	char     peer[CRNET_MAX_ADDRESS_STRING_LEN];
-	uint16_t peer_port = 0;
-	expect(crnet_tcp_socket_get_peer_address(client, peer, &peer_port), CR_SUCCESS, "get_peer_address");
-	check(strcmp(peer, "127.0.0.1") == 0 && peer_port == port, "the client's peer is the listener (%s:%u)", peer, (unsigned)peer_port);
+	crnet_address peer;
+	memset(&peer, 0xA5, sizeof(peer));
+	expect(crnet_tcp_socket_get_peer_address(client, &peer), CR_SUCCESS, "get_peer_address");
+	char peer_text[CRNET_MAX_ADDRESS_STRING_LEN] = "?";
+	crnet_address_to_string(&peer, peer_text);
+	check(memcmp(&peer, &connect_desc.to, sizeof(peer)) == 0, "the client's peer is the listener, equal byte for byte to the address connected to (%s:%u)", peer_text,
+	      (unsigned)peer.port);
 	expect(crnet_tcp_socket_set_no_delay(client, true), CR_SUCCESS, "set_no_delay");
 
 	uint8_t  received[64];
@@ -533,7 +544,7 @@ static void test_tcp(void) {
 	crnet_tcp_listener_destroy(listener);
 
 	// The port is free at once, with its old connections barely cold.
-	listen_desc.port = port;
+	listen_desc.local.port = port;
 	expect(crnet_tcp_listener_create(g_instance, &listen_desc, &listener, &error), CR_SUCCESS, "listening again on the port straight after its listener was destroyed");
 	crnet_tcp_listener_destroy(listener);
 
@@ -550,11 +561,11 @@ static void test_tcp(void) {
 	{
 		crnet_tcp_socket bad = NULL;
 		crnet_tcp_socket_create(g_instance, &bad);
-		connect_desc.address = "localhost";
-		expect(crnet_tcp_socket_connect(bad, &connect_desc), CR_RESULT_NET_INVALID_ADDRESS, "connect to a name rather than a numeric address");
+		// A name has no form in a crnet_address (crnet_address_from_string()
+		// refuses one, tested under "interfaces"), so no connect takes one.
 		// Refused, begun with CRNET_NO_WAIT: the refusal comes from the
 		// connect or from its continue, whichever finds it.
-		connect_desc.address    = "127.0.0.1";
+		connect_desc.to         = tcp_text("127.0.0.1", port);
 		connect_desc.timeout_ms = CRNET_NO_WAIT;
 		CR_RESULT begun        = crnet_tcp_socket_connect(bad, &connect_desc);
 		check(begun == CR_RESULT_NET_TIMED_OUT || begun == CR_RESULT_NET_CONNECT_FAILED, "connect with CRNET_NO_WAIT begins it: %s", cr_result_str(begun));
@@ -565,14 +576,12 @@ static void test_tcp(void) {
 	}
 
 	// IPv6, where the machine has it.
-	listen_desc.address = "::1";
-	listen_desc.port    = 0;
+	listen_desc.local = tcp_text("::1", 0);
 	if (crnet_tcp_listener_create(g_instance, &listen_desc, &listener, &error) == CR_SUCCESS) {
 		crnet_tcp_listener_get_port(listener, &port);
 		crnet_tcp_socket six = NULL;
 		crnet_tcp_socket_create(g_instance, &six);
-		connect_desc.address    = "::1";
-		connect_desc.port       = port;
+		connect_desc.to    = tcp_text("::1", port);
 		connect_desc.timeout_ms = PATIENCE_MS;
 		expect(crnet_tcp_socket_connect(six, &connect_desc), CR_SUCCESS, "listen and connect over IPv6 (::1)");
 		crnet_tcp_socket_destroy(six);
@@ -610,8 +619,7 @@ static void test_records(void) {
 	crnet_tcp_listener_desc listen_desc;
 	memset(&listen_desc, 0, sizeof(listen_desc));
 	listen_desc.base.type = CR_STRUCT_TYPE_NET_TCP_LISTENER_DESC;
-	listen_desc.address   = "127.0.0.1";
-	listen_desc.port      = 0;
+	listen_desc.local   = tcp_text("127.0.0.1", 0);
 	listen_desc.backlog   = 8;
 	crnet_tcp_listener listener = NULL;
 	if (expect(crnet_tcp_listener_create(g_instance, &listen_desc, &listener, &error), CR_SUCCESS, "a listener to abort")) {
@@ -687,7 +695,7 @@ static void test_wait_set(void) {
 	crnet_tcp_listener_desc listen_desc;
 	memset(&listen_desc, 0, sizeof(listen_desc));
 	listen_desc.base.type = CR_STRUCT_TYPE_NET_TCP_LISTENER_DESC;
-	listen_desc.address = "127.0.0.1";
+	listen_desc.local = tcp_text("127.0.0.1", 0);
 	listen_desc.backlog = 8;
 	crnet_tcp_listener listener = NULL;
 	crnet_error        error;
@@ -719,8 +727,7 @@ static void test_wait_set(void) {
 	crnet_tcp_socket_connect_desc connect_desc;
 	memset(&connect_desc, 0, sizeof(connect_desc));
 	connect_desc.base.type = CR_STRUCT_TYPE_NET_TCP_SOCKET_CONNECT_DESC;
-	connect_desc.address    = "127.0.0.1";
-	connect_desc.port       = port;
+	connect_desc.to    = tcp_text("127.0.0.1", port);
 	connect_desc.timeout_ms = PATIENCE_MS;
 	crnet_tcp_socket clients[2] = {NULL, NULL};
 	crnet_tcp_socket servers[2] = {NULL, NULL};
@@ -824,8 +831,9 @@ static test_thread_result TEST_THREAD_CALL run_resolver(void *argument) {
 static void test_resolver(void) {
 	part("Resolver");
 
-	char                  addresses[8][CRNET_MAX_ADDRESS_STRING_LEN];
+	crnet_address         addresses[8];
 	uint32_t              count = 0;
+	char                  first[CRNET_MAX_ADDRESS_STRING_LEN] = "-";
 	crnet_resolver_desc desc;
 	memset(&desc, 0, sizeof(desc));
 	desc.base.type = CR_STRUCT_TYPE_NET_RESOLVER_DESC;
@@ -838,7 +846,13 @@ static void test_resolver(void) {
 	expect(crnet_resolver_wait(resolver, CRNET_NO_WAIT, addresses, 8, &count), CR_RESULT_NET_TIMED_OUT, "wait before it has been run");
 	expect(crnet_resolver_run(resolver), CR_SUCCESS, "run");
 	expect(crnet_resolver_wait(resolver, CRNET_NO_WAIT, addresses, 8, &count), CR_SUCCESS, "wait after it");
-	check(count >= 1 && strcmp(addresses[0], "127.0.0.1") == 0, "localhost is 127.0.0.1 (%u address%s, first %s)", count, count == 1 ? "" : "es", count ? addresses[0] : "-");
+	if (count)
+		crnet_address_to_string(&addresses[0], first);
+	{
+		const crnet_address loopback = tcp_text("127.0.0.1", 0);
+		check(count >= 1 && memcmp(&addresses[0], &loopback, sizeof(loopback)) == 0, "localhost is 127.0.0.1, port 0, scope 0 (%u address%s, first %s)", count,
+		      count == 1 ? "" : "es", first);
+	}
 	expect(crnet_resolver_wait(resolver, CRNET_NO_WAIT, addresses, 8, &count), CR_SUCCESS, "the answer is there for a second wait");
 	crnet_resolver_destroy(resolver);
 
@@ -856,7 +870,10 @@ static void test_resolver(void) {
 	crnet_resolver_create(g_instance, &desc, &resolver);
 	crnet_resolver_run(resolver);
 	expect(crnet_resolver_wait(resolver, CRNET_NO_WAIT, addresses, 8, &count), CR_SUCCESS, "a numeric address");
-	check(count == 1 && strcmp(addresses[0], "192.0.2.7") == 0, "comes back as itself");
+	{
+		const crnet_address itself = tcp_text("192.0.2.7", 0);
+		check(count == 1 && memcmp(&addresses[0], &itself, sizeof(itself)) == 0, "comes back as itself, port 0");
+	}
 	crnet_resolver_destroy(resolver);
 
 	// A name that has no address. ".invalid" is reserved never to.
@@ -890,6 +907,10 @@ static void test_resolver(void) {
 
 	desc.host = "";
 	expect(crnet_resolver_create(g_instance, &desc, &resolver), CR_RESULT_DESC_INVALID_PARAMETERS, "create with an empty name");
+	desc.host = "fe80::1%lo0";
+	resolver  = (crnet_resolver)(uintptr_t)1;
+	expect(crnet_resolver_create(g_instance, &desc, &resolver), CR_RESULT_DESC_INVALID_PARAMETERS, "create with a '%' suffix in the host");
+	check(resolver == NULL, "and none made");
 }
 
 // --------------------------------------------------------------------------
@@ -1045,8 +1066,7 @@ static long server_stat(const char *name) {
 	crnet_tcp_socket_connect_desc connect_desc;
 	memset(&connect_desc, 0, sizeof(connect_desc));
 	connect_desc.base.type = CR_STRUCT_TYPE_NET_TCP_SOCKET_CONNECT_DESC;
-	connect_desc.address    = "127.0.0.1";
-	connect_desc.port       = (uint16_t)g_server.http_port;
+	connect_desc.to    = tcp_text("127.0.0.1", (uint16_t)g_server.http_port);
 	connect_desc.timeout_ms = PATIENCE_MS;
 	long value              = -1;
 	if (!CR_FAILED(crnet_tcp_socket_connect(socket, &connect_desc))) {
@@ -1194,8 +1214,7 @@ static void test_instance_memory(void) {
 		crnet_tcp_listener_desc listen_desc;
 		memset(&listen_desc, 0, sizeof(listen_desc));
 		listen_desc.base.type = CR_STRUCT_TYPE_NET_TCP_LISTENER_DESC;
-		listen_desc.address   = "127.0.0.1";
-		listen_desc.port      = 0;
+		listen_desc.local   = tcp_text("127.0.0.1", 0);
 		listen_desc.backlog   = 4;
 		uint16_t           port     = 0;
 		crnet_tcp_socket client   = NULL;
@@ -1208,8 +1227,7 @@ static void test_instance_memory(void) {
 			crnet_tcp_socket_connect_desc connect_desc;
 			memset(&connect_desc, 0, sizeof(connect_desc));
 			connect_desc.base.type  = CR_STRUCT_TYPE_NET_TCP_SOCKET_CONNECT_DESC;
-			connect_desc.address    = "127.0.0.1";
-			connect_desc.port       = port;
+			connect_desc.to    = tcp_text("127.0.0.1", port);
 			connect_desc.timeout_ms = PATIENCE_MS;
 			if (expect(crnet_tcp_socket_connect(client, &connect_desc), CR_SUCCESS, "tracked: connected to the listener") &&
 			    expect(crnet_tcp_listener_accept(listener, PATIENCE_MS, &accepted), CR_SUCCESS, "tracked: and accepted")) {
@@ -1605,7 +1623,7 @@ static void test_http(void) {
 		crnet_tcp_listener_desc listen_desc;
 		memset(&listen_desc, 0, sizeof(listen_desc));
 		listen_desc.base.type = CR_STRUCT_TYPE_NET_TCP_LISTENER_DESC;
-		listen_desc.address = "127.0.0.1";
+		listen_desc.local = tcp_text("127.0.0.1", 0);
 		listen_desc.backlog = 1;
 		crnet_tcp_listener holder = NULL;
 		crnet_error        error;
@@ -2320,7 +2338,7 @@ static uint16_t closed_port(void) {
 	crnet_tcp_listener_desc desc;
 	memset(&desc, 0, sizeof(desc));
 	desc.base.type          = CR_STRUCT_TYPE_NET_TCP_LISTENER_DESC;
-	desc.address            = "127.0.0.1";
+	desc.local            = tcp_text("127.0.0.1", 0);
 	desc.backlog            = 1;
 	crnet_tcp_listener listener = NULL;
 	uint16_t           port     = 0;
@@ -2339,7 +2357,7 @@ static void resumable_tcp(crnet_wait_set set) {
 	crnet_tcp_listener_desc listen_desc;
 	memset(&listen_desc, 0, sizeof(listen_desc));
 	listen_desc.base.type          = CR_STRUCT_TYPE_NET_TCP_LISTENER_DESC;
-	listen_desc.address            = "127.0.0.1";
+	listen_desc.local            = tcp_text("127.0.0.1", 0);
 	listen_desc.backlog            = 4;
 	crnet_tcp_listener listener = NULL;
 	if (!expect(crnet_tcp_listener_create(g_instance, &listen_desc, &listener, &error), CR_SUCCESS, "a listener for the TCP connects"))
@@ -2350,8 +2368,7 @@ static void resumable_tcp(crnet_wait_set set) {
 	crnet_tcp_socket_connect_desc connect_desc;
 	memset(&connect_desc, 0, sizeof(connect_desc));
 	connect_desc.base.type  = CR_STRUCT_TYPE_NET_TCP_SOCKET_CONNECT_DESC;
-	connect_desc.address    = "127.0.0.1";
-	connect_desc.port       = port;
+	connect_desc.to    = tcp_text("127.0.0.1", port);
 	connect_desc.timeout_ms = CRNET_NO_WAIT;
 
 	crnet_tcp_socket socket = NULL;
@@ -2398,7 +2415,7 @@ static void resumable_tcp(crnet_wait_set set) {
 
 	// Refused: the outcome comes from whichever call finds it.
 	socket                  = NULL;
-	connect_desc.port       = closed_port();
+	connect_desc.to.port       = closed_port();
 	crnet_tcp_socket_create(g_instance, &socket);
 	result                  = crnet_tcp_socket_connect(socket, &connect_desc);
 	const char *reported_by = "connect";
@@ -3121,7 +3138,7 @@ static void test_internet(void) {
 #if CRNET_EXT_TCP
 	// Real name lookup, through a DNS server.
 	{
-		char addresses[16][CRNET_MAX_ADDRESS_STRING_LEN];
+		crnet_address addresses[16];
 		uint32_t count = 0;
 		crnet_resolver_desc desc;
 		memset(&desc, 0, sizeof(desc));
@@ -3133,8 +3150,12 @@ static void test_internet(void) {
 			test_thread thread = thread_start(run_resolver, resolver);
 			if (expect(crnet_resolver_wait(resolver, 15000, addresses, 16, &count), CR_SUCCESS, "example.com, looked up by a DNS server")) {
 				check(count >= 1, "it has %u address%s", count, count == 1 ? "" : "es");
-				for (uint32_t i = 0; i < count && i < 16; ++i)
-					note("example.com is %s", addresses[i]);
+				for (uint32_t i = 0; i < count && i < 16; ++i) {
+					char text[CRNET_MAX_ADDRESS_STRING_LEN] = "?";
+					crnet_address_to_string(&addresses[i], text);
+					note("example.com is %s (%s, scope %u)", text, family_name(addresses[i].family), (unsigned)addresses[i].scope_id);
+					check(addresses[i].port == 0 && addresses[i].reserved == 0, "  port 0, reserved 0");
+				}
 			}
 			crnet_resolver_destroy(resolver);
 			thread_join(thread);
@@ -3224,8 +3245,7 @@ static void test_internet(void) {
 			crnet_tcp_socket_connect_desc desc;
 			memset(&desc, 0, sizeof(desc));
 			desc.base.type       = CR_STRUCT_TYPE_NET_TCP_SOCKET_CONNECT_DESC;
-			desc.address         = "10.255.255.1";
-			desc.port            = 80;
+			desc.to         = tcp_text("10.255.255.1", 80);
 			desc.timeout_ms      = 2000;
 			const uint64_t start = now_ms();
 			r                    = crnet_tcp_socket_connect(socket, &desc);
@@ -3262,8 +3282,7 @@ static void test_internet(void) {
 		crnet_tcp_socket_connect_desc desc;
 		memset(&desc, 0, sizeof(desc));
 		desc.base.type  = CR_STRUCT_TYPE_NET_TCP_SOCKET_CONNECT_DESC;
-		desc.address    = "192.0.2.1";
-		desc.port       = 80;
+		desc.to    = tcp_text("192.0.2.1", 80);
 		desc.timeout_ms = CRNET_NO_WAIT;
 		CR_RESULT r    = crnet_tcp_socket_connect(socket, &desc);
 		if (r == CR_RESULT_NET_CONNECT_FAILED) {
@@ -3331,7 +3350,6 @@ static crnet_interface_address address_struct(void) {
 	return address;
 }
 
-static const char *family_name(CRNET_ADDRESS_FAMILY family) { return family == CRNET_ADDRESS_FAMILY_IPV4 ? "IPv4" : family == CRNET_ADDRESS_FAMILY_IPV6 ? "IPv6" : "?"; }
 
 #ifdef _WIN32
 /* The index Windows gives the adapter its GUID string names
@@ -4091,7 +4109,7 @@ static void test_udp(void) {
 		crnet_tcp_listener_desc listen_desc;
 		memset(&listen_desc, 0, sizeof(listen_desc));
 		listen_desc.base.type        = CR_STRUCT_TYPE_NET_TCP_LISTENER_DESC;
-		listen_desc.address          = "127.0.0.1";
+		listen_desc.local          = tcp_text("127.0.0.1", 0);
 		listen_desc.backlog          = 4;
 		crnet_tcp_listener listener = NULL;
 		crnet_tcp_listener_create(g_instance, &listen_desc, &listener, NULL);
@@ -4108,8 +4126,7 @@ static void test_udp(void) {
 			crnet_tcp_socket_connect_desc connect_desc;
 			memset(&connect_desc, 0, sizeof(connect_desc));
 			connect_desc.base.type  = CR_STRUCT_TYPE_NET_TCP_SOCKET_CONNECT_DESC;
-			connect_desc.address    = "127.0.0.1";
-			connect_desc.port       = listen_port;
+			connect_desc.to    = tcp_text("127.0.0.1", listen_port);
 			connect_desc.timeout_ms = 1000;
 			crnet_tcp_socket_connect(tcp, &connect_desc);
 			expect(crnet_wait_set_add_tcp_socket(set, tcp, CRNET_WAIT_FOR_INCOMING, &socket_tag), CR_SUCCESS, "a TCP socket beside them");
@@ -5290,6 +5307,586 @@ static void test_discovery(void) {
 
 #endif // CRNET_EXT_DISCOVERY
 
+#if CRNET_EXT_TCP
+
+// --------------------------------------------------------------------------
+// TCP addresses as crnet_address values (card N26): link-local over each
+// interface with one, the rule's refusals, the system's answers past the
+// rule, the peer getter, the listener's order, and the resolver's values.
+// Needs no server: `crnet_test - tcp_addresses` is a ctest of its own.
+// --------------------------------------------------------------------------
+
+/* An address from text, the scope set after (so an IPv4 one may be given
+ * one, which only the rule may refuse). */
+static crnet_address tcp_address(const char *text, uint16_t port, uint32_t scope_id) {
+	crnet_address address;
+	memset(&address, 0, sizeof(address));
+	if (crnet_address_from_string(text, port, 0, &address) != CR_SUCCESS)
+		note("(from_string refused \"%s\")", text);
+	address.scope_id = scope_id;
+	return address;
+}
+
+static crnet_tcp_listener_desc tcp_listen_desc(crnet_address local, uint32_t backlog) {
+	crnet_tcp_listener_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type = CR_STRUCT_TYPE_NET_TCP_LISTENER_DESC;
+	desc.local     = local;
+	desc.backlog   = backlog;
+	return desc;
+}
+
+static crnet_tcp_socket_connect_desc tcp_connect_desc(crnet_address to, uint32_t timeout_ms) {
+	crnet_tcp_socket_connect_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type  = CR_STRUCT_TYPE_NET_TCP_SOCKET_CONNECT_DESC;
+	desc.to         = to;
+	desc.timeout_ms = timeout_ms;
+	return desc;
+}
+
+/* An address and its scope as one line: "fe80::1%15 port 4242". */
+static const char *tcp_address_text(const crnet_address *address, char *out, size_t size) {
+	char text[CRNET_MAX_ADDRESS_STRING_LEN] = "?";
+	crnet_address_to_string(address, text);
+	if (address->scope_id != 0)
+		snprintf(out, size, "%s%%%u port %u", text, (unsigned)address->scope_id, (unsigned)address->port);
+	else
+		snprintf(out, size, "%s port %u", text, (unsigned)address->port);
+	return out;
+}
+
+static bool tcp_is_link_local_unicast(const crnet_address *address) {
+	if (address->family != CRNET_ADDRESS_FAMILY_IPV6 || address->bytes[0] != 0xFE || address->bytes[1] != 0x80)
+		return false;
+	for (int i = 2; i < 8; ++i) {
+		if (address->bytes[i] != 0)
+			return false;
+	}
+	return true;
+}
+
+static bool tcp_same_but_port(const crnet_address *a, const crnet_address *b) {
+	return a->family == b->family && a->scope_id == b->scope_id && memcmp(a->bytes, b->bytes, sizeof(a->bytes)) == 0 && a->reserved == b->reserved;
+}
+
+/* A connect carried on to its outcome: CRNET_NO_WAIT's TIMED_OUT taken on by
+ * continue for up to `continue_ms`. */
+static CR_RESULT tcp_connect_outcome(crnet_tcp_socket socket, const crnet_tcp_socket_connect_desc *desc, uint32_t continue_ms) {
+	CR_RESULT result = crnet_tcp_socket_connect(socket, desc);
+	if (result == CR_RESULT_NET_TIMED_OUT && continue_ms != 0)
+		result = crnet_tcp_socket_connect_continue(socket, continue_ms);
+	return result;
+}
+
+/* One interface with an fe80::/64 address, from the listing. */
+struct tcp_link_local {
+	char          name[CRNET_INTERFACE_NAME_CAPACITY];
+	uint32_t      ipv6_index;
+	uint32_t      flags;
+	crnet_address address; // as listed: its scope the listing's
+};
+
+/* Every UP and RUNNING interface's first fe80::/64 address, up to
+ * `capacity`. */
+static uint32_t tcp_link_locals(struct tcp_link_local *out, uint32_t capacity, uint32_t *out_other_index) {
+	crnet_interface_list list = NULL;
+	crnet_error          error;
+	uint32_t             found = 0;
+	*out_other_index           = 0;
+	if (!expect(crnet_interface_enumerate(g_instance, &list, &error), CR_SUCCESS, "the interface listing"))
+		return 0;
+	uint32_t count = 0;
+	crnet_interface_list_get_count(list, &count);
+	for (uint32_t i = 0; i < count && found < capacity; ++i) {
+		crnet_interface_properties properties = properties_struct();
+		if (crnet_interface_list_get_properties(list, i, &properties) != CR_SUCCESS)
+			continue;
+		const uint32_t up = CRNET_INTERFACE_FLAG_UP | CRNET_INTERFACE_FLAG_RUNNING;
+		if ((properties.flags & up) != up)
+			continue;
+		for (uint32_t a = 0; a < properties.address_count; ++a) {
+			crnet_interface_address address = address_struct();
+			if (crnet_interface_list_get_address(list, i, a, &address) != CR_SUCCESS || !tcp_is_link_local_unicast(&address.address))
+				continue;
+			struct tcp_link_local *entry = &out[found++];
+			memcpy(entry->name, properties.name, sizeof(entry->name));
+			entry->ipv6_index = properties.ipv6_index;
+			entry->flags      = properties.flags;
+			entry->address    = address.address;
+			entry->address.port = 0;
+			break;
+		}
+	}
+	crnet_interface_list_destroy(list);
+	return found;
+}
+
+/* A listener on `local` (port 0) and a connect to it with the same scope,
+ * accepted, and every assertion of the draft's on the peers both ways and
+ * on UDP. `asserted` holds each result to CR_SUCCESS; otherwise a result
+ * may be one of the system's listed ones, and is printed. */
+static void tcp_link_local_case(const struct tcp_link_local *link, bool asserted) {
+	char           text[96], other[96];
+	crnet_error    error;
+	crnet_address  local = link->address;
+	tcp_address_text(&local, text, sizeof(text));
+	note("%s: %s, ipv6_index %u", link->name, text, (unsigned)link->ipv6_index);
+	if (asserted)
+		check(local.scope_id == link->ipv6_index && local.scope_id != 0, "%s: the listing gives its link-local address the interface's ipv6_index as scope_id (%u)",
+		      link->name, (unsigned)local.scope_id);
+
+	crnet_tcp_listener            listener = NULL;
+	const crnet_tcp_listener_desc ld       = tcp_listen_desc(local, 8);
+	CR_RESULT                     result   = crnet_tcp_listener_create(g_instance, &ld, &listener, &error);
+	if (!asserted) {
+		check(result == CR_SUCCESS || result == CR_RESULT_NET_LISTEN_FAILED || result == CR_RESULT_NET_ADDRESS_IN_USE,
+		      "%s: a listener on its link-local address: %s (CR_SUCCESS or the system's)", link->name, cr_result_str(result));
+		if (result != CR_SUCCESS) {
+			note_error(link->name, &error);
+			return;
+		}
+	} else if (!expect(result, CR_SUCCESS, "a listener on the link-local address with its scope")) {
+		note_error("listener", &error);
+		return;
+	}
+	uint16_t port = 0;
+	crnet_tcp_listener_get_port(listener, &port);
+
+	crnet_tcp_socket client = NULL, server = NULL;
+	crnet_tcp_socket_create(g_instance, &client);
+	crnet_address to = local;
+	to.port          = port;
+	const crnet_tcp_socket_connect_desc cd = tcp_connect_desc(to, asserted ? PATIENCE_MS : CRNET_NO_WAIT);
+	result                                 = tcp_connect_outcome(client, &cd, asserted ? 0 : 2000);
+	if (!asserted) {
+		check(result == CR_SUCCESS || result == CR_RESULT_NET_CONNECT_FAILED || result == CR_RESULT_NET_TIMED_OUT || result == CR_RESULT_NET_SYSTEM_TIMED_OUT,
+		      "%s: a connect to it with the same scope: %s (CR_SUCCESS or the system's)", link->name, cr_result_str(result));
+		if (result != CR_SUCCESS) {
+			crnet_tcp_socket_get_error(client, CRNET_ERROR_SIDE_RECEIVING, &error);
+			note_error(link->name, &error);
+		}
+	} else {
+		expect(result, CR_SUCCESS, "a connect to it with the same scope");
+	}
+	if (result == CR_SUCCESS)
+		expect(crnet_tcp_listener_accept(listener, PATIENCE_MS, &server), CR_SUCCESS, "accepted");
+
+	if (client && server) {
+		crnet_address client_peer, server_peer;
+		memset(&client_peer, 0xA5, sizeof(client_peer));
+		memset(&server_peer, 0xA5, sizeof(server_peer));
+		expect(crnet_tcp_socket_get_peer_address(client, &client_peer), CR_SUCCESS, "the client's peer read");
+		expect(crnet_tcp_socket_get_peer_address(server, &server_peer), CR_SUCCESS, "the server's peer read");
+		check(memcmp(&client_peer, &to, sizeof(to)) == 0, "%s: the client's peer equals (memcmp) the listener's local with its port: %s", link->name,
+		      tcp_address_text(&client_peer, other, sizeof(other)));
+		check(tcp_same_but_port(&server_peer, &local) && server_peer.port != 0, "%s: the server's peer has local's family, bytes and scope_id, a port not 0: %s",
+		      link->name, tcp_address_text(&server_peer, other, sizeof(other)));
+
+#if CRNET_EXT_UDP
+		// F6's second half: a TCP peer's link-local source answered over
+		// UDP. A socket on the server's side sends to the server's peer
+		// with the port of a second socket on the client's side; what
+		// arrives came from the server's peer's address, scope and all.
+		crnet_udp_socket_desc ud = udp_desc("::", 0, CRNET_UDP_PORT_SHARING_EXCLUSIVE);
+		ud.local                 = local;
+		crnet_udp_socket server_udp = udp_open(&ud, "a UDP socket bound on the link-local address (the server's side)");
+		crnet_udp_socket client_udp = udp_open(&ud, "and a second (the client's side)");
+		if (server_udp && client_udp) {
+			crnet_address target = server_peer;
+			target.port          = udp_local(client_udp).port;
+			if (expect(crnet_udp_socket_send_to(server_udp, &target, "n26", 3, 1000), CR_SUCCESS, "sent to the TCP peer's address at the client's UDP port")) {
+				uint8_t       got[16];
+				uint32_t      size = 0;
+				crnet_address from;
+				memset(&from, 0, sizeof(from));
+				if (expect(crnet_udp_socket_recv_from(client_udp, got, sizeof(got), PATIENCE_MS, &size, &from), CR_SUCCESS, "it arrives")) {
+					check(size == 3 && memcmp(got, "n26", 3) == 0, "the bytes as sent");
+					check(tcp_same_but_port(&from, &server_peer), "%s: its source equals the server's TCP peer but for the port: %s", link->name,
+					      tcp_address_text(&from, other, sizeof(other)));
+				}
+			}
+		}
+		crnet_udp_socket_destroy(server_udp);
+		crnet_udp_socket_destroy(client_udp);
+#endif
+	}
+	crnet_tcp_socket_destroy(client);
+	crnet_tcp_socket_destroy(server);
+	crnet_tcp_listener_destroy(listener);
+	if (!asserted)
+		return;
+
+	// A listener on :: reached the same way: the scope from the accepted
+	// socket. Then the server's peer given back to a second connect as it
+	// is, at the listener's port: the round trip.
+	crnet_address everywhere;
+	memset(&everywhere, 0, sizeof(everywhere));
+	everywhere.family                 = CRNET_ADDRESS_FAMILY_IPV6;
+	const crnet_tcp_listener_desc lde = tcp_listen_desc(everywhere, 8);
+	if (!expect(crnet_tcp_listener_create(g_instance, &lde, &listener, &error), CR_SUCCESS, "a listener on ::"))
+		return;
+	crnet_tcp_listener_get_port(listener, &port);
+	to.port                                 = port;
+	const crnet_tcp_socket_connect_desc cde = tcp_connect_desc(to, PATIENCE_MS);
+	client = server = NULL;
+	crnet_tcp_socket_create(g_instance, &client);
+	if (expect(crnet_tcp_socket_connect(client, &cde), CR_SUCCESS, "a connect to the :: listener through the link-local address") &&
+	    expect(crnet_tcp_listener_accept(listener, PATIENCE_MS, &server), CR_SUCCESS, "accepted on ::")) {
+		crnet_address client_peer, server_peer;
+		crnet_tcp_socket_get_peer_address(client, &client_peer);
+		expect(crnet_tcp_socket_get_peer_address(server, &server_peer), CR_SUCCESS, "the :: listener's accepted peer read");
+		check(memcmp(&client_peer, &to, sizeof(to)) == 0, "the client's peer equals the address it connected to: %s", tcp_address_text(&client_peer, other, sizeof(other)));
+		check(tcp_same_but_port(&server_peer, &local) && server_peer.port != 0, "the :: listener's peer has the link-local address and its scope: %s",
+		      tcp_address_text(&server_peer, other, sizeof(other)));
+
+		crnet_address back = server_peer;
+		back.port          = port;
+		crnet_tcp_socket again = NULL, again_server = NULL;
+		crnet_tcp_socket_create(g_instance, &again);
+		const crnet_tcp_socket_connect_desc cdb = tcp_connect_desc(back, PATIENCE_MS);
+		if (expect(crnet_tcp_socket_connect(again, &cdb), CR_SUCCESS, "the peer read back, given to a second connect as it is (the round trip)"))
+			expect(crnet_tcp_listener_accept(listener, PATIENCE_MS, &again_server), CR_SUCCESS, "and accepted");
+		crnet_tcp_socket_destroy(again);
+		crnet_tcp_socket_destroy(again_server);
+	}
+	crnet_tcp_socket_destroy(client);
+	crnet_tcp_socket_destroy(server);
+	crnet_tcp_listener_destroy(listener);
+}
+
+/* The rule's refusals, each on a fresh socket that then takes one valid
+ * connect to a live loopback listener: a refused desc left it usable. */
+struct tcp_refusal {
+	const char *text;
+	uint16_t    port;
+	uint32_t    scope_id;
+	CR_RESULT   at_connect;  // CR_SUCCESS: not refused at connect (not tried)
+	CR_RESULT   at_listener; // the same at a listener
+};
+
+static const struct tcp_refusal g_tcp_refusals[] = {
+    {"fe80::1", 80, 0, CR_RESULT_NET_INVALID_SCOPE, CR_RESULT_NET_INVALID_SCOPE},
+    {"fe80::1", 80, 0x10000000, CR_RESULT_NET_INVALID_SCOPE, CR_RESULT_NET_INVALID_SCOPE},
+    {"febf::1", 80, 1, CR_RESULT_NET_INVALID_ADDRESS, CR_RESULT_NET_INVALID_ADDRESS},
+    {"fe80:abcd::1", 80, 1, CR_RESULT_NET_INVALID_ADDRESS, CR_RESULT_NET_INVALID_ADDRESS},
+    {"fec0::1", 80, 1, CR_RESULT_NET_INVALID_SCOPE, CR_RESULT_NET_INVALID_SCOPE},
+    {"::1", 80, 1, CR_RESULT_NET_INVALID_SCOPE, CR_RESULT_NET_INVALID_SCOPE},
+    {"2001:db8::1", 80, 1, CR_RESULT_NET_INVALID_SCOPE, CR_RESULT_NET_INVALID_SCOPE},
+    {"::", 0, 1, CR_RESULT_NET_INVALID_ADDRESS, CR_RESULT_NET_INVALID_SCOPE},
+    {"::", 80, 0, CR_RESULT_NET_INVALID_ADDRESS, CR_SUCCESS},
+    {"0.0.0.0", 80, 0, CR_RESULT_NET_INVALID_ADDRESS, CR_SUCCESS},
+    {"127.0.0.1", 0, 0, CR_RESULT_NET_INVALID_ADDRESS, CR_SUCCESS},
+    {"127.0.0.1", 80, 5, CR_RESULT_NET_INVALID_ADDRESS, CR_RESULT_NET_INVALID_ADDRESS},
+    {"::ffff:127.0.0.1", 80, 0, CR_RESULT_NET_INVALID_ADDRESS, CR_RESULT_NET_INVALID_ADDRESS},
+    {"224.0.0.251", 80, 0, CR_RESULT_NET_INVALID_ADDRESS, CR_RESULT_NET_INVALID_ADDRESS},
+    {"239.255.255.255", 80, 0, CR_RESULT_NET_INVALID_ADDRESS, CR_RESULT_NET_INVALID_ADDRESS},
+    {"ff02::1", 80, 1, CR_RESULT_NET_INVALID_ADDRESS, CR_RESULT_NET_INVALID_ADDRESS},
+    {"ff0e::1", 80, 0, CR_RESULT_NET_INVALID_ADDRESS, CR_RESULT_NET_INVALID_ADDRESS},
+};
+
+static void tcp_refusals(void) {
+	crnet_error                   error;
+	crnet_tcp_listener            live = NULL;
+	const crnet_tcp_listener_desc ld   = tcp_listen_desc(tcp_address("127.0.0.1", 0, 0), 32);
+	if (!expect(crnet_tcp_listener_create(g_instance, &ld, &live, &error), CR_SUCCESS, "a live loopback listener for the refusals"))
+		return;
+	uint16_t port = 0;
+	crnet_tcp_listener_get_port(live, &port);
+	const crnet_tcp_socket_connect_desc valid = tcp_connect_desc(tcp_address("127.0.0.1", port, 0), PATIENCE_MS);
+	char                                text[96];
+
+	for (size_t i = 0; i < sizeof(g_tcp_refusals) / sizeof(g_tcp_refusals[0]); ++i) {
+		const struct tcp_refusal *row     = &g_tcp_refusals[i];
+		const crnet_address       address = tcp_address(row->text, row->port, row->scope_id);
+		tcp_address_text(&address, text, sizeof(text));
+		if (row->at_connect != CR_SUCCESS) {
+			crnet_tcp_socket socket = NULL;
+			crnet_tcp_socket_create(g_instance, &socket);
+			const crnet_tcp_socket_connect_desc refused = tcp_connect_desc(address, PATIENCE_MS);
+			const CR_RESULT                     result  = crnet_tcp_socket_connect(socket, &refused);
+			check(result == row->at_connect, "connect to %s: %s (want %s)", text, cr_result_str(result), cr_result_str(row->at_connect));
+			crnet_error none;
+			crnet_tcp_socket_get_error(socket, CRNET_ERROR_SIDE_RECEIVING, &none);
+			check(none.source == CR_PLATFORM_ERROR_SOURCE_NONE, "  no system call behind it (the record empty)");
+			crnet_tcp_socket accepted = NULL;
+			if (expect(crnet_tcp_socket_connect(socket, &valid), CR_SUCCESS, "  then a valid connect on the same socket"))
+				crnet_tcp_listener_accept(live, PATIENCE_MS, &accepted);
+			crnet_tcp_socket_destroy(accepted);
+			crnet_tcp_socket_destroy(socket);
+		}
+		if (row->at_listener != CR_SUCCESS) {
+			crnet_tcp_listener            listener = (crnet_tcp_listener)(uintptr_t)1;
+			const crnet_tcp_listener_desc refused  = tcp_listen_desc(address, 4);
+			const CR_RESULT               result   = crnet_tcp_listener_create(g_instance, &refused, &listener, &error);
+			check(result == row->at_listener && listener == NULL, "a listener on %s: %s (want %s), no listener", text, cr_result_str(result),
+			      cr_result_str(row->at_listener));
+			if (listener && listener != (crnet_tcp_listener)(uintptr_t)1)
+				crnet_tcp_listener_destroy(listener);
+		}
+	}
+	crnet_tcp_listener_destroy(live);
+}
+
+/* What the rule passes on and the system answers, each held to the header's
+ * set, its error printed. `main` is the asserted link-local address;
+ * `other_index` another interface's ipv6_index, 0 for none. */
+static void tcp_system_answers(const crnet_address *main, uint32_t other_index) {
+	crnet_error error;
+	char        text[96];
+
+	struct {
+		const char   *what;
+		crnet_address to;
+		bool          no_wait; // CRNET_NO_WAIT, then continue for 500 ms
+	} connects[3];
+	uint32_t count = 0;
+	connects[count].what    = "a link-local connect with an index no interface has (0x0FFFFFFE)";
+	connects[count].to      = *main;
+	connects[count].to.scope_id = 0x0FFFFFFE;
+	connects[count++].no_wait   = false;
+	connects[count].what        = "fe80::1 at 2^28 - 1, past the check";
+	connects[count].to          = tcp_address("fe80::1", 0, 0x0FFFFFFF);
+	connects[count++].no_wait   = false;
+	if (other_index != 0) {
+		connects[count].what        = "the link-local address with another interface's index, CRNET_NO_WAIT then 500 ms";
+		connects[count].to          = *main;
+		connects[count].to.scope_id = other_index;
+		connects[count++].no_wait   = true;
+	} else {
+		note("no other interface's index here: the wrong-interface connect not tried");
+	}
+	for (uint32_t i = 0; i < count; ++i) {
+		connects[i].to.port = 9; // nobody listens there
+		crnet_tcp_socket socket = NULL;
+		crnet_tcp_socket_create(g_instance, &socket);
+		CR_RESULT result;
+		if (connects[i].no_wait) {
+			const crnet_tcp_socket_connect_desc cd = tcp_connect_desc(connects[i].to, CRNET_NO_WAIT);
+			result                                 = tcp_connect_outcome(socket, &cd, 500);
+			check(result == CR_RESULT_NET_TIMED_OUT || result == CR_RESULT_NET_CONNECT_FAILED, "%s (%s): %s", connects[i].what,
+			      tcp_address_text(&connects[i].to, text, sizeof(text)), cr_result_str(result));
+		} else {
+			const crnet_tcp_socket_connect_desc cd = tcp_connect_desc(connects[i].to, 2000);
+			result                                 = crnet_tcp_socket_connect(socket, &cd);
+			if (result == CR_RESULT_NET_TIMED_OUT)
+				result = crnet_tcp_socket_connect_continue(socket, PATIENCE_MS);
+			check(result == CR_RESULT_NET_CONNECT_FAILED || result == CR_RESULT_NET_SYSTEM_TIMED_OUT, "%s (%s): %s", connects[i].what,
+			      tcp_address_text(&connects[i].to, text, sizeof(text)), cr_result_str(result));
+		}
+		crnet_tcp_socket_get_error(socket, CRNET_ERROR_SIDE_RECEIVING, &error);
+		note_error(connects[i].what, &error);
+		crnet_tcp_socket_destroy(socket);
+	}
+
+	crnet_address listens[3];
+	const char   *listen_what[3];
+	uint32_t      listen_count       = 0;
+	listen_what[listen_count]        = "a listener with an index no interface has (0x0FFFFFFE)";
+	listens[listen_count]            = *main;
+	listens[listen_count++].scope_id = 0x0FFFFFFE;
+	listen_what[listen_count]        = "a listener on fe80::1 at 2^28 - 1";
+	listens[listen_count++]          = tcp_address("fe80::1", 0, 0x0FFFFFFF);
+	if (other_index != 0) {
+		listen_what[listen_count]        = "a listener with another interface's index";
+		listens[listen_count]            = *main;
+		listens[listen_count++].scope_id = other_index;
+	}
+	for (uint32_t i = 0; i < listen_count; ++i) {
+		listens[i].port                     = 0;
+		crnet_tcp_listener            made  = NULL;
+		const crnet_tcp_listener_desc ld    = tcp_listen_desc(listens[i], 4);
+		const CR_RESULT               result = crnet_tcp_listener_create(g_instance, &ld, &made, &error);
+		check(result == CR_RESULT_NET_LISTEN_FAILED && made == NULL, "%s (%s): %s", listen_what[i], tcp_address_text(&listens[i], text, sizeof(text)),
+		      cr_result_str(result));
+		note_error(listen_what[i], &error);
+		crnet_tcp_listener_destroy(made);
+	}
+}
+
+static bool tcp_all_zero(const void *bytes, size_t size) {
+	for (size_t i = 0; i < size; ++i) {
+		if (((const uint8_t *)bytes)[i] != 0)
+			return false;
+	}
+	return true;
+}
+
+static void tcp_peer_getter(void) {
+	crnet_address out;
+	expect(crnet_tcp_socket_get_peer_address(NULL, NULL), CR_RESULT_NET_INVALID_TCP_SOCKET, "the peer getter: a NULL socket with a NULL output");
+	expect(crnet_tcp_socket_get_peer_address(NULL, &out), CR_RESULT_NET_INVALID_TCP_SOCKET, "the peer getter: a NULL socket with an output");
+
+	crnet_tcp_socket idle = NULL;
+	crnet_tcp_socket_create(g_instance, &idle);
+	expect(crnet_tcp_socket_get_peer_address(idle, NULL), CR_RESULT_NULL_OUTPUT_PARAMETER, "the peer getter: a NULL output");
+	memset(&out, 0xA5, sizeof(out));
+	expect(crnet_tcp_socket_get_peer_address(idle, &out), CR_RESULT_NET_INVALID_TCP_SOCKET, "the peer getter on a socket not connected");
+	check(tcp_all_zero(&out, sizeof(out)), "  its output filled with 0xA5 first, every byte 0 after");
+	crnet_tcp_socket_destroy(idle);
+
+	const char *loopbacks[2] = {"127.0.0.1", "::1"};
+	for (int i = 0; i < 2; ++i) {
+		crnet_error                   error;
+		crnet_tcp_listener            listener = NULL;
+		const crnet_tcp_listener_desc ld       = tcp_listen_desc(tcp_address(loopbacks[i], 0, 0), 4);
+		if (crnet_tcp_listener_create(g_instance, &ld, &listener, &error) != CR_SUCCESS) {
+			note("no listener on %s; its peer case skipped", loopbacks[i]);
+			continue;
+		}
+		uint16_t port = 0;
+		crnet_tcp_listener_get_port(listener, &port);
+		crnet_tcp_socket client = NULL, server = NULL;
+		crnet_tcp_socket_create(g_instance, &client);
+		const crnet_address                 to = tcp_address(loopbacks[i], port, 0);
+		const crnet_tcp_socket_connect_desc cd = tcp_connect_desc(to, PATIENCE_MS);
+		if (expect(crnet_tcp_socket_connect(client, &cd), CR_SUCCESS, loopbacks[i]) &&
+		    expect(crnet_tcp_listener_accept(listener, PATIENCE_MS, &server), CR_SUCCESS, "accepted")) {
+			crnet_address peer;
+			memset(&peer, 0xA5, sizeof(peer));
+			expect(crnet_tcp_socket_get_peer_address(client, &peer), CR_SUCCESS, "the client's peer");
+			check(memcmp(&peer, &to, sizeof(peer)) == 0, "%s: the peer is the listener, scope 0, equal byte for byte", loopbacks[i]);
+			memset(&peer, 0xA5, sizeof(peer));
+			expect(crnet_tcp_socket_get_peer_address(server, &peer), CR_SUCCESS, "the server's peer");
+			check(tcp_same_but_port(&peer, &to) && peer.port != 0, "%s: the server's peer is the same address, scope 0, its own port", loopbacks[i]);
+			crnet_tcp_socket_abort(client);
+			memset(&peer, 0xA5, sizeof(peer));
+			expect(crnet_tcp_socket_get_peer_address(client, &peer), CR_RESULT_NET_ABORTED, "the peer getter on an aborted socket");
+			check(tcp_all_zero(&peer, sizeof(peer)), "  its output filled with 0xA5 first, every byte 0 after");
+		}
+		crnet_tcp_socket_destroy(client);
+		crnet_tcp_socket_destroy(server);
+		crnet_tcp_listener_destroy(listener);
+	}
+}
+
+static void tcp_listener_order(void) {
+	crnet_error             error;
+	crnet_tcp_listener_desc good = tcp_listen_desc(tcp_address("127.0.0.1", 0, 0), 4);
+	crnet_tcp_listener_desc bad  = tcp_listen_desc(tcp_address("224.0.0.251", 0, 0), 4);
+	expect(crnet_tcp_listener_create(NULL, &good, NULL, &error), CR_RESULT_NET_INVALID_INSTANCE, "the listener: a NULL instance with a NULL output");
+	crnet_tcp_listener untouched = (crnet_tcp_listener)(uintptr_t)1;
+	expect(crnet_tcp_listener_create(NULL, &good, &untouched, &error), CR_RESULT_NET_INVALID_INSTANCE, "the listener: a NULL instance with an output");
+	check(untouched == (crnet_tcp_listener)(uintptr_t)1, "  the output untouched (filled first)");
+	expect(crnet_tcp_listener_create(g_instance, &good, NULL, &error), CR_RESULT_NULL_OUTPUT_PARAMETER, "the listener: a good desc with a NULL output");
+	expect(crnet_tcp_listener_create(g_instance, &bad, NULL, &error), CR_RESULT_NULL_OUTPUT_PARAMETER, "the listener: a bad address with a NULL output");
+	bad.backlog                 = 0;
+	crnet_tcp_listener listener = (crnet_tcp_listener)(uintptr_t)1;
+	expect(crnet_tcp_listener_create(g_instance, &bad, &listener, &error), CR_RESULT_NET_INVALID_ADDRESS, "the listener: a bad address with backlog 0");
+	check(listener == NULL, "  the output NULL after its own check");
+	good.backlog = 0;
+	expect(crnet_tcp_listener_create(g_instance, &good, &listener, &error), CR_RESULT_DESC_INVALID_PARAMETERS, "the listener: a good address with backlog 0");
+}
+
+/* Part B: the resolver hands over crnet_address values. */
+static CR_RESULT tcp_resolve(const char *host, CRNET_ADDRESS_FAMILY family, crnet_address *out, uint32_t capacity, uint32_t *out_count) {
+	*out_count = 0;
+	crnet_resolver_desc desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.base.type          = CR_STRUCT_TYPE_NET_RESOLVER_DESC;
+	desc.host               = host;
+	desc.family             = family;
+	crnet_resolver resolver = NULL;
+	CR_RESULT      result   = crnet_resolver_create(g_instance, &desc, &resolver);
+	if (result != CR_SUCCESS)
+		return result;
+	crnet_resolver_run(resolver);
+	result = crnet_resolver_wait(resolver, PATIENCE_MS, out, capacity, out_count);
+	crnet_resolver_destroy(resolver);
+	return result;
+}
+
+static void tcp_resolver_values(void) {
+	crnet_address found[8];
+	uint32_t      count = 0;
+	char          text[96];
+	memset(found, 0xA5, sizeof(found));
+	if (expect(tcp_resolve("localhost", CRNET_ADDRESS_FAMILY_ANY, found, 8, &count), CR_SUCCESS, "the resolver: \"localhost\"")) {
+		bool ports = count > 0;
+		for (uint32_t i = 0; i < count; ++i) {
+			ports = ports && found[i].port == 0 && found[i].scope_id == 0 && found[i].reserved == 0;
+			note("localhost: %s %s", family_name(found[i].family), tcp_address_text(&found[i], text, sizeof(text)));
+			for (uint32_t j = 0; j < i; ++j)
+				check(memcmp(&found[i], &found[j], sizeof(found[i])) != 0, "  no two entries equal");
+		}
+		check(ports, "  %u crnet_address values, each port 0, scope 0, reserved 0", (unsigned)count);
+	}
+	memset(found, 0xA5, sizeof(found));
+	if (expect(tcp_resolve("::1", CRNET_ADDRESS_FAMILY_ANY, found, 8, &count), CR_SUCCESS, "the resolver: \"::1\"")) {
+		const crnet_address want = tcp_address("::1", 0, 0);
+		check(count == 1 && memcmp(&found[0], &want, sizeof(want)) == 0, "  one value, ::1 port 0 scope 0 (%u)", (unsigned)count);
+	}
+	expect(tcp_resolve("fe80::1%lo0", CRNET_ADDRESS_FAMILY_ANY, found, 8, &count), CR_RESULT_DESC_INVALID_PARAMETERS, "the resolver: \"fe80::1%lo0\" refused at create");
+	expect(tcp_resolve("fe80::1%1", CRNET_ADDRESS_FAMILY_ANY, found, 8, &count), CR_RESULT_DESC_INVALID_PARAMETERS, "the resolver: \"fe80::1%1\" refused at create");
+	if (expect(tcp_resolve("fe80::1", CRNET_ADDRESS_FAMILY_ANY, found, 8, &count), CR_SUCCESS, "the resolver: numeric \"fe80::1\"")) {
+		const crnet_address want = tcp_address("fe80::1", 0, 0);
+		check(count == 1 && memcmp(&found[0], &want, sizeof(want)) == 0, "  one value, scope 0: the system has nothing to add");
+		crnet_address to = found[0];
+		to.port          = 80;
+		crnet_tcp_socket socket = NULL;
+		crnet_tcp_socket_create(g_instance, &socket);
+		const crnet_tcp_socket_connect_desc cd = tcp_connect_desc(to, PATIENCE_MS);
+		expect(crnet_tcp_socket_connect(socket, &cd), CR_RESULT_NET_INVALID_SCOPE, "  and a connect to it, the port set, is refused");
+		crnet_tcp_socket_destroy(socket);
+	}
+	if (expect(tcp_resolve("localhost", CRNET_ADDRESS_FAMILY_ANY, found, 1, &count), CR_SUCCESS, "the resolver: \"localhost\" into a capacity of 1"))
+		check(count == 1, "  gives 1 (%u)", (unsigned)count);
+}
+
+static void test_tcp_addresses(void) {
+	part("TCP addresses (crnet_address, link-local with its interface)");
+
+	struct tcp_link_local links[32];
+	uint32_t              other_index = 0;
+	const uint32_t        count       = tcp_link_locals(links, 32, &other_index);
+	const char           *require     = getenv("CRNET_TEST_REQUIRE_LINK_LOCAL");
+	const bool            required    = require && strcmp(require, "1") == 0;
+
+	// The one asserted: lo0's fe80::1 on Apple, which must be there; on
+	// Linux and Windows, whose loopback has none, the first UP and RUNNING
+	// non-loopback interface with one.
+	int main_link = -1;
+	for (uint32_t i = 0; i < count && main_link < 0; ++i) {
+#ifdef __APPLE__
+		if (strcmp(links[i].name, "lo0") == 0)
+			main_link = (int)i;
+#else
+		if (!(links[i].flags & CRNET_INTERFACE_FLAG_LOOPBACK))
+			main_link = (int)i;
+#endif
+	}
+#ifdef __APPLE__
+	check(main_link >= 0, "lo0 has fe80::1 (Apple: its absence is a failure, not a skip)");
+#else
+	if (main_link < 0) {
+		printf("SKIPPED: tcp_addresses link-local (no fe80 address on an up interface)\n");
+		check(!required, "CRNET_TEST_REQUIRE_LINK_LOCAL is not set (with it, a machine with no link-local address fails)");
+	}
+#endif
+
+	if (main_link >= 0) {
+		tcp_link_local_case(&links[main_link], true);
+		// Another interface's index for the wrong-interface cases.
+		uint32_t other = 0;
+		for (uint32_t i = 0; i < count && other == 0; ++i) {
+			if ((int)i != main_link && links[i].ipv6_index != links[main_link].ipv6_index)
+				other = links[i].ipv6_index;
+		}
+		tcp_system_answers(&links[main_link].address, other);
+	}
+	for (uint32_t i = 0; i < count; ++i) {
+		if ((int)i != main_link)
+			tcp_link_local_case(&links[i], false);
+	}
+
+	tcp_refusals();
+	tcp_peer_getter();
+	tcp_listener_order();
+	tcp_resolver_values();
+}
+
+#endif // CRNET_EXT_TCP
+
 static void test_struct_bases(void) {
 	part("Struct bases");
 
@@ -5311,7 +5908,7 @@ static void test_struct_bases(void) {
 	{
 		crnet_tcp_listener_desc desc;
 		memset(&desc, 0, sizeof(desc));
-		desc.address                  = "127.0.0.1";
+		desc.local                  = tcp_text("127.0.0.1", 0);
 		crnet_tcp_listener listener = NULL;
 		expect(crnet_tcp_listener_create(g_instance, &desc, &listener, NULL), CR_RESULT_STRUCT_WRONG_TYPE, "listener: a zeroed base");
 		desc.base.type = CR_STRUCT_TYPE_NET_TCP_LISTENER_DESC;
@@ -5323,7 +5920,7 @@ static void test_struct_bases(void) {
 		expect(crnet_tcp_socket_create(g_instance, &socket), CR_SUCCESS, "a socket to connect");
 		crnet_tcp_socket_connect_desc desc;
 		memset(&desc, 0, sizeof(desc));
-		desc.address = "127.0.0.1";
+		desc.to = tcp_text("127.0.0.1", 0);
 		expect(crnet_tcp_socket_connect(socket, &desc), CR_RESULT_STRUCT_WRONG_TYPE, "connect: a zeroed base");
 		desc.base.type = CR_STRUCT_TYPE_NET_TCP_SOCKET_CONNECT_DESC;
 		desc.base.next = &other;
@@ -5371,14 +5968,15 @@ static void test_struct_bases(void) {
 
 int main(int argc, char **argv) {
 	if (argc < 2) {
-		fprintf(stderr, "usage: crnet_test <info file> [instance|bases|records|tcp|wait|resolver|http|tls|proxy|websocket|resumable|interfaces|udp|discovery|internet]\n"
-		                "       crnet_test - interfaces|udp|discovery\n");
+		fprintf(stderr, "usage: crnet_test <info file> [instance|bases|records|tcp|wait|resolver|http|tls|proxy|websocket|resumable|interfaces|tcp_addresses|udp|discovery|internet]\n"
+		                "       crnet_test - interfaces|tcp_addresses|udp|discovery\n");
 		return 2;
 	}
 	// "-" for the parts that need no server: those only.
 	const bool no_server = strcmp(argv[1], "-") == 0;
-	if (no_server && (argc < 3 || (strcmp(argv[2], "interfaces") != 0 && strcmp(argv[2], "udp") != 0 && strcmp(argv[2], "discovery") != 0))) {
-		fprintf(stderr, "crnet_test: with no server's info file, name one of interfaces, udp and discovery\n");
+	if (no_server && (argc < 3 || (strcmp(argv[2], "interfaces") != 0 && strcmp(argv[2], "tcp_addresses") != 0 && strcmp(argv[2], "udp") != 0 &&
+	                  strcmp(argv[2], "discovery") != 0))) {
+		fprintf(stderr, "crnet_test: with no server's info file, name one of interfaces, tcp_addresses, udp and discovery\n");
 		return 2;
 	}
 	if (!no_server && !read_info(argv[1])) {
@@ -5418,6 +6016,7 @@ int main(int argc, char **argv) {
 	RUN("resumable", test_resumable);
 #if CRNET_EXT_TCP
 	RUN("interfaces", test_interfaces);
+	RUN("tcp_addresses", test_tcp_addresses);
 #endif
 #if CRNET_EXT_UDP
 	RUN("udp", test_udp);

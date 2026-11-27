@@ -80,7 +80,7 @@ extern "C" {
 /** @brief The major version of these headers. */
 #define CARROTTUS_VERSION_MAJOR 0
 /** @brief The minor version of these headers. */
-#define CARROTTUS_VERSION_MINOR 5
+#define CARROTTUS_VERSION_MINOR 6
 /** @brief The patch version of these headers. */
 #define CARROTTUS_VERSION_PATCH 0
 
@@ -553,7 +553,7 @@ typedef enum CR_RESULT {
 	CR_RESULT_NET_UNSUPPORTED           = 3020, /**< This build's platform stack doesn't have it. */
 	CR_RESULT_NET_ABORTED               = 3022, /**< The object's _abort was called. */
 	CR_RESULT_NET_INVALID_TCP_LISTENER  = 3024, /**< A TCP listener argument is NULL. */
-	CR_RESULT_NET_INVALID_ADDRESS       = 3025, /**< Not a numeric IPv4 or IPv6 address. */
+	CR_RESULT_NET_INVALID_ADDRESS       = 3025, /**< Not an address the call takes: not a numeric IPv4 or IPv6 address, not a valid crnet_address, or one the call's address rules refuse (crnet.h, under each call). */
 	CR_RESULT_NET_ADDRESS_IN_USE        = 3026, /**< Another listener already has that address and port. */
 	CR_RESULT_NET_INVALID_WAIT_SET      = 3027, /**< A wait set argument is NULL. */
 	CR_RESULT_NET_ALREADY_IN_WAIT_SET   = 3028, /**< The object is in this set already, or a WebSocket in another. */
@@ -577,6 +577,11 @@ typedef enum CR_RESULT {
 	CR_RESULT_NET_SERVICE_NAME_CONFLICT        = 3046, /**< The name an advert asked for is held by another service of the same type on the network. The advert is over. */
 	CR_RESULT_NET_ACCESS_DENIED                = 3047, /**< The system refused this program the network for this call (Android: INTERNET missing at a create, ACCESS_LOCAL_NETWORK at a send or receive); the socket stays usable once allowed. Never on Apple, whose Local Network refusal can't be told from no route. */
 	CR_RESULT_NET_SERVICE_NOT_ANSWERING        = 3048, /**< A resolve the system gave up on because the instance didn't answer (Avahi's own time-out); dns_sd never gives it, and Windows was seen with none. */
+	/** The scope_id doesn't fit the address, by the rule of the call that
+	 * takes it (crnet.h, "TCP sockets"): a link-local IPv6 address with none,
+	 * another IPv6 address with one, or a scope_id of 2^28 or more. An IPv4
+	 * address with a scope is CR_RESULT_NET_INVALID_ADDRESS. Since 0.6.0. */
+	CR_RESULT_NET_INVALID_SCOPE = 3049,
 
 	CR_RESULT_AUDIO_INVALID_INSTANCE      = 4001, /**< A Carrottus Audio instance argument is NULL. */
 	CR_RESULT_AUDIO_INVALID_DEVICE        = 4002, /**< An audio device argument, or a desc's device, is NULL. */

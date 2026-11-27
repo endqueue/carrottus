@@ -1842,92 +1842,31 @@ local carrier as a second caller: `crnet_wait_set_draft.h`, version 4.
    self-signed certificate, and one whose pin doesn't match, on each platform.
 4. ~~Compile and run on Windows and Linux.~~ Done 2026-10-14.
 
-## TCP addresses as `crnet_address` (card N26, decided 2026-11-25 with you; draft approved 2026-11-25, not built)
+## TCP addresses as `crnet_address` (card N26, decided 2026-11-25 with you; draft approved 2026-11-25; built on the Mac 2026-11-26, Windows and Fedora next)
 
 **Why:** a link-local IPv6 address (fe80::/10) means something only with
-its interface, and Carrottus Net's TCP takes and gives addresses as
-numeric text, which carries no scope portably (`crnet.h`, "Addresses":
-"TCP keeps its numeric strings for now"; `crnet_address_from_string()`
+its interface, and Carrottus Net's TCP took and gave addresses as numeric
+text, which carries no scope portably (`crnet_address_from_string()`
 refuses a '%', since each platform reads "fe80::1%en0" its own way). UDP,
-the interface listing and discovery already use `crnet_address`, whose
-`scope_id` is sin6_scope_id. Found by Pigeonous's step 3, Part 5 (its F6,
-`endqueue_server/pigeonous/PGN_TODO.md`): a caller can neither dial a
+the interface listing and discovery already used `crnet_address`, whose
+`scope_id` is sin6_scope_id. Found by a caller (the meta repo's
+`ROADMAP.md`, section 12, names it): a caller could neither dial a
 link-local address it learnt over UDP, discovery or a QR, nor answer a
 TCP peer's link-local source over UDP.
 
-**Decided (card N26, the shape asked 2026-11-25): replace the text.**
-TCP takes and gives `crnet_address`, the strings go:
-- `crnet_tcp_socket_connect_desc`: its `address` text and `port` become
-  one `crnet_address` (the port inside it, not 0);
-- `crnet_tcp_listener_desc`: its `address` text and `port` become one
-  `crnet_address` (port 0 asks the system for one, as UDP's local
-  address does);
-- `crnet_tcp_socket_get_peer_address()` fills a `crnet_address` (its
-  `scope_id` as the system gave it), in place of text and a port.
+**Decided (card N26, 2026-11-25): replace the text.** TCP takes and gives
+`crnet_address`, the strings go: `crnet_tcp_socket_connect_desc::to`,
+`crnet_tcp_listener_desc::local`, and `crnet_tcp_socket_get_peer_address()`
+filling a `crnet_address`. One address model for TCP, UDP and discovery.
+A break, before 1.0 allowed in a minor version and listed against
+`abi.txt`. Its callers change in the same change (listed, file by file,
+in the draft and in the meta repo's
+`prompts/crnet_tcp_address_build_record.md`) and their locks after it
+(`./check.sh --update-locks`, card X25).
 
-One address model for TCP, UDP and discovery. A break, before 1.0 allowed
-in a minor version and listed against `abi.txt` (`check.sh abi`), in the
-next minor (0.6.0, unless the wait set's reserve takes that number first).
-Its callers change in the same change and the locks after it
-(`./check.sh --update-locks`): Rabbittus Sync
-(`rabbittus/src/sync/rbtsyncnet.cpp`), crlab (`crlab/src/crlab_net.c`),
-Pigeonous (`endqueue_server/pigeonous/src/pgnnet.c` and its loopback
-tests), and the tests of the Endqueue client
-(`endqueue_server/client/tests/`) and of trellislib
-(`trellis/lib/tests/trellismodel_tests.cpp`; trellis is archived, card
-X32, but its lock is still checked).
-
-**For the draft** (`carrottus/crnet_tcp_address_draft.h`, for your
-approval before anything is built, as card X21 asks), at least:
-- what a link-local address with `scope_id` 0 gets at connect and at a
-  listener (refused, `CR_RESULT_NET_INVALID_ADDRESS`, or the system's
-  own answer), and a global address with a scope;
-- each platform's translation (sockaddr_in6's sin6_scope_id on BSD
-  sockets and Winsock alike) and what Windows' `ipv6_index` means for it
-  (`crnet_interface_properties`);
-- whether `CRNET_MAX_ADDRESS_STRING_LEN` and any text-taking helper
-  outlive the change (`crnet_address_to_string()` for logs stays);
-- the struct bases: the descs are based, so the field change is a new
-  layout of the same type before 1.0, listed;
-- the tests: a link-local connect and listener over every up interface
-  with an fe80:: address (lo0's on Apple), the peer's scope read back,
-  the refusals, the misuse and no-allocation scenarios, on the Mac,
-  Windows and Fedora.
-
-**Then** Pigeonous's link-local half (its step 3 record, "N26's
-Pigeonous half"), before its Windows and Fedora prompts.
-
-**Drafted 2026-11-25** (the MacBook, unattended;
-`../prompts/crnet_tcp_address_draft_record.md`, with the Mac's probes):
-`crnet_tcp_address_draft.h`, **version 6**, critiqued in five cycles
-(Carrottus's rules, platform truth, the callers, failures and the tests,
-a read of the whole; findings T1.1 to T5.13), version 6's text as
-written being `9aa82986...44476d` before its header line was made
-"APPROVED". What it settles:
-- The descs: `crnet_tcp_listener_desc::local` and
-  `crnet_tcp_socket_connect_desc::to`, each a `crnet_address` in place of
-  text and a port (48 bytes each, the same struct types); the peer getter
-  fills one `crnet_address`.
-- One rule, checked once before the system is asked (an internal
-  `crnet_tcp_address_check()` both backends call):
-  `CR_RESULT_NET_INVALID_ADDRESS` for an invalid value, fe80::/10 outside
-  fe80::/64, multicast, IPv4-mapped, and at connect all-zero bytes or port
-  0; a new `CR_RESULT_NET_INVALID_SCOPE` (3049) for a link-local address
-  with no scope, a scope on any other IPv6 address, or one of 2^28 or
-  more. Carrottus Net never picks an interface, and a scope the systems
-  would ignore (tested on the Mac: ::1 with any index connects) isn't
-  passed on.
-- The peer: the system's scope, never 0 for a link-local peer
-  (GENERAL_FAILURE instead, in one shared reader), so it feeds connect and
-  UDP's send_to as it is; on Windows the reader keeps SCOPE_ID's Zone
-  alone (UDP's and the listing's reads too).
-- The listener's and the peer getter's checks in parameter order, as
-  UDP's.
-- Part B, severable: the resolver hands over `crnet_address`, a '%' in a
-  host refused.
-- 0.6.0, shared with the wait set's reserve while neither is tagged
-  (0.7.0 if 0.6.0 is tagged first); every caller's change listed file by
-  file, and the five locks after.
+**Drafted 2026-11-25** (`crnet_tcp_address_draft.h`, version 6, five
+critique cycles, findings T1.1 to T5.13; `../prompts/crnet_tcp_address_draft_record.md`
+has the Mac's probes of BSD sockets with scopes).
 
 - **Approved by you 2026-11-25** (cards N34 to N37, each a, as
   recommended): version 6 as written, its header line then made
@@ -1937,11 +1876,61 @@ written being `9aa82986...44476d` before its header line was made
   SHA-256 with carriage returns removed (card X23):
   `62825609cb9c5e729fd6286b4e121d426232afa0f7ee4f94cd841e2e667acb25`.
   Every session building it checks this first and stops on a mismatch.
-- **Next: its build**, a session of its own: the Mac first (carrottus's
-  front-end check and both backends' halves, its tests, then every caller
-  the draft lists and the five locks), then Windows and Fedora, each
-  recording what the draft's tests record. Pigeonous's link-local half
-  follows the Mac's (`../endqueue_server/pigeonous/PGN_TODO.md`, F6).
+- **Built on the Mac 2026-11-26** (the MacBook, Apple M5 Pro, macOS
+  27.0.1, Xcode 27.2, unattended; `../prompts/crnet_tcp_address_build_mac.md`,
+  its record `../prompts/crnet_tcp_address_build_record.md`, which has every
+  figure). The draft's hash checked first (the "Built on" line left out).
+  **Version 0.6.0** (no tag existed; the wait set's reserve, approved and
+  not built, shares it). What was built:
+  - `crnet.h` and `crcore.h` as the draft gives them;
+    `crnet_tcp_address_check()` and `crnet_tcp_peer_from_sockaddr()` in
+    `src/net/crnetinterfaces.c`, the Zone mask under
+    `CARROTTUS_PLATFORM_WIN32`; both backends translate through
+    `crnet_sockaddr_from_address()`, getaddrinfo off the TCP paths; Part B
+    in both resolvers. **The Windows backend is written, not compiled**
+    (checked only with `clang -fsyntax-only` against mingw-w64's headers).
+  - `./check.sh --update-abi carrottus`: the draft's breaks, line for line.
+  - Step 0, the text form against today's code, before any change: a
+    mapped address, 0.0.0.0, ::, "::1%1" and "fe80::1%268435457" (cut to
+    scope 1) all connected; a link-local peer read back lost its scope;
+    one connect allocated 7 of getaddrinfo's. Now each is refused by the
+    rule, the peer keeps its scope, and a traced connect allocates nothing,
+    the platform's included.
+  - Tests: `crnet_address_rule_test` (new, 91 checks), `crnet_test`'s part
+    `tcp_addresses` (new, 190 on the Mac), every TCP use in `crnet_test`
+    moved, `crcore_test`, `cr_noalloc_tests`, the misuse tests regenerated
+    (two new stale lines), the ifaddr fuzz target's oracle and two seeds.
+  - Run: `macos-metal` Debug and Release, `-asan`, `-tsan` (25 ctests
+    each, `crnet_test` 1069 or 1070 of as many, `internet` 27 of 27, no
+    sanitizer report), the new tests 20 times in Release and 5 under each
+    sanitizer, the iOS simulator, two fuzz targets 5 minutes each. Every
+    up interface with an fe80:: address tried (lo0 asserted; en0, llw0 and
+    bridge100 connect to themselves; awdl0 and the utuns time out, the
+    system's answer); no errno outside the draft's set.
+  - What the build settled where the draft left it open is in
+    `../claude_made_decisions.md` (2026-11-26) for review; among it one
+    text change against the draft's layout: connect's and the peer
+    getter's two `CR_RESULT_NET_INVALID_TCP_SOCKET` lines are one
+    `@retval` each, naming both cases and where the second is checked,
+    since doxygen refuses two of one value.
+- **Owed:**
+  - **Windows** (`../prompts/crnet_tcp_address_build_windows.md`): the
+    backend's first compile; the SCOPE_ID Level read back, the listing's
+    link-local scope against Ipv6IfIndex, GetAddrInfoExW's '%name' and
+    '%number' (through a temporary text-form test first);
+    `CRNET_TEST_REQUIRE_LINK_LOCAL=1`; and the listener's WSAEACCES, below.
+  - **Fedora** (`../prompts/crnet_tcp_address_build_fedora.md`): the POSIX
+    file under GCC and clang, `-asan` and `-tsan`; the kernel's EINVAL and
+    ENODEV, the multicast bind refused by the front end, glibc's '%' parse;
+    then the five locks.
+  - The caller's link-local half (its dial on each interface, its QR, its
+    rank), its own session after the Mac's, before its Windows and Fedora
+    prompts.
+- **For you:** the draft itself names the callers (its file-by-file
+  list), so `check.sh caller-names` counts 24 lines in
+  `crnet_tcp_address_draft.h`; an approved draft is never edited, and
+  `check.baseline` already holds one so (the client's). Its entry is in
+  `check.baseline` with that reason, for your review.
 
 **Found on the way, not N26's** (cycle 4, T4.11): on Windows the TCP
 listener maps only WSAEADDRINUSE, so a bind refused with WSAEACCES because

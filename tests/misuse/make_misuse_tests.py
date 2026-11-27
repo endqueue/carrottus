@@ -1082,7 +1082,7 @@ FACTORIES = {
 	crnet_tcp_listener_desc desc;
 	memset(&desc, 0, sizeof(desc));
 	desc.base.type                = CR_STRUCT_TYPE_NET_TCP_LISTENER_DESC;
-	desc.address                  = "127.0.0.1";
+	crnet_address_from_string("127.0.0.1", 0, 0, &desc.local);
 	desc.backlog                  = 1;
 	crnet_tcp_listener listener = NULL;
 	if (crnet_tcp_listener_create(instance, &desc, &listener, NULL) == CR_SUCCESS)

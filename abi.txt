@@ -772,6 +772,7 @@ const CR_RESULT_NET_INVALID_HTTP_TRANSFER = 3032
 const CR_RESULT_NET_INVALID_INSTANCE = 3033
 const CR_RESULT_NET_INVALID_INTERFACE_LIST = 3034
 const CR_RESULT_NET_INVALID_RESOLVER = 3029
+const CR_RESULT_NET_INVALID_SCOPE = 3049
 const CR_RESULT_NET_INVALID_SERVICE_ADVERT = 3040
 const CR_RESULT_NET_INVALID_SERVICE_BROWSER = 3041
 const CR_RESULT_NET_INVALID_SERVICE_RESOLVER = 3042
@@ -1120,7 +1121,7 @@ fn crnet_resolver_create CR_RESULT (crnet_instance, const crnet_resolver_desc *,
 fn crnet_resolver_destroy void (crnet_resolver)
 fn crnet_resolver_get_error void (crnet_resolver, crnet_error *)
 fn crnet_resolver_run CR_RESULT (crnet_resolver)
-fn crnet_resolver_wait CR_RESULT (crnet_resolver, uint32_t, char (*)[46], uint32_t, uint32_t *)
+fn crnet_resolver_wait CR_RESULT (crnet_resolver, uint32_t, crnet_address *, uint32_t, uint32_t *)
 fn crnet_service_advert_abort void (crnet_service_advert)
 fn crnet_service_advert_create CR_RESULT (crnet_instance, const crnet_service_advert_desc *, crnet_service_advert *, crnet_error *)
 fn crnet_service_advert_destroy void (crnet_service_advert)
@@ -1149,7 +1150,7 @@ fn crnet_tcp_socket_create CR_RESULT (crnet_instance, crnet_tcp_socket *)
 fn crnet_tcp_socket_destroy void (crnet_tcp_socket)
 fn crnet_tcp_socket_finish_sending CR_RESULT (crnet_tcp_socket)
 fn crnet_tcp_socket_get_error void (crnet_tcp_socket, CRNET_ERROR_SIDE, crnet_error *)
-fn crnet_tcp_socket_get_peer_address CR_RESULT (crnet_tcp_socket, char *, uint16_t *)
+fn crnet_tcp_socket_get_peer_address CR_RESULT (crnet_tcp_socket, crnet_address *)
 fn crnet_tcp_socket_recv CR_RESULT (crnet_tcp_socket, void *, uint64_t, uint32_t, uint64_t *)
 fn crnet_tcp_socket_send CR_RESULT (crnet_tcp_socket, const void *, uint64_t, uint32_t, uint64_t *)
 fn crnet_tcp_socket_set_no_delay CR_RESULT (crnet_tcp_socket, _Bool)
@@ -1214,7 +1215,7 @@ macro CARROTTUS_VERSION_GET_MAJOR(version) ((uint32_t)(version) >> 22U)
 macro CARROTTUS_VERSION_GET_MINOR(version) (((uint32_t)(version) >> 12U) & 0x3FFU)
 macro CARROTTUS_VERSION_GET_PATCH(version) ((uint32_t)(version) & 0xFFFU)
 macro CARROTTUS_VERSION_MAJOR 0
-macro CARROTTUS_VERSION_MINOR 5
+macro CARROTTUS_VERSION_MINOR 6
 macro CARROTTUS_VERSION_PATCH 0
 [apple,windows] macro CRAUDIO_COMPILE_ALSA 0
 [linux] macro CRAUDIO_COMPILE_ALSA 1
@@ -2071,16 +2072,14 @@ field crnet_service_resolver_desc.event_capacity @40 uint32_t
 struct crnet_service_txt_entry size=16 align=8
 field crnet_service_txt_entry.key @0 const char *
 field crnet_service_txt_entry.value @8 const char *
-struct crnet_tcp_listener_desc size=32 align=8
+struct crnet_tcp_listener_desc size=48 align=8
 field crnet_tcp_listener_desc.base @0 CR_STRUCT_BASE
-field crnet_tcp_listener_desc.address @16 const char *
-field crnet_tcp_listener_desc.port @24 uint16_t
-field crnet_tcp_listener_desc.backlog @28 uint32_t
-struct crnet_tcp_socket_connect_desc size=32 align=8
+field crnet_tcp_listener_desc.local @16 crnet_address
+field crnet_tcp_listener_desc.backlog @44 uint32_t
+struct crnet_tcp_socket_connect_desc size=48 align=8
 field crnet_tcp_socket_connect_desc.base @0 CR_STRUCT_BASE
-field crnet_tcp_socket_connect_desc.address @16 const char *
-field crnet_tcp_socket_connect_desc.port @24 uint16_t
-field crnet_tcp_socket_connect_desc.timeout_ms @28 uint32_t
+field crnet_tcp_socket_connect_desc.to @16 crnet_address
+field crnet_tcp_socket_connect_desc.timeout_ms @44 uint32_t
 struct crnet_tls_certificate size=16 align=8
 field crnet_tls_certificate.data @0 const void *
 field crnet_tls_certificate.size @8 uint64_t
